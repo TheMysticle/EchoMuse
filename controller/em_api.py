@@ -84,6 +84,7 @@ import em_wifi
 import em_endpoints
 import em_scenes
 import em_shadow
+import em_spotify
 import em_spotify_assets
 import em_support
 from version import VERSION as CONTROLLER_VERSION
@@ -457,6 +458,7 @@ async def create_app() -> web.Application:
     app.router.add_get("/api/devices/{id}/spotify/engine",   _get_device_spotify_engine)
     app.router.add_post("/api/devices/{id}/spotify/engine",  _post_device_spotify_engine)
     app.router.add_post("/api/devices/{id}/spotify/probe",   _post_device_spotify_probe)
+    app.router.add_post("/api/devices/{id}/spotify/cmd",     _post_device_spotify_cmd)
 
     # Releases
     app.router.add_get("/api/releases/latest",   _get_latest_release)
@@ -1154,6 +1156,9 @@ async def _patch_device(request: web.Request) -> web.Response:
     if live is not None and getattr(live, "sendspin_capable", False):
         with contextlib.suppress(Exception):
             await live.send_control({"type": "config", "sendspinName": label})
+    if live is not None and getattr(live, "spotify_capable", False):
+        with contextlib.suppress(Exception):
+            await live.send_control({"type": "config", "spotifyName": label})
     return _ok({"device_id": device_id, "label": label})
 
 
@@ -1214,6 +1219,39 @@ async def _get_sendspin_token(request: web.Request) -> web.Response:
     if reply.get("error") or not reply.get("token"):
         return _error("sendspin_off", "Turn Sendspin on for this Echo first", 409)
     return _ok({"token": reply["token"], "clientId": reply.get("clientId")})
+
+
+@auth.require_admin
+async def _post_device_spotify_cmd(request: web.Request) -> web.Response:
+    """
+    POST /api/devices/{id}/spotify/cmd  {"cmd": "...", "fields": {...}}
+
+    One transport or load command for the Echo's Spotify engine, validated by
+    em_spotify before it goes on the wire. The device's reply is returned; a
+    failure carries the engine's own reason.
+    """
+    live = _devices.get(request.match_info["id"])
+    if live is None:
+        return _error("device_offline", "The Echo is offline", 409)
+    if not getattr(live, "spotify_capable", False):
+        return _error("unsupported", "Spotify runs on emOS only", 409)
+    try:
+        body = await request.json()
+    except Exception:
+        return _error("bad_request", "Expected a JSON body", 400)
+    if not isinstance(body, dict):
+        return _error("bad_request", "Expected a JSON object", 400)
+    try:
+        fields = em_spotify.validate(body.get("cmd"), body.get("fields"))
+    except em_spotify.BadCommand as e:
+        return _error("bad_command", str(e), 400)
+    try:
+        reply = await live.spotify_request(body["cmd"], fields)
+    except asyncio.TimeoutError:
+        return _error("timeout", "The Echo did not answer", 504)
+    if reply.get("error"):
+        return _error("spotify_failed", str(reply["error"]), 409)
+    return _ok({"ok": True})
 
 
 @auth.require_admin
@@ -7030,6 +7068,9 @@ def _merge_device(row, boot: dict | None = None) -> dict:
         "sendspinCapable": getattr(live, "sendspin_capable", False) if live else False,
         "bleConnectCapable": getattr(live, "ble_connect_capable", False) if live else False,
         "sendspin":        getattr(live, "sendspin", None) if live else None,
+        # Spotify Connect engine: capability and the device's own report.
+        "spotifyCapable":  getattr(live, "spotify_capable", False) if live else False,
+        "spotify":         getattr(live, "spotify", None) if live else None,
         "audioMixCapable": getattr(live, "audio_mix_capable", False) if live else False,
         # Gates the AEC delay slider, which only means anything on the
         # software tap. Paired with aecRef because the capability says the

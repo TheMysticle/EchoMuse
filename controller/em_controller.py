@@ -65,6 +65,7 @@ import os
 import socket
 import struct
 import time
+import uuid
 
 import numpy as np
 from aiohttp import web
@@ -436,6 +437,13 @@ class Device:
         self.sendspin: dict | None = None
         # An outstanding sendspin_token_request, answered by sendspin_token.
         self.sendspin_token_waiter: asyncio.Future | None = None
+        # The Spotify Connect engine's status (emOS only), from
+        # spotify_status and the stats tick. None while it is off, which is
+        # not the same as "stopped": a device that reports nothing has not
+        # said it is fine.
+        self.spotify: dict | None = None
+        # Outstanding spotify_cmd requests by id, answered by spotify_reply.
+        self.spotify_waiters: dict[str, asyncio.Future] = {}
         # Set from the register message; None on firmware that predates it.
         self.ambient_light_status: dict | None = None
         # Which userspace the device booted, from its register message.
@@ -1058,6 +1066,27 @@ class Device:
         is shown disabled with the reason.
         """
         return "ble_connect" in (self.capabilities or [])
+
+    @property
+    def spotify_capable(self) -> bool:
+        """Whether this firmware can run the Spotify Connect engine (emOS)."""
+        return "spotify" in (self.capabilities or [])
+
+    async def spotify_request(self, cmd: str, fields: dict, timeout: float = 8.0) -> dict:
+        """
+        Send one spotify_cmd and return the device's reply. Raises
+        asyncio.TimeoutError if it never answers; a reply carrying "error"
+        is returned as is, for the caller to turn into a message.
+        """
+        rid = uuid.uuid4().hex[:12]
+        fut = asyncio.get_event_loop().create_future()
+        self.spotify_waiters[rid] = fut
+        try:
+            await self.send_control({"type": "spotify_cmd", "id": rid,
+                                     "cmd": cmd, "fields": fields})
+            return await asyncio.wait_for(fut, timeout)
+        finally:
+            self.spotify_waiters.pop(rid, None)
 
     @property
     def sendspin_capable(self) -> bool:
@@ -4457,6 +4486,8 @@ async def handle_control(ws: WebSocketServerProtocol, secure: bool = False):
         # than restarting a moment later; a rename sends it alone.
         if device.sendspin_capable and row["label"]:
             config = {**config, "sendspinName": row["label"]}
+        if device.spotify_capable and row["label"]:
+            config = {**config, "spotifyName": row["label"]}
         await device.send_control({"type": "config", **config})
         device.oww_threshold = float(config.get("owwThreshold", OWW_THRESHOLD))
         device.oww_model     = config.get("owwModel", f"{OWW_MODEL}_v0.1")
@@ -4768,6 +4799,8 @@ async def handle_control(ws: WebSocketServerProtocol, secure: bool = False):
                     elif msg_type == "stats":
                         if "sendspin" in msg:
                             device.sendspin = msg.get("sendspin")
+                        if "spotify" in msg:
+                            device.spotify = msg.get("spotify")
                         # eMMC wear, re-read on the device every few hours;
                         # one row per day (schema v28), written on change.
                         _note_wear(device, msg.get("emmc"))
@@ -4896,6 +4929,7 @@ async def handle_control(ws: WebSocketServerProtocol, secure: bool = False):
                                 # a full device refresh.
                                 "bleProxy": em_ble_proxy.get_status(device_id),
                                 "sendspin": device.sendspin,
+                                "spotify": device.spotify,
                             },
                         })
 
@@ -4907,6 +4941,20 @@ async def handle_control(ws: WebSocketServerProtocol, secure: bool = False):
                             "type": "device_update", "device_id": device_id,
                             "state": {"sendspin": device.sendspin},
                         })
+
+                    elif msg_type == "spotify_status":
+                        # Pushed on change; the stats tick carries it too.
+                        device.spotify = msg.get("status")
+                        await api._push_event({
+                            "type": "device_update", "device_id": device_id,
+                            "state": {"spotify": device.spotify},
+                        })
+
+                    elif msg_type == "spotify_reply":
+                        waiter = device.spotify_waiters.get(msg.get("id"))
+                        if waiter is not None and not waiter.done():
+                            waiter.set_result(
+                                {k: v for k, v in msg.items() if k not in ("type", "id")})
 
                     elif msg_type == "sendspin_token":
                         # The answer to sendspin_token_request. A secret: it
