@@ -86,6 +86,7 @@ import em_scenes
 import em_shadow
 import em_spotify
 import em_spotify_assets
+import em_spotify_web
 import em_support
 from version import VERSION as CONTROLLER_VERSION
 from version import compare as _compare_versions
@@ -459,6 +460,10 @@ async def create_app() -> web.Application:
     app.router.add_post("/api/devices/{id}/spotify/engine",  _post_device_spotify_engine)
     app.router.add_post("/api/devices/{id}/spotify/probe",   _post_device_spotify_probe)
     app.router.add_post("/api/devices/{id}/spotify/cmd",     _post_device_spotify_cmd)
+    app.router.add_get("/api/spotify/web",                   _get_spotify_web)
+    app.router.add_post("/api/spotify/web/start",            _post_spotify_web_start)
+    app.router.add_post("/api/spotify/web/finish",           _post_spotify_web_finish)
+    app.router.add_post("/api/spotify/web/disconnect",       _post_spotify_web_disconnect)
 
     # Releases
     app.router.add_get("/api/releases/latest",   _get_latest_release)
@@ -1252,6 +1257,162 @@ async def _post_device_spotify_cmd(request: web.Request) -> web.Response:
     if reply.get("error"):
         return _error("spotify_failed", str(reply["error"]), 409)
     return _ok({"ok": True})
+
+
+# ── Spotify Web API connection (PKCE, paste-back) ───────────────────────────
+#
+# One connection per controller. The record holds tokens and lives in a 0600
+# file beside the database; only `em_spotify_web.public_status` leaves this
+# process, and nothing here logs a token, a code or a verifier.
+
+_spotify_web_pending: Optional[dict] = None
+_spotify_web_lock = asyncio.Lock()
+
+
+async def _spotify_web_record() -> Optional[dict]:
+    return await asyncio.to_thread(
+        em_spotify_web.load, em_spotify_web.state_path())
+
+
+async def _spotify_web_token_call(form: dict) -> tuple[int, object]:
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                em_spotify_web.TOKEN_URL, data=form,
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as resp:
+                try:
+                    body = await resp.json(content_type=None)
+                except Exception:
+                    body = None
+                return resp.status, body
+    except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+        raise em_spotify_web.AuthError(
+            f"could not reach Spotify ({type(e).__name__}); check the "
+            "controller's internet access") from None
+
+
+async def spotify_web_access_token() -> str:
+    """
+    A valid Web API access token, refreshed when it is about to lapse.
+
+    Raises AuthError with something to act on when there is no connection or
+    it needs re-authorising. A refused refresh token turns the record into
+    "reconnect required" so the dashboard says so, instead of retrying a dead
+    credential on every voice request.
+    """
+    async with _spotify_web_lock:
+        rec = await _spotify_web_record()
+        if not rec or not rec.get("refresh_token"):
+            if rec and rec.get("reauth_required"):
+                raise em_spotify_web.AuthError(
+                    "the Spotify connection expired; connect again on Integrations")
+            raise em_spotify_web.AuthError(
+                "Spotify is not connected; connect it on Integrations")
+        now = time.time()
+        if not em_spotify_web.needs_refresh(rec, now):
+            return rec["access_token"]
+        status, body = await _spotify_web_token_call(em_spotify_web.token_request_body(
+            "refresh_token", refresh_token=rec["refresh_token"],
+            client_id=rec["client_id"]))
+        if status != 200 or not isinstance(body, dict):
+            msg, reauth = em_spotify_web.describe_token_error(status, body)
+            if reauth:
+                await asyncio.to_thread(
+                    em_spotify_web.save, em_spotify_web.state_path(),
+                    em_spotify_web.mark_reauth(rec))
+                log.warning("[spotify] Web API connection refused; reconnect required")
+            raise em_spotify_web.AuthError(msg)
+        rec = em_spotify_web.apply_refresh(rec, body, now)
+        await asyncio.to_thread(em_spotify_web.save, em_spotify_web.state_path(), rec)
+        return rec["access_token"]
+
+
+@auth.require_admin
+async def _get_spotify_web(request: web.Request) -> web.Response:
+    """GET /api/spotify/web — connection state, never a token."""
+    rec = await _spotify_web_record()
+    return _ok(em_spotify_web.public_status(rec, time.time()))
+
+
+@auth.require_admin
+async def _post_spotify_web_start(request: web.Request) -> web.Response:
+    """
+    POST /api/spotify/web/start {client_id, redirect_uri}
+
+    Returns the Spotify consent URL to open. The PKCE verifier stays here.
+    """
+    global _spotify_web_pending
+    try:
+        body = await request.json()
+        if not isinstance(body, dict):
+            raise ValueError
+    except Exception:
+        return _error("bad_request", "Expected a JSON object", 400)
+    try:
+        client_id = em_spotify_web.validate_client_id(body.get("client_id", ""))
+        redirect = em_spotify_web.validate_redirect_uri(body.get("redirect_uri", ""))
+    except em_spotify_web.AuthError as e:
+        return _error("bad_request", str(e), 400)
+    verifier = em_spotify_web.new_verifier()
+    state = em_spotify_web.new_state()
+    _spotify_web_pending = {
+        "client_id": client_id, "redirect_uri": redirect,
+        "verifier": verifier, "state": state, "at": time.time(),
+    }
+    return _ok({"authorize_url": em_spotify_web.authorize_url(
+        client_id, redirect, em_spotify_web.challenge_for(verifier), state)})
+
+
+@auth.require_admin
+async def _post_spotify_web_finish(request: web.Request) -> web.Response:
+    """POST /api/spotify/web/finish {redirect_url} — exchange the pasted code."""
+    global _spotify_web_pending
+    try:
+        body = await request.json()
+        if not isinstance(body, dict):
+            raise ValueError
+    except Exception:
+        return _error("bad_request", "Expected a JSON object", 400)
+    pending = _spotify_web_pending
+    now = time.time()
+    if not pending or now - pending["at"] > em_spotify_web.PENDING_TTL_S:
+        _spotify_web_pending = None
+        return _error("expired", "That attempt timed out or was never started; start again", 409)
+    try:
+        code = em_spotify_web.parse_callback(
+            body.get("redirect_url", ""), pending["state"], pending["redirect_uri"])
+    except em_spotify_web.AuthError as e:
+        # A wrong paste is the likeliest slip and nothing was spent, so the
+        # attempt stays open for a second try.
+        return _error("bad_callback", str(e), 400)
+    # A code is single use, so the attempt ends here whatever happens next.
+    _spotify_web_pending = None
+    try:
+        status, resp = await _spotify_web_token_call(em_spotify_web.token_request_body(
+            "authorization_code", code=code, redirect_uri=pending["redirect_uri"],
+            client_id=pending["client_id"], code_verifier=pending["verifier"]))
+        if status != 200 or not isinstance(resp, dict):
+            msg, _ = em_spotify_web.describe_token_error(status, resp)
+            return _error("token_failed", msg, 400)
+        rec = em_spotify_web.new_record(
+            pending["client_id"], pending["redirect_uri"], resp, now)
+    except em_spotify_web.AuthError as e:
+        return _error("token_failed", str(e), 502)
+    async with _spotify_web_lock:
+        await asyncio.to_thread(em_spotify_web.save, em_spotify_web.state_path(), rec)
+    log.info("[spotify] Web API connected")
+    return _ok(em_spotify_web.public_status(rec, now))
+
+
+@auth.require_admin
+async def _post_spotify_web_disconnect(request: web.Request) -> web.Response:
+    """POST /api/spotify/web/disconnect — forget the stored connection."""
+    global _spotify_web_pending
+    _spotify_web_pending = None
+    async with _spotify_web_lock:
+        await asyncio.to_thread(em_spotify_web.clear, em_spotify_web.state_path())
+    return _ok({"state": "disconnected"})
 
 
 @auth.require_admin

@@ -10469,6 +10469,86 @@ function fmtBytes(n) {
     : `${Math.round(n / 1024)} KB`;
 }
 
+function SpotifyWeb() {
+  const mono = "'DM Mono',monospace";
+  const [st, setSt] = useState(null);
+  const [clientId, setClientId] = useState('');
+  const [redirect, setRedirect] = useState('http://127.0.0.1:8888/callback');
+  const [authUrl, setAuthUrl] = useState('');
+  const [pasted, setPasted] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState(null);
+
+  const load = useCallback(async () => {
+    try {
+      const r = await API.get('/api/spotify/web');
+      setSt(r);
+      setClientId(c => c || r.client_id || '');
+      if (r.redirect_uri) setRedirect(r.redirect_uri);
+    } catch (e) { setMsg({ ok: false, text: e.error || 'Could not read the Spotify connection' }); }
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const run = async (fn) => {
+    setBusy(true); setMsg(null);
+    try { await fn(); } catch (e) { setMsg({ ok: false, text: e.error || e.message || 'Failed' }); }
+    finally { setBusy(false); }
+  };
+  const start = () => run(async () => {
+    const r = await API.post('/api/spotify/web/start', { client_id: clientId, redirect_uri: redirect });
+    setAuthUrl(r.authorize_url); setPasted('');
+    window.open(r.authorize_url, '_blank', 'noopener');
+  });
+  const finish = () => run(async () => {
+    const r = await API.post('/api/spotify/web/finish', { redirect_url: pasted });
+    setSt(r); setAuthUrl(''); setPasted('');
+    setMsg({ ok: true, text: 'Connected to the Spotify Web API' });
+  });
+  const disconnect = () => {
+    if (!window.confirm('Forget the Spotify Web API connection? Voice play stops until you connect again. Casting from the Spotify app is unaffected.')) return;
+    run(async () => { await API.post('/api/spotify/web/disconnect', {}); setSt({ state: 'disconnected' }); setAuthUrl(''); });
+  };
+
+  const state = st && st.state;
+  const tone = { connected: 'var(--ok)', expiring: 'var(--warn)', reauth_required: 'var(--error)' }[state] || 'var(--muted)';
+  const headline = !st ? 'Checking…'
+    : state === 'connected' ? 'Connected'
+    : state === 'expiring' ? 'Connected, reconnect soon'
+    : state === 'reauth_required' ? 'Reconnect required'
+    : 'Not connected';
+  const input = { fontFamily: mono, fontSize: 11, padding: '6px 8px', width: '100%', boxSizing: 'border-box' };
+  const connected = state === 'connected' || state === 'expiring';
+  return (
+    <div className="em-panel" style={{ padding:'16px 18px', marginBottom:18 }}>
+      <div className="em-label" style={{ marginBottom:10 }}>Spotify Web API (voice play)</div>
+      <div style={{ fontFamily: mono, fontSize: 11, color: tone, marginBottom: 6 }}>{headline}</div>
+      {st && st.detail && <div style={{ fontFamily: mono, fontSize: 10, color: 'var(--text2)', marginBottom: 8 }}>{st.detail}</div>}
+      {!connected && (
+        <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
+          <input style={input} placeholder="Client ID" value={clientId} onChange={e => setClientId(e.target.value)} spellCheck={false}/>
+          <input style={input} placeholder="Redirect URI" value={redirect} onChange={e => setRedirect(e.target.value)} spellCheck={false}/>
+          <div><Pill small accent disabled={busy || !clientId} onClick={start}>{authUrl ? 'Open Spotify again' : 'Connect…'}</Pill></div>
+          {authUrl && (
+            <>
+              <div style={{ fontFamily: mono, fontSize: 10, color: 'var(--text2)', lineHeight: 1.6 }}>
+                Approve on Spotify. The browser then lands on a page that fails to load; that is expected.
+                Copy its full address from the address bar and paste it here.
+              </div>
+              <textarea style={{ ...input, height: 56 }} placeholder={`${redirect}?code=…&state=…`} value={pasted} onChange={e => setPasted(e.target.value)} spellCheck={false}/>
+              <div><Pill small accent disabled={busy || !pasted} onClick={finish}>Finish</Pill></div>
+            </>
+          )}
+        </div>
+      )}
+      {connected && <div style={{ display:'flex', gap:8 }}>
+        <Pill small disabled={busy} onClick={disconnect}>Disconnect</Pill>
+        {state === 'expiring' && <Pill small disabled={busy} onClick={start}>Reconnect…</Pill>}
+      </div>}
+      {msg && <div style={{ fontFamily: mono, fontSize: 11, marginTop: 8, color: msg.ok ? 'var(--ok)' : 'var(--error)' }}>{msg.text}</div>}
+    </div>
+  );
+}
+
 function SpotifyPanel() {
   const [engine, setEngine]   = useState(null);   // {artefacts, expected, device_dir}
   const [devices, setDevices] = useState([]);
@@ -10680,6 +10760,8 @@ function SpotifyPanel() {
         })}
       </div>
 
+      <SpotifyWeb/>
+
       <div className="em-panel" style={{ padding:'16px 18px', marginBottom:18 }}>
         <div className="em-label" style={{ marginBottom:10 }}>Spotify Developer app (for voice play)</div>
         <div style={{ fontFamily:"'DM Mono',monospace", fontSize:10, color:'var(--text2)', lineHeight:1.7 }}>
@@ -10687,8 +10769,9 @@ function SpotifyPanel() {
           own. Casting from the Spotify app does not.
           <ol style={{ margin:'8px 0 8px 18px', padding:0 }}>
             <li>Open developer.spotify.com/dashboard, sign in with the Premium account and choose Create app.</li>
-            <li>Under Redirect URIs add <code>http://127.0.0.1:8888/callback</code>. Spotify accepts a loopback address over plain http and refuses <code>localhost</code>; nothing listens on it, you paste the address back.</li>
+            <li>Under Redirect URIs add <code>http://127.0.0.1:8888/callback</code>. Spotify accepts a loopback address over plain http and refuses <code>localhost</code>; nothing listens on it, you paste the address back (Connect above).</li>
             <li>Tick Web API, save, and copy the Client ID. The client secret is not needed and is never entered here.</li>
+            <li>Under User Management add the Spotify account you will use. Development mode allows 5 users, and the app owner needs Premium.</li>
           </ol>
           An app in development mode only serves the users you list under User
           Management, and Spotify has narrowed what such apps may call, so the
