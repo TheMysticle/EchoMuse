@@ -31,6 +31,7 @@ var ssPresent, spPresent atomic.Bool
 var sp struct {
 	mu      sync.Mutex
 	p       *spotify.Player
+	failed  *spotify.Player // start refused (engine missing); only its status is kept
 	name    string
 	waiting bool // enabled, but not started yet (wall clock not set)
 	paused  bool // arbitration pause already sent for the current takeover
@@ -127,6 +128,7 @@ func spotifyLinkDown(spk *speaker.PcmSpeaker) {
 	sp.mu.Lock()
 	defer sp.mu.Unlock()
 	sp.waiting = false
+	sp.failed = nil
 	if sp.p == nil {
 		return
 	}
@@ -168,6 +170,9 @@ func applySpotifyConfig(spk *speaker.PcmSpeaker, cc *client.ControlClient, vol d
 		log.Printf("[spotify] engine stopped (config)")
 	}
 	sp.waiting = on
+	if !on || name != sp.name {
+		sp.failed = nil
+	}
 	if !on {
 		firewall.Close(spotify.DefaultZeroconfPort)
 		firewall.CloseUDP(spotify.MDNSPort)
@@ -210,10 +215,12 @@ func startSpotifyLocked(spk *speaker.PcmSpeaker, cc *client.ControlClient, vol d
 		log.Printf("[spotify] engine not started: %v", err)
 		// The status carries "missing" so the dashboard can offer the install.
 		sp.waiting = false
+		sp.failed = p
 		cc.SendSpotifyStatus(p.Status())
 		return
 	}
 	sp.p = p
+	sp.failed = nil
 	spPresent.Store(true)
 	installMusicMux(spk)
 	cc.SendSpotifyStatus(p.Status())
@@ -255,8 +262,14 @@ func spotifyMusic() (active bool, lead time.Duration) {
 }
 
 func spotifyStatus() any {
-	if p := spotifyPlayer(); p != nil {
+	sp.mu.Lock()
+	p, failed := sp.p, sp.failed
+	sp.mu.Unlock()
+	if p != nil {
 		return p.Status()
+	}
+	if failed != nil {
+		return failed.Status()
 	}
 	return nil
 }
