@@ -2456,6 +2456,10 @@ function Detail({ device, token, onClose, onApprove, isAdmin, globalConfig, onDe
                 listen={device.connected ? device.listen : null}
                 wakeCueCapable={!device.connected || !!device.wakeCueCapable}
                 volumeCueCapable={!device.connected || !!device.volumeCueCapable}
+                spotifyCapable={!device.connected || !!device.spotifyCapable}
+                spotifyPanel={device.connected && device.spotifyCapable
+                  ? <SpotifyDevice deviceId={device.device_id} status={device.spotify} isAdmin={isAdmin}/>
+                  : null}
                 sendspinCapable={!device.connected || !!device.sendspinCapable}
                 sendspinPanel={device.connected && device.sendspinCapable
                   ? <SendspinPairing deviceId={device.device_id} status={device.sendspin} isAdmin={isAdmin}/>
@@ -9401,7 +9405,8 @@ function DeviceConfigForm({ config, onChange, disabled, sections, onScopeChange,
                             hwEchoRef = false, hwRefCapable = true,
                             emosFleet = true, wakeCueCapable = true,
                             volumeCueCapable = true, sendspinCapable = true,
-                            sendspinPanel = null, bleConnectCapable = true,
+                            sendspinPanel = null, spotifyCapable = true,
+                            spotifyPanel = null, bleConnectCapable = true,
                             blePanel = null, radarCapable = false }) {
   // radarCapable defaults FALSE, unlike its neighbours above defaulting
   // true: those gate a FIRMWARE capability, where "unknown" should not
@@ -10113,6 +10118,21 @@ function DeviceConfigForm({ config, onChange, disabled, sections, onScopeChange,
             onChange={v => set('sendspinUnpaired', v)}/>
         </div>
       </Stage>
+
+      {/* 08 SPOTIFY */}
+      <Stage n="08" title="Spotify"
+        chips={<ScopeChip tone="device">Device</ScopeChip>}
+        desc="Runs a Spotify Connect speaker on the Echo itself, so the Spotify app can play to it directly with no Music Assistant in between. Needs Spotify Premium and the engine installed from Integrations. Uses an unofficial client, which Spotify's terms do not permit; use an account you can afford to lose. Early Access."
+        scope={scopeEl('spotify')} dim={secStyle('spotify')}
+        after={(config.spotifyEnabled ?? false) ? spotifyPanel : null}>
+        <div className="em-grid2" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 24px', ...inputStyle }}>
+          <Toggle label="Spotify Connect speaker"
+            sub={spotifyCapable ? 'appears in the Spotify app on this network' : 'needs emOS and newer firmware on this Echo'}
+            disabled={!spotifyCapable}
+            value={config.spotifyEnabled ?? false}
+            onChange={v => set('spotifyEnabled', v)}/>
+        </div>
+      </Stage>
     </div>
   );
 }
@@ -10225,6 +10245,66 @@ function SendspinPairing({ deviceId, status, isAdmin }) {
         </div>
       )}
       {token && <div style={{ color: 'var(--muted)', fontSize: 10 }}>In Music Assistant, pair this player with the token. Anyone with it can pair with this Echo.</div>}
+      {error && <div style={{ color: 'var(--error)' }}>{error}</div>}
+    </div>
+  );
+}
+
+
+// spotifyLine: what a device's Spotify state means, in words. "Connected" is
+// said only when the engine runs AND Spotify has accepted a session; a running
+// process alone is never reported as a connection.
+function spotifyLine(s) {
+  if (!s) return { tone: 'muted', text: 'Waiting for the Echo to report' };
+  if (s.engine === 'missing') return { tone: 'error', text: 'Engine not installed on this Echo. Install it from Integrations.' };
+  if (s.engine === 'restarting') return { tone: 'warn', text: `Engine restarting${s.lastError ? ` (${s.lastError})` : ''}` };
+  if (s.engine !== 'running') {
+    if (s.link === 'premium_required') return { tone: 'error', text: s.linkDetail || 'Spotify Premium is required' };
+    return { tone: 'muted', text: s.lastError ? `Engine stopped: ${s.lastError}` : 'Engine stopped' };
+  }
+  if (s.link === 'linked' && s.connected) return { tone: 'ok', text: s.user ? `Connected as ${s.user}` : 'Connected' };
+  if (s.link === 'linked') return { tone: 'warn', text: 'Account linked, connecting to Spotify' };
+  if (s.link === 'awaiting_link' || !s.link) return { tone: 'warn', text: 'Not linked. In the Spotify app, open the device list on the same network and pick this Echo.' };
+  return { tone: 'error', text: s.linkDetail || s.lastError || `Link: ${s.link}` };
+}
+
+function SpotifyDevice({ deviceId, status, isAdmin }) {
+  const mono = "'DM Mono',monospace";
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const send = async (cmd, fields) => {
+    setBusy(true); setError('');
+    try {
+      await API.post(`/api/devices/${deviceId}/spotify/cmd`, { cmd, fields: fields || {} });
+    } catch (e) {
+      setError(e.error || e.message || 'The Echo did not accept that');
+    } finally {
+      setBusy(false);
+    }
+  };
+  const line = spotifyLine(status);
+  const color = { ok: 'var(--ok)', warn: 'var(--warn)', error: 'var(--error)', muted: 'var(--muted)' }[line.tone];
+  const live = status && status.engine === 'running' && status.link === 'linked' && status.connected;
+  const t = live ? status.track : null;
+  const playing = live && status.state === 'playing';
+  return (
+    <div style={{ fontFamily: mono, fontSize: 11, color: 'var(--text2)', display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <div style={{ color }}>{line.text}</div>
+      {t && (
+        <div>{t.name}<span style={{ color: 'var(--muted)' }}> · {(t.artists || []).join(', ')}{t.album ? ` · ${t.album}` : ''}</span></div>
+      )}
+      {isAdmin && live && (
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <Pill small disabled={busy} onClick={() => send('prev')}>Prev</Pill>
+          <Pill small disabled={busy} onClick={() => send(playing ? 'pause' : 'play')}>{playing ? 'Pause' : 'Play'}</Pill>
+          <Pill small disabled={busy} onClick={() => send('next')}>Next</Pill>
+        </div>
+      )}
+      {isAdmin && status && status.link && status.link !== 'awaiting_link' && status.engine !== 'missing' && (
+        <div><Pill small disabled={busy} onClick={() => {
+          if (window.confirm('Forget the Spotify account on this Echo? It will need linking again from the Spotify app.')) send('logout');
+        }}>Disconnect account</Pill></div>
+      )}
       {error && <div style={{ color: 'var(--error)' }}>{error}</div>}
     </div>
   );
