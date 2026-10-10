@@ -167,3 +167,59 @@ func TestPremiumLine(t *testing.T) {
 		t.Fatal("false positive")
 	}
 }
+
+// The volume conversion must be a FIXED POINT in both directions.
+//
+// The level crosses this boundary both ways, so a value that merely passes
+// through and comes back changed is a change nobody made — and librespot
+// echoes a device-set level straight back, so each lap applied the new value
+// and started another. Truncating lost a step on 95 of 101 values, always
+// downward: the volume walked itself down during playback.
+func TestVolumeRoundTripsExactly(t *testing.T) {
+	for pct := 0; pct <= 100; pct++ {
+		if got := U16ToPercent(PercentToU16(pct)); got != pct {
+			t.Errorf("percent %d round-tripped to %d (via u16 %d)",
+				pct, got, PercentToU16(pct))
+		}
+	}
+}
+
+func TestVolumeEndsAreExact(t *testing.T) {
+	// 0 must be silence and 100 must be the top. A near-miss at either end
+	// is a device that cannot be silenced, or cannot reach full volume.
+	if got := PercentToU16(0); got != 0 {
+		t.Errorf("0%% is u16 %d, want 0", got)
+	}
+	if got := PercentToU16(100); got != 65535 {
+		t.Errorf("100%% is u16 %d, want 65535", got)
+	}
+	if got := U16ToPercent(0); got != 0 {
+		t.Errorf("u16 0 is %d%%, want 0", got)
+	}
+	if got := U16ToPercent(65535); got != 100 {
+		t.Errorf("u16 65535 is %d%%, want 100", got)
+	}
+}
+
+func TestVolumeIsClampedRatherThanWrapped(t *testing.T) {
+	// uint16(pct * 65535 / 100) wraps for anything over 100, so a bad value
+	// would come out LOUD rather than merely wrong.
+	for _, pct := range []int{-1, -1000, 101, 1000} {
+		got := PercentToU16(pct)
+		if pct < 0 && got != 0 {
+			t.Errorf("percent %d gave u16 %d, want 0", pct, got)
+		}
+		if pct > 100 && got != 65535 {
+			t.Errorf("percent %d gave u16 %d, want 65535", pct, got)
+		}
+	}
+}
+
+func TestVolumeIsMonotonic(t *testing.T) {
+	// Rounding must not make a higher percentage quieter anywhere.
+	for pct := 1; pct <= 100; pct++ {
+		if PercentToU16(pct) <= PercentToU16(pct-1) {
+			t.Errorf("percent %d is not louder than %d", pct, pct-1)
+		}
+	}
+}

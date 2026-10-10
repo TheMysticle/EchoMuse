@@ -68,6 +68,7 @@ use tokio::net::UnixStream;
 use tokio::sync::{broadcast, mpsc, oneshot, Mutex};
 
 use em_spotify::mixer::{ReportingMixer, VolumeNote};
+use em_spotify::volume::VolumeGate;
 use em_spotify::proto::{Command, Event, LinkStatus, PlayState, Reply, Request};
 use em_spotify::sink::{PeriodSink, SinkNote};
 
@@ -271,14 +272,34 @@ impl Snapshot {
 struct Shared {
     events: broadcast::Sender<Event>,
     snapshot: Mutex<Snapshot>,
+    /// Which volume changes the firmware is told about. See `volume.rs` —
+    /// the rule is "unchanged is not news", and it is what stops a level the
+    /// device set coming back as a Spotify event and looping.
+    volume: VolumeGate,
 }
 
 impl Shared {
     async fn emit(&self, e: Event) {
+        if let Event::Volume { level } = e {
+            // Unchanged is not news, and acting on it is what loops.
+            if !self.volume.should_report(level) {
+                return;
+            }
+        }
         self.snapshot.lock().await.record(&e);
         // A send failure means nothing is subscribed, which is the ordinary
         // state while the firmware is not connected. Not an error.
         let _ = self.events.send(e);
+    }
+
+    /// Record a level that came FROM the firmware, so the echo of it is
+    /// dropped rather than applied.
+    ///
+    /// The snapshot is written too: the firmware already has this value, so
+    /// a later `Status` replay must report it rather than the one before.
+    async fn note_device_volume(&self, level: u16) {
+        self.volume.note_device(level);
+        self.snapshot.lock().await.record(&Event::Volume { level });
     }
 }
 
@@ -287,6 +308,7 @@ async fn run(args: Args) -> Result<(), String> {
     let shared = Arc::new(Shared {
         events: events_tx,
         snapshot: Mutex::new(Snapshot::default()),
+        volume: VolumeGate::default(),
     });
 
     let (job_tx, job_rx) = mpsc::channel::<Job>(32);
@@ -861,7 +883,11 @@ async fn apply(
         Command::Volume { level } => {
             // Stored without reporting back: this level CAME from the
             // device, and echoing it would have the firmware apply its own
-            // change a second time.
+            // change a second time. BOTH of these are needed — the mixer
+            // suppresses its own note, and `note_device_volume` suppresses
+            // the player event that librespot's spirc emits from inside
+            // `set_volume` below, which is the route that actually looped.
+            shared.note_device_volume(level).await;
             mixer.accept_device_level(level);
             spirc.set_volume(level)
         }

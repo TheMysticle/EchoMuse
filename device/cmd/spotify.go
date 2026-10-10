@@ -116,7 +116,11 @@ func installMusicMux(spk *speaker.PcmSpeaker) {
 	}
 }
 
-func pctToU16(pct int) uint16 { return uint16(pct * 65535 / 100) }
+// Spotify's u16 volume against the Echo's 0-100 value. Both directions
+// round and are a fixed point — see internal/spotify/proto.go for why that
+// is load-bearing rather than tidy.
+func pctToU16(pct int) uint16 { return spotify.PercentToU16(pct) }
+func u16ToPct(v uint16) int   { return spotify.U16ToPercent(v) }
 
 func spotifyVolumeChanged(level int) {
 	if p := spotifyPlayer(); p != nil {
@@ -201,7 +205,7 @@ func startSpotifyLocked(spk *speaker.PcmSpeaker, cc *client.ControlClient, vol d
 		ZeroconfPort: spotify.DefaultZeroconfPort,
 		Volume:       pctToU16(levelToPct(vol.VolumeLevel())),
 	})
-	p.OnVolume(func(v uint16) { vol.SetVolume(pctToLevel(int(v) * 100 / 65535)) })
+	p.OnVolume(func(v uint16) { vol.SetVolume(pctToLevel(u16ToPct(v))) })
 	p.OnChange(debounce(300*time.Millisecond, func() { cc.SendSpotifyStatus(p.Status()) }))
 	if ferr := firewall.Open(spotify.DefaultZeroconfPort); ferr != nil {
 		log.Printf("[spotify] could not open port %d: %v", spotify.DefaultZeroconfPort, ferr)

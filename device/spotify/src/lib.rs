@@ -20,6 +20,7 @@
 
 pub mod proto;
 pub mod resample;
+pub mod volume;
 
 // The librespot-facing halves. Behind the feature so the pure modules above
 // can be tested on the host without cross-compiling 300 crates.
