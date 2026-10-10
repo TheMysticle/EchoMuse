@@ -26,30 +26,41 @@ var run = func(bin string, args ...string) error {
 
 var tools = []string{"iptables", "ip6tables"}
 
-func rule(port int) []string {
-	return []string{"INPUT", "-p", "tcp", "--dport", strconv.Itoa(port), "-j", "ACCEPT"}
+func rule(proto string, port int) []string {
+	return []string{"INPUT", "-p", proto, "--dport", strconv.Itoa(port), "-j", "ACCEPT"}
 }
 
 // Open admits inbound TCP to port. Idempotent: it checks before inserting,
 // so a firmware restart does not stack duplicates.
-func Open(port int) error {
+func Open(port int) error { return open("tcp", port) }
+
+// Close removes every copy of the rule, including one added by hand.
+// Closing a port that is not open does nothing.
+func Close(port int) { closeRule("tcp", port) }
+
+// OpenUDP and CloseUDP are the same for UDP. Spotify's zeroconf discovery
+// needs it: a phone's mDNS query for the Echo arrives at UDP 5353, and the
+// filter drops it unless the advert it answers was multicast within the
+// last moments.
+func OpenUDP(port int) error { return open("udp", port) }
+func CloseUDP(port int)      { closeRule("udp", port) }
+
+func open(proto string, port int) error {
 	var errs []error
 	for _, t := range tools {
-		if run(t, append([]string{"-C"}, rule(port)...)...) == nil {
+		if run(t, append([]string{"-C"}, rule(proto, port)...)...) == nil {
 			continue
 		}
-		if err := run(t, append([]string{"-I"}, rule(port)...)...); err != nil && !missing(err) {
+		if err := run(t, append([]string{"-I"}, rule(proto, port)...)...); err != nil && !missing(err) {
 			errs = append(errs, err)
 		}
 	}
 	return errors.Join(errs...)
 }
 
-// Close removes every copy of the rule, including one added by hand.
-// Closing a port that is not open does nothing.
-func Close(port int) {
+func closeRule(proto string, port int) {
 	for _, t := range tools {
-		for i := 0; i < 8 && run(t, append([]string{"-D"}, rule(port)...)...) == nil; i++ {
+		for i := 0; i < 8 && run(t, append([]string{"-D"}, rule(proto, port)...)...) == nil; i++ {
 		}
 	}
 }

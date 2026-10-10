@@ -98,3 +98,22 @@ func TestCloseWithNothingOpenIsQuiet(t *testing.T) {
 		t.Fatalf("calls = %v, want one -D per tool", f.calls)
 	}
 }
+
+func TestUDPRuleIsSeparateFromTCP(t *testing.T) {
+	f := &fake{}
+	install(t, f)
+	if err := OpenUDP(5353); err != nil {
+		t.Fatal(err)
+	}
+	if f.rules["iptables INPUT -p udp --dport 5353 -j ACCEPT"] != 1 {
+		t.Fatalf("udp rule not inserted: %v", f.rules)
+	}
+	Close(5353) // the TCP close must not remove the UDP rule
+	if f.rules["iptables INPUT -p udp --dport 5353 -j ACCEPT"] != 1 {
+		t.Fatal("Close(tcp) removed a udp rule")
+	}
+	CloseUDP(5353)
+	if f.rules["iptables INPUT -p udp --dport 5353 -j ACCEPT"] != 0 {
+		t.Fatal("CloseUDP left the rule")
+	}
+}
