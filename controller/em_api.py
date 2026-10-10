@@ -2254,6 +2254,18 @@ async def _install_spotify_engine(live, device_id: str, plan: list[str],
 
 async def _install_spotify_engine_locked(live, device_id: str, plan: list[str],
                                          stored: dict) -> None:
+    # The destination directory first, and this is not belt-and-braces.
+    # `_stream_file_to_device` probes that the directory EXISTS before it
+    # sends, because the heredoc writes with `>` and a write into a missing
+    # directory fails with `TRANSFER_OK` never arriving — which used to cost
+    # the transfer its whole timeout while holding the device's shell lock.
+    # The probe makes that fail fast instead of hanging, but nothing creates
+    # the directory, so without this every first install on a device fails:
+    # /data/local/share/echomuse exists for the wake word assets, and
+    # `spotify` under it does not. `reconcile_oww_assets` does the same thing
+    # for the same reason.
+    await _shell_run(live, f"mkdir -p {_sh_quote(em_spotify_assets.DEVICE_DIR)}")
+
     directory = em_spotify_assets.assets_dir()
     for name in plan:
         dest = em_spotify_assets.device_path(name)

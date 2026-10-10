@@ -10462,10 +10462,33 @@ function SpotifyPanel() {
       if (r.already_current) {
         setMsg({ ok: true, text: `${d.label} already has it` });
       } else {
-        setMsg({ ok: true, text: `Installing ${(r.installing || []).join(', ')} on ${d.label}…` });
-        // The push runs as a background task behind the OTA lock, so the
-        // answer arrives later. Re-read rather than claim success.
-        setTimeout(() => refreshDevice(id), 4000);
+        const want = r.installing || [];
+        setMsg({ ok: true, text: `Installing ${want.join(', ')} on ${d.label}…` });
+        // The push is a background task behind the OTA lock, so the answer
+        // arrives later and the only honest thing to do is re-read until it
+        // does. Poll rather than one timeout: a queued device waits on
+        // another device's transfer, and a single check that lands early
+        // used to leave this sitting on "Installing…" for ever whether it
+        // had worked or failed.
+        let settled = false;
+        for (let i = 0; i < 8 && !settled; i++) {
+          await new Promise(res => setTimeout(res, 2500));
+          let st = null;
+          try { st = await API.get(`/api/devices/${id}/spotify/engine`); } catch { /* retry */ }
+          if (st) {
+            setPerDevice(p => ({ ...p, [id]: st }));
+            if (st.installed && want.every(n => st.installed[n])) {
+              setMsg({ ok: true, text: `${want.join(', ')} installed on ${d.label}` });
+              settled = true;
+            }
+          }
+        }
+        if (!settled) {
+          // Named as unfinished rather than failed: the transfer may still
+          // be queued behind another device. The device's own Logs tab is
+          // where the reason lands, so point at it instead of guessing.
+          setMsg({ ok: false, text: `Install on ${d.label} did not complete — check that device's Logs tab` });
+        }
       }
     } catch (e) { setMsg({ ok: false, text: e.error || 'Install failed' }); }
     finally { setBusy(b => ({ ...b, [id]: false })); }
