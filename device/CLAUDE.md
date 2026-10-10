@@ -1344,6 +1344,70 @@ controller — no plaintext passes through the firmware. The rest of the design,
 including why hashing is worth it when deleting the file defeats it, is in
 `controller/CLAUDE.md`.
 
+## On-device Spotify Connect (`device/spotify/`, Rust)
+
+**The Echo fetches its own Spotify audio.** `em-spotify` is librespot 0.8.0
+as a library, wrapped so the Go firmware drives it over a unix socket and
+takes 48kHz S16LE periods on a second one — which is exactly what
+`PcmSpeaker.MusicSource` wants, so ducking, the output chain and the volume
+law all apply with no new plane and no new frame type.
+
+It is device-side because the controller-fed path pays for every link
+stall: this fleet measures 4.6–7.1% loss, TCP's ordering turns one lost
+segment into a multi-second application stall, and `em_player`'s 4s pacing
+lead is described in its own source as "MITIGATION, not a cure". librespot's
+prefetch sits between the network and the speaker instead.
+
+**Proven on hardware 2026-10-10**, Bedroom (Radar, emOS, FireOS 6 32-bit
+kernel), with `em-spotify-probe`: the static binary executes, DNS resolves
+through emOS's `/etc/resolv.conf` in 3ms, and rustls completes a TLS 1.3
+handshake to `apresolve.spotify.com` (AES-256-GCM, 200 OK, 156ms total).
+Those were the three risks and all three are retired.
+
+Six things that are load-bearing, each of which fails silently otherwise:
+
+- **musl, not the NDK, and therefore emOS only.** bionic resolves through
+  Android's property service, which emOS does not provide, so an NDK build
+  has no DNS here; emOS's init writes `/etc/resolv.conf` from the default
+  gateway and musl reads it. This is INVERTED on FireOS, which has no such
+  file and whose `/etc` is a symlink into read-only `/system/etc` — so the
+  feature is gated on `base_os: emos` and a FireOS device keeps
+  controller-fed music. `emos/tools/build-busybox.sh` reached the same
+  conclusion for the same reason, and its static musl busybox is the
+  evidence such a binary runs at all.
+- **ET_EXEC, not a static PIE.** Rust's musl targets can emit a PIE, which
+  this kernel would have to self-relocate; build-busybox.sh passes `-no-pie`
+  and calls ET_EXEC "the shape already proven on these devices".
+  `compile.sh` asserts no INTERP, ET_EXEC and ARM with the same three
+  readelf checks, and `em_spotify_assets.describe_binary` re-checks them
+  controller-side before an upload is stored — a PIE has no PT_INTERP, so
+  without that check it would pass as "static".
+- **librespot's rate is a compile-time constant** (`SAMPLE_RATE: u32 =
+  44100`, no runtime option anywhere in the crate), so the sink resamples
+  160/147 to 48k. Exact ratio, integer phase, no drift.
+- **The mixer attenuates nothing.** The Echo applies volume in its own write
+  loop and on Radar does so AHEAD of the output chain, so a second gain law
+  here would play at the square of the intended volume and select the wrong
+  loudness curve. `accept_device_level` stores a level that came FROM the
+  device without echoing it back, or the two ends chase each other.
+- **A free account kills the process.** `Session::check_catalogue` calls
+  `exit(1)` when the access point pushes user attributes — a second or so
+  after a successful login, with no hook to intercept. The daemon reads the
+  account type itself and reports `premium_required` cleanly; the firmware
+  must match librespot's own stderr line as the backstop for the race where
+  librespot exits first.
+- **The engine is NOT in the firmware OTA.** ~4MB would double every
+  update's payload across both A/B slots whether or not Spotify changed —
+  the reasoning that keeps the ONNX runtime out. It is uploaded on the
+  dashboard's Integrations tab and pushed over the shell plane, md5-verified,
+  into `/data/local/share/echomuse/spotify`. That directory must be
+  `mkdir -p`'d first: the transfer probes that the destination directory
+  exists and nothing else creates this one.
+
+Build with `device/spotify/compile.sh` (pinned Rust cross image, by digest).
+Pure modules test on the host with no librespot in the graph:
+`cargo test --lib --no-default-features --target x86_64-unknown-linux-gnu`.
+
 ## cgo dependency
 
 SpeexDSP C source (AEC) is vendored in `device/internal/aec/`. `internal/bindings/mixer` links the device's own `libtinyalsa.so` (see the mixer section for the symbol rule). The compiler Docker image provides the ARM cross-toolchain. If adding new cgo dependencies, they must compile cleanly with the `echomuse-compiler` image against the FireOS 5 sysroot.
