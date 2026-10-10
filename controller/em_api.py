@@ -5347,6 +5347,35 @@ async def _collect_crash_log(live, device_id: str) -> None:
     await _shell_run(live, f"echo {md5} > {seen}")
 
 
+async def _sync_spotify_engine(live, device_id: str) -> None:
+    """
+    On connect: install the stored Spotify engine when this device wants it.
+
+    emOS only (the caller gates it), and only when `spotifyEnabled` is on and
+    the controller holds an engine. Failure to LOOK is not evidence of
+    absence: a shell plane that is not up yet changes nothing.
+    """
+    loop = asyncio.get_event_loop()
+    effective = await loop.run_in_executor(
+        None, db.get_effective_device_config, device_id
+    )
+    if not effective.get("spotifyEnabled"):
+        return
+    stored = {n: a.md5 for n, a in _stored_spotify_artefacts().items()}
+    # The probe is a diagnostic; only the engine is installed unattended.
+    wanted = (em_spotify_assets.ENGINE,)
+    if not any(n in stored for n in wanted):
+        return
+    on_device, answered = await _device_spotify_md5s(live)
+    if not answered:
+        return
+    plan = em_spotify_assets.plan_install(stored, on_device, wanted)
+    if not plan:
+        return
+    log.info(f"[api] [{device_id}] Spotify engine out of date — installing")
+    await _install_spotify_engine(live, device_id, plan, _stored_spotify_artefacts())
+
+
 async def reconcile_on_connect(device_id: str, live) -> None:
     """
     Bring a freshly-connected device's three installed payloads back in line.
@@ -5409,6 +5438,8 @@ async def reconcile_on_connect(device_id: str, live) -> None:
     # why absence keeps today's behaviour.
     if live.android_userspace:
         steps.append(("debloat", lambda: _sync_debloat(live, device_id)))
+    else:
+        steps.append(("spotify engine", lambda: _sync_spotify_engine(live, device_id)))
     for name, make in steps:
         # Re-read each time, and compare IDENTITY rather than presence: these
         # take seconds, and a device that dropped and redialled part-way

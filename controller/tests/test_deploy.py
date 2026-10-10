@@ -3066,3 +3066,22 @@ def test_asset_installs_queue_behind_the_ota_lock():
                if name not in ("_sync_oww_assets", "_sync_oww_assets_locked")
                and "_sync_oww_assets_locked(" in ast.unparse(fn)]
     assert not callers, f"unlocked asset sync called from {callers}"
+
+
+def test_spotify_engine_reconciles_on_connect_for_emos_only():
+    src = (CONTROLLER / "em_api.py").read_text()
+    tree = ast.parse(src)
+    fns = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef)}
+
+    rec = ast.unparse(fns["reconcile_on_connect"])
+    branch = rec[rec.index("if live.android_userspace:\n        steps.append"):]
+    assert "_sync_spotify_engine" in branch.split("else:")[1], (
+        "the Spotify engine is emOS-only: it must sit in the else of the "
+        "android_userspace branch")
+    assert "_sync_spotify_engine" not in branch.split("else:")[0]
+
+    fn = ast.unparse(fns["_sync_spotify_engine"])
+    assert "spotifyEnabled" in fn
+    assert "answered" in fn, "failure to look is not evidence of absence"
+    assert "ENGINE" in fn and "ARTEFACTS" not in fn, (
+        "only the engine is installed unattended, never the probe")
