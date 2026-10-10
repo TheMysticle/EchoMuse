@@ -5,9 +5,11 @@
 //! same way it drives its ALSA backend. That is deliberate rather than
 //! convenient: librespot's own comment on the player thread says
 //!
-//!     "While PlayerInternal is written as a future, it still contains
-//!      blocking code. It must be run by using block_on() in a dedicated
-//!      thread."
+//! ```text
+//! "While PlayerInternal is written as a future, it still contains
+//!  blocking code. It must be run by using block_on() in a dedicated
+//!  thread."
+//! ```
 //!
 //! so a blocking write here is the contract, not a hazard — the player has
 //! a thread and a runtime of its own, and blocking it is how every backend

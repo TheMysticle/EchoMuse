@@ -28,6 +28,11 @@ name = "em_spotify"
 path = "src/lib.rs"
 
 [[bin]]
+name = "em-spotify"
+path = "src/main.rs"
+required-features = ["librespot"]
+
+[[bin]]
 name = "em-spotify-probe"
 path = "src/probe.rs"
 required-features = ["librespot"]
@@ -48,6 +53,10 @@ librespot = [
     "dep:rustls",
     "dep:rustls-pki-types",
     "dep:webpki-roots",
+    "dep:tokio",
+    "dep:futures-util",
+    "dep:log",
+    "dep:env_logger",
 ]
 
 [dependencies]
@@ -74,6 +83,16 @@ librespot-metadata = { optional = true, version = "0.8.0", default-features = fa
 # itself is synchronous, so it declares no runtime of its own.
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+# The daemon's runtime. `rt-multi-thread` because librespot's session, the
+# Connect state machine and two sockets share this runtime; the player runs
+# on a thread of its own regardless.
+tokio = { version = "1", optional = true, default-features = false, features = [
+    "rt-multi-thread", "net", "io-util", "macros", "time", "sync",
+] }
+futures-util = { version = "0.3", optional = true, default-features = false }
+log = { version = "0.4", optional = true }
+env_logger = { version = "0.11", optional = true, default-features = false, features = ["humantime"] }
 
 rustls = { optional = true, version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-pki-types = { version = "1", optional = true }

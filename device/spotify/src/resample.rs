@@ -12,7 +12,9 @@
 //! The ratio is exact and that is worth stating, because it is the reason
 //! this is a fixed polyphase filter rather than an interpolating one:
 //!
-//!     44100 / 147 = 300,  300 * 160 = 48000
+//! ```text
+//! 44100 / 147 = 300,  300 * 160 = 48000
+//! ```
 //!
 //! so L = 160, M = 147, with no drift and no fractional accumulator. A
 //! resampler that tracked a floating-point position would introduce a slow
@@ -26,7 +28,9 @@
 //! reads input position `n*M/L`, so it uses phase `p = (n*M) mod L` of the
 //! prototype filter against the input frames ending at `floor(n*M/L)`:
 //!
-//!     y[n] = sum(i in 0..T) h[p + i*L] * x[base - i]
+//! ```text
+//! y[n] = sum(i in 0..T) h[p + i*L] * x[base - i]
+//! ```
 //!
 //! Each output therefore costs T multiply-accumulates per channel rather
 //! than N, where T = N/L.
@@ -51,9 +55,11 @@ pub const M: usize = 147;
 /// Sized from the Kaiser design equation rather than chosen: for a 90dB
 /// stopband and a transition from 19.5kHz to the 22.05kHz Nyquist,
 ///
-///     N = (A - 8) / (2.285 * 2*pi * df/fs)
-///       = (90 - 8) / (2.285 * 2*pi * 2550/7056000)
-///       = 15806
+/// ```text
+/// N = (A - 8) / (2.285 * 2*pi * df/fs)
+///   = (90 - 8) / (2.285 * 2*pi * 2550/7056000)
+///   = 15806
+/// ```
 ///
 /// rounded up to a whole number of phases, 16000 = 160 * 100. The passband
 /// edge is deliberate: a 320kbps Vorbis stream carries little above 20kHz,
