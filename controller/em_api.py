@@ -84,6 +84,7 @@ import em_wifi
 import em_endpoints
 import em_scenes
 import em_shadow
+import em_spotify_assets
 import em_support
 from version import VERSION as CONTROLLER_VERSION
 from version import compare as _compare_versions
@@ -444,6 +445,18 @@ async def create_app() -> web.Application:
     app.router.add_get("/api/devices/{id}/shell",         _ws_shell)
     app.router.add_get("/api/devices/{id}/oww_assets",    _get_oww_assets)
     app.router.add_post("/api/devices/{id}/oww_assets",   _post_oww_assets)
+
+    # On-device Spotify Connect engine (device/spotify/). Uploaded here
+    # rather than shipped in the firmware: the engine is ~4MB and an OTA
+    # writes both A/B slots, so folding it in would double every update's
+    # payload whether or not Spotify changed — the reasoning that keeps the
+    # ONNX runtime out of the firmware too.
+    app.router.add_get("/api/spotify/engine",                _get_spotify_engine)
+    app.router.add_post("/api/spotify/engine/upload",        _post_spotify_engine_upload)
+    app.router.add_delete("/api/spotify/engine/{name}",      _delete_spotify_engine)
+    app.router.add_get("/api/devices/{id}/spotify/engine",   _get_device_spotify_engine)
+    app.router.add_post("/api/devices/{id}/spotify/engine",  _post_device_spotify_engine)
+    app.router.add_post("/api/devices/{id}/spotify/probe",   _post_device_spotify_probe)
 
     # Releases
     app.router.add_get("/api/releases/latest",   _get_latest_release)
@@ -1974,6 +1987,348 @@ async def _delete_oww_model(request: web.Request) -> web.Response:
     path.unlink()
     log.info(f"[api] Wake model deleted: {fname}")
     return _ok({"deleted": fname})
+
+
+# ─── On-device Spotify Connect engine ────────────────────────────────────────
+#
+# The binaries built by device/spotify/compile.sh. They reach the controller
+# by upload and each device over the shell plane, md5-verified, the same path
+# the wake word runtime takes — and for the same reason: ~4MB folded into the
+# firmware would double every OTA's payload across both A/B slots whether or
+# not Spotify changed.
+
+
+def _stored_spotify_artefacts() -> dict[str, em_spotify_assets.Artefact]:
+    """Artefacts in the data volume, keyed by name."""
+    directory = em_spotify_assets.assets_dir()
+    found: dict[str, em_spotify_assets.Artefact] = {}
+    for name in em_spotify_assets.ARTEFACTS:
+        path = directory / name
+        if not path.is_file():
+            continue
+        data = path.read_bytes()
+        found[name] = em_spotify_assets.Artefact(
+            name=name, size=len(data), md5=em_spotify_assets.md5_hex(data)
+        )
+    return found
+
+
+@auth.require_auth
+async def _get_spotify_engine(request: web.Request) -> web.Response:
+    """
+    GET /api/spotify/engine
+
+    What the controller holds, and where it will install it.
+    """
+    stored = _stored_spotify_artefacts()
+    return _ok({
+        "artefacts":  [a.as_json() for a in stored.values()],
+        "expected":   list(em_spotify_assets.ARTEFACTS),
+        "device_dir": em_spotify_assets.DEVICE_DIR,
+    })
+
+
+@auth.require_admin
+async def _post_spotify_engine_upload(request: web.Request) -> web.Response:
+    """
+    POST /api/spotify/engine/upload (multipart: field name "binary")
+
+    Store a locally built `em-spotify` or `em-spotify-probe`.
+
+    The upload is validated by ELF HEADER rather than filename. Every way of
+    getting this wrong — a host build, a 64-bit build, a PIE, a dynamically
+    linked build, a truncated transfer — produces the SAME symptom on the
+    device, a process that exits immediately, and the header is the only
+    thing that distinguishes them while the operator is still looking at the
+    dashboard. `em_spotify_assets.validate_upload` names which one it is.
+    """
+    try:
+        reader = await request.multipart()
+        field  = await reader.next()
+        if field is None or field.name != "binary":
+            return _error("invalid_upload", "Expected multipart field 'binary'", 400)
+        data = await field.read()
+        try:
+            name = em_spotify_assets.validate_upload(field.filename or "", data)
+        except em_spotify_assets.BadArtefact as e:
+            # 400 and the reason verbatim: this is an operator who has just
+            # built something, and the message is what tells them which
+            # build step to repeat.
+            return _error("bad_artefact", str(e), 400)
+
+        directory = em_spotify_assets.assets_dir()
+        directory.mkdir(parents=True, exist_ok=True)
+        # tmp + rename, so a push that reads the file concurrently can never
+        # see a half-written binary — the same discipline as a wake model.
+        fd, tmp_path = tempfile.mkstemp(dir=directory, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "wb") as f:
+                f.write(data)
+            os.replace(tmp_path, directory / name)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_path)
+            raise
+
+        md5 = em_spotify_assets.md5_hex(data)
+        log.info(f"[api] Spotify artefact stored: {name} "
+                 f"({len(data):,} bytes, md5 {md5[:8]}…)")
+        return _ok({"artefact": {"name": name, "size": len(data), "md5": md5}},
+                   status=201)
+    except web.HTTPException:
+        # aiohttp's own, raised by the transport before this handler sees a
+        # byte. The middleware re-raises these deliberately; swallowing one
+        # into a 500 is how a size limit presented as "an internal error".
+        raise
+    except Exception as e:
+        log.error(f"[api] Spotify artefact upload error: {e}")
+        return _error("upload_failed", str(e), 500)
+
+
+@auth.require_admin
+async def _delete_spotify_engine(request: web.Request) -> web.Response:
+    """
+    DELETE /api/spotify/engine/{name}
+
+    Remove a stored artefact. Does not touch any device: a device keeps
+    running what it has, which is the right behaviour for a control that
+    only says what the controller will hand out next.
+    """
+    name = em_spotify_assets.safe_artefact_name(request.match_info["name"])
+    if name is None:
+        return _error("not_found", "No such artefact", 404)
+    path = em_spotify_assets.assets_dir() / name
+    if not path.is_file():
+        return _error("not_found", "No such artefact", 404)
+    path.unlink()
+    log.info(f"[api] Spotify artefact deleted: {name}")
+    return _ok({"deleted": name})
+
+
+async def _device_spotify_md5s(live) -> tuple[dict[str, str], bool]:
+    """
+    md5 of each artefact on the device, and whether the shell answered.
+
+    The second value is load-bearing: `_shell_run` swallows every exception
+    and returns "", so an absent file and a device that never answered are
+    the same string — and read as "out of date" either way. Seconds after a
+    connect the shell plane is very likely not up yet, so a push on that
+    evidence is a pointless transfer and a user-visible claim that is
+    untrue. Same `_SHELL_OK` sentinel as `_sync_start_script`, for the same
+    reason.
+    """
+    names = " ".join(
+        _sh_quote(em_spotify_assets.device_path(n))
+        for n in em_spotify_assets.ARTEFACTS
+    )
+    out = await _shell_run(
+        live, f"busybox md5sum {names} 2>/dev/null; echo {_SHELL_OK}"
+    )
+    if _SHELL_OK not in out:
+        return {}, False
+
+    found: dict[str, str] = {}
+    for line in out.splitlines():
+        parts = line.split()
+        # busybox prints "<hash>  <path>". No `cut`: the branch where
+        # busybox is absent is exactly the branch where `busybox cut` is
+        # absent too.
+        if len(parts) >= 2 and len(parts[0]) == 32:
+            base = _posixpath.basename(parts[1])
+            if base in em_spotify_assets.ARTEFACTS:
+                found[base] = parts[0].lower()
+    return found, True
+
+
+@auth.require_auth
+async def _get_device_spotify_engine(request: web.Request) -> web.Response:
+    """
+    GET /api/devices/{id}/spotify/engine
+
+    What this device has installed, and what would be pushed.
+    """
+    device_id = request.match_info["id"]
+    live = _devices.get(device_id)
+    if live is None:
+        return _error("device_offline", f"Device not connected: {device_id}", 409)
+
+    stored = {n: a.md5 for n, a in _stored_spotify_artefacts().items()}
+    on_device, answered = await _device_spotify_md5s(live)
+    return _ok({
+        "stored":    stored,
+        "installed": on_device if answered else None,
+        "pending":   em_spotify_assets.plan_install(stored, on_device)
+                     if answered else None,
+        "shell_answered": answered,
+    })
+
+
+@auth.require_admin
+async def _post_device_spotify_engine(request: web.Request) -> web.Response:
+    """
+    POST /api/devices/{id}/spotify/engine
+
+    Install the stored artefacts on this device. Body may carry
+    `{"only": ["em-spotify-probe"]}` to push one of them, and `{"force":
+    true}` to re-push something whose md5 already matches.
+    """
+    device_id = request.match_info["id"]
+    live = _devices.get(device_id)
+    if live is None:
+        return _error("device_offline", f"Device not connected: {device_id}", 409)
+
+    body = {}
+    with contextlib.suppress(Exception):
+        body = await request.json()
+    force = bool(body.get("force"))
+    only = body.get("only")
+    wanted = em_spotify_assets.ARTEFACTS
+    if only is not None:
+        if not isinstance(only, list) or not all(isinstance(x, str) for x in only):
+            return _error("bad_request", "`only` must be a list of names", 400)
+        unknown = [x for x in only if x not in em_spotify_assets.ARTEFACTS]
+        if unknown:
+            return _error("bad_request", f"Unknown artefact: {unknown[0]}", 400)
+        wanted = tuple(n for n in em_spotify_assets.ARTEFACTS if n in only)
+
+    stored = _stored_spotify_artefacts()
+    if not any(n in stored for n in wanted):
+        return _error(
+            "nothing_stored",
+            "No Spotify engine has been uploaded yet — build it with "
+            "device/spotify/compile.sh and upload it on the Integrations tab.",
+            409)
+
+    md5s = {n: a.md5 for n, a in stored.items()}
+    on_device, answered = await _device_spotify_md5s(live)
+    if not answered:
+        # Failure to LOOK is not evidence of absence. Refused rather than
+        # pushed blind, because the shell plane is usually just not up yet
+        # and the retry costs the operator one click.
+        return _error(
+            "shell_unavailable",
+            "The device's shell plane did not answer, so what it already has "
+            "is unknown. Try again in a few seconds.",
+            503)
+
+    plan = list(wanted) if force else em_spotify_assets.plan_install(
+        md5s, on_device, wanted)
+    plan = [n for n in plan if n in stored]
+    if not plan:
+        return _ok({"installed": [], "already_current": True})
+
+    em_tasks.spawn(_install_spotify_engine(live, device_id, plan, stored))
+    return _ok({"started": True, "installing": plan}, status=202)
+
+
+async def _install_spotify_engine(live, device_id: str, plan: list[str],
+                                  stored: dict) -> None:
+    """
+    Push the planned artefacts, serialised behind `_ota_lock`.
+
+    Takes the same lock as a firmware OTA and a wake word asset install, for
+    the reason documented there: these all move megabytes over one device's
+    shell plane on the event loop that also sends speaker periods and LED
+    frames, so three at once stalled that loop for 11.1 seconds. A device
+    answering somebody must not pay for a device being set up.
+    """
+    _updates_queued.add(device_id)
+    try:
+        await _ota_lock.acquire()
+    finally:
+        _updates_queued.discard(device_id)
+
+    try:
+        await asyncio.wait_for(
+            _install_spotify_engine_locked(live, device_id, plan, stored),
+            timeout=OTA_MAX_HOLD_S,
+        )
+    except asyncio.TimeoutError:
+        log.error(f"[{device_id}] Spotify engine install abandoned after "
+                  f"{OTA_MAX_HOLD_S:.0f}s so the queue could continue")
+        em_dbwriter.submit(db.log_device, device_id, "error", "controller",
+                           "Spotify engine install timed out")
+    finally:
+        _ota_lock.release()
+
+
+async def _install_spotify_engine_locked(live, device_id: str, plan: list[str],
+                                         stored: dict) -> None:
+    directory = em_spotify_assets.assets_dir()
+    for name in plan:
+        dest = em_spotify_assets.device_path(name)
+        data = (directory / name).read_bytes()
+        # require_verify=True: this is a binary we are about to execute, so
+        # an unverifiable transfer is refused rather than accepted with a
+        # warning. Firmware passes True for the same reason — a corrupt
+        # binary and a broken one produce the same observable, and the
+        # mismatch has to be caught before anything runs it.
+        res = await _stream_file_to_device(live, data, dest, mode="755",
+                                           require_verify=True)
+        if not res:
+            log.error(f"[{device_id}] Spotify {name} transfer failed at "
+                      f"{getattr(res, 'stage', 'unknown')}: {res}")
+            em_dbwriter.submit(db.log_device, device_id, "error", "controller",
+                               f"Spotify {name} install failed: {res}")
+            # Carry on with the rest. The probe failing must not stop the
+            # engine, and vice versa — unrelated payloads, the rule the
+            # connect-time reconcile already follows.
+            continue
+        log.info(f"[{device_id}] Spotify {name} installed "
+                 f"({len(data):,} bytes)")
+        em_dbwriter.submit(db.log_device, device_id, "info", "controller",
+                           f"Spotify {name} installed")
+
+
+@auth.require_admin
+async def _post_device_spotify_probe(request: web.Request) -> web.Response:
+    """
+    POST /api/devices/{id}/spotify/probe
+
+    Run the feasibility probe on the device and return what it printed.
+
+    Admin because it executes a binary over the root shell. The probe itself
+    writes nothing, changes no mixer control and opens no listening socket
+    (device/spotify/src/probe.rs), so it is safe beside the running server —
+    but "the operator asked for this" is the only reason it should ever run.
+    """
+    device_id = request.match_info["id"]
+    live = _devices.get(device_id)
+    if live is None:
+        return _error("device_offline", f"Device not connected: {device_id}", 409)
+
+    path = em_spotify_assets.device_path(em_spotify_assets.PROBE)
+    # Sentinel so "the probe printed nothing" and "the shell never answered"
+    # are different findings. Without it a device whose shell was down would
+    # read as a probe that failed silently, which points the investigation at
+    # the binary instead of at the link.
+    out = await _shell_run(
+        live,
+        f"if [ -x {_sh_quote(path)} ]; then {_sh_quote(path)} 2>&1; "
+        f"else echo __EM_NO_PROBE__; fi; echo {_SHELL_OK}",
+        timeout=60.0,
+    )
+    if _SHELL_OK not in out:
+        return _error(
+            "shell_unavailable",
+            "The device's shell plane did not answer. Try again in a few "
+            "seconds.",
+            503)
+    text = out.split(_SHELL_OK)[0].strip()
+    if "__EM_NO_PROBE__" in text:
+        return _error(
+            "not_installed",
+            f"The probe is not installed at {path}. Upload it on the "
+            f"Integrations tab and press Install.",
+            409)
+
+    # The probe exits non-zero on a failed check, but `_shell_run` does not
+    # carry an exit status — so the verdict comes from the probe's own last
+    # line, which it prints precisely so this is readable rather than
+    # inferred.
+    passed = "PASS" in text.splitlines()[-1] if text else False
+    log.info(f"[{device_id}] Spotify probe: {'pass' if passed else 'fail'}")
+    return _ok({"output": text, "passed": passed})
 
 
 # ─── OTA background tasks ─────────────────────────────────────────────────────

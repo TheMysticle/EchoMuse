@@ -10369,6 +10369,228 @@ function DeployAllModal({ release, devices, deployState, onStarted, onDismiss, o
 // ─── SettingsPanel ─────────────────────────────────────────────────────────────
 // Gear icon → modal with two tabs: Fleet Config and Account.
 
+// ─── Integrations → Spotify ───────────────────────────────────────────────────
+//
+// The on-device Spotify Connect engine (device/spotify/). Uploaded here
+// rather than shipped in the firmware: ~4MB folded into an OTA would double
+// every update's payload across both A/B slots whether or not Spotify
+// changed, which is why the wake word runtime travels this path too.
+//
+// Status comes from the DEVICE, never from what the controller holds. A
+// stored binary says what will be handed out next and nothing about what any
+// Echo is running — the same distinction the wake word asset panel draws.
+// Sizes here span 884KB (the probe) to ~4MB (the engine), so a fixed MB
+// unit would print "0.9 MB" for one of the two things on the panel.
+function fmtBytes(n) {
+  if (!Number.isFinite(n)) return '—';
+  return n >= 1024 * 1024
+    ? `${(n / 1024 / 1024).toFixed(1)} MB`
+    : `${Math.round(n / 1024)} KB`;
+}
+
+function SpotifyPanel() {
+  const [engine, setEngine]   = useState(null);   // {artefacts, expected, device_dir}
+  const [devices, setDevices] = useState([]);
+  const [perDevice, setPerDevice] = useState({}); // id -> {installed, pending, shell_answered}
+  const [busy, setBusy]       = useState({});     // id|'upload' -> true
+  const [probe, setProbe]     = useState(null);   // {device, label, output, passed}
+  const [msg, setMsg]         = useState(null);   // {ok, text}
+  const fileRef = useRef(null);
+
+  const loadEngine = useCallback(async () => {
+    try { setEngine(await API.get('/api/spotify/engine')); }
+    catch (e) { setMsg({ ok: false, text: e.error || 'Could not read the engine store' }); }
+  }, []);
+
+  const loadDevices = useCallback(async () => {
+    try {
+      // A bare ARRAY, not {devices: [...]}. Reading `.devices` off it is
+      // undefined, and `|| []` then makes that an empty list on every pass —
+      // the shape mismatch that cost the wizard three rewrites of a
+      // predicate that was never evaluated.
+      const all = await API.get('/api/devices');
+      setDevices((all || []).filter(d => d.approved && d.connected));
+    } catch (e) { /* leave the list empty; the message below covers it */ }
+  }, []);
+
+  useEffect(() => { loadEngine(); loadDevices(); }, [loadEngine, loadDevices]);
+
+  const refreshDevice = useCallback(async (id) => {
+    // Fetched before the state update, not inside it: a state updater is
+    // synchronous, so awaiting in there is not merely a lint complaint.
+    try {
+      const st = await API.get(`/api/devices/${id}/spotify/engine`);
+      setPerDevice(p => ({ ...p, [id]: st }));
+    } catch (e) {
+      setPerDevice(p => ({ ...p, [id]: { error: e.error || 'unavailable' } }));
+    }
+  }, []);
+
+  useEffect(() => { devices.forEach(d => refreshDevice(d.device_id)); },
+    [devices, refreshDevice]);
+
+  async function upload(file) {
+    if (!file) return;
+    setBusy(b => ({ ...b, upload: true }));
+    setMsg(null);
+    try {
+      const r = await API.upload('/api/spotify/engine/upload', file, 'binary');
+      setMsg({ ok: true, text: `${r.artefact.name} stored (${fmtBytes(r.artefact.size)})` });
+      await loadEngine();
+      devices.forEach(d => refreshDevice(d.device_id));
+    } catch (e) {
+      // The server's reason verbatim. It names which build step to repeat —
+      // a host build, a 64-bit build, a PIE, a truncated upload — and every
+      // one of those fails identically on the device.
+      setMsg({ ok: false, text: e.error || 'Upload failed' });
+    } finally { setBusy(b => ({ ...b, upload: false })); }
+  }
+
+  async function remove(name) {
+    if (!confirm(`Remove ${name} from the controller? Devices keep what they have.`)) return;
+    try { await API.del(`/api/spotify/engine/${encodeURIComponent(name)}`); await loadEngine(); }
+    catch (e) { setMsg({ ok: false, text: e.error || 'Remove failed' }); }
+  }
+
+  async function install(d, only) {
+    const id = d.device_id;
+    setBusy(b => ({ ...b, [id]: true }));
+    setMsg(null);
+    try {
+      const r = await API.post(`/api/devices/${id}/spotify/engine`,
+        only ? { only } : {});
+      if (r.already_current) {
+        setMsg({ ok: true, text: `${d.label} already has it` });
+      } else {
+        setMsg({ ok: true, text: `Installing ${(r.installing || []).join(', ')} on ${d.label}…` });
+        // The push runs as a background task behind the OTA lock, so the
+        // answer arrives later. Re-read rather than claim success.
+        setTimeout(() => refreshDevice(id), 4000);
+      }
+    } catch (e) { setMsg({ ok: false, text: e.error || 'Install failed' }); }
+    finally { setBusy(b => ({ ...b, [id]: false })); }
+  }
+
+  async function runProbe(d) {
+    const id = d.device_id;
+    setBusy(b => ({ ...b, [id]: true }));
+    setProbe(null);
+    setMsg(null);
+    try {
+      const r = await API.post(`/api/devices/${id}/spotify/probe`, {});
+      setProbe({ device: id, label: d.label, output: r.output, passed: r.passed });
+    } catch (e) { setMsg({ ok: false, text: e.error || 'Probe failed' }); }
+    finally { setBusy(b => ({ ...b, [id]: false })); }
+  }
+
+  const stored = engine?.artefacts || [];
+  const have   = new Set(stored.map(a => a.name));
+
+  return (
+    <div style={{ maxWidth: 620 }}>
+      <div style={{ fontFamily:"'DM Mono',monospace", fontSize:10, color:'var(--muted)', marginBottom:20, lineHeight:1.6 }}>
+        Spotify Connect runs ON the Echo, so it fetches its own audio instead of
+        being fed over the link. Built from <code>device/spotify/</code> with
+        <code> compile.sh</code> and uploaded here.
+      </div>
+
+      {/* Stated plainly and above the controls, not in a footnote. librespot
+          is not an official Spotify client and this is the page where
+          somebody decides to use it. */}
+      <div className="em-panel" style={{ padding:'14px 16px', marginBottom:18, borderLeft:'3px solid var(--warn)' }}>
+        <div style={{ fontFamily:"'DM Mono',monospace", fontSize:10, color:'var(--text2)', lineHeight:1.7 }}>
+          librespot is an unofficial, reverse-engineered Spotify client. It is
+          not endorsed by Spotify and using it may breach their terms of
+          service. A <strong>Spotify Premium</strong> account is required —
+          a free account cannot stream to a Connect speaker.
+        </div>
+      </div>
+
+      <div className="em-panel" style={{ padding:'16px 18px', marginBottom:18 }}>
+        <div className="em-label" style={{ marginBottom:14 }}>Engine</div>
+
+        {engine && (engine.expected || []).map(name => {
+          const a = stored.find(x => x.name === name);
+          return (
+            <div key={name} style={{ display:'flex', alignItems:'center', gap:10, marginBottom:8 }}>
+              <div style={{ flex:1, fontFamily:"'DM Mono',monospace", fontSize:11, color: a ? 'var(--text)' : 'var(--muted)' }}>
+                {name}
+                {a && <span style={{ color:'var(--text2)' }}> · {fmtBytes(a.size)} · {a.md5.slice(0, 8)}</span>}
+                {!a && <span style={{ color:'var(--muted)' }}> · not uploaded</span>}
+              </div>
+              {a && <Pill small onClick={() => remove(name)}>Remove</Pill>}
+            </div>
+          );
+        })}
+
+        <input ref={fileRef} type="file" style={{ display:'none' }}
+          onChange={e => { upload(e.target.files?.[0]); e.target.value = ''; }}/>
+        <div style={{ display:'flex', gap:10, alignItems:'center', marginTop:14 }}>
+          <Pill accent disabled={!!busy.upload} onClick={() => fileRef.current?.click()}>
+            {busy.upload ? 'Uploading…' : 'Upload binary…'}
+          </Pill>
+          <span className="help" style={{ margin:0 }}>
+            device/spotify/build/em-spotify or em-spotify-probe
+          </span>
+        </div>
+      </div>
+
+      <div className="em-panel" style={{ padding:'16px 18px', marginBottom:18 }}>
+        <div className="em-label" style={{ marginBottom:14 }}>Devices</div>
+        {devices.length === 0 && <div className="help">No connected devices.</div>}
+        {devices.map(d => {
+          const st = perDevice[d.device_id];
+          // "Unknown" is shown as unknown. A device whose shell plane has
+          // not answered has NOT been read as missing the engine — failure
+          // to look is not evidence of absence.
+          const installed = st?.installed;
+          const label = st?.error ? st.error
+            : installed === null || installed === undefined ? 'checking…'
+            : (engine?.expected || [])
+                .map(n => `${n.replace('em-spotify', 'engine').replace('-probe', 'probe') || n}${installed[n] ? ' ✓' : ' ✗'}`)
+                .join('  ');
+          return (
+            <div key={d.device_id} style={{ display:'flex', alignItems:'center', gap:10, marginBottom:10, flexWrap:'wrap' }}>
+              <div style={{ flex:'1 1 180px', minWidth:0 }}>
+                <div style={{ fontFamily:"'DM Sans',sans-serif", fontSize:13, color:'var(--text)' }}>{d.label}</div>
+                <div style={{ fontFamily:"'DM Mono',monospace", fontSize:10, color:'var(--text2)' }}>{label}</div>
+              </div>
+              <Pill small disabled={!!busy[d.device_id] || have.size === 0}
+                onClick={() => install(d)}>Install</Pill>
+              <Pill small disabled={!!busy[d.device_id] || !installed?.['em-spotify-probe']}
+                onClick={() => runProbe(d)}
+                title={installed?.['em-spotify-probe'] ? '' : 'Install the probe first'}>
+                Run probe
+              </Pill>
+            </div>
+          );
+        })}
+      </div>
+
+      {probe && (
+        <div className="em-panel em-on-dark" style={{ padding:'14px 16px', marginBottom:18 }}>
+          <div className="em-label" style={{ marginBottom:10 }}>
+            Probe · {probe.label} ·{' '}
+            <span style={{ color: probe.passed ? 'var(--ok)' : 'var(--error)' }}>
+              {probe.passed ? 'PASS' : 'FAIL'}
+            </span>
+          </div>
+          <pre className="em-lcd" style={{ margin:0, padding:'10px 12px', fontFamily:"'DM Mono',monospace", fontSize:10, lineHeight:1.6, whiteSpace:'pre-wrap', overflowX:'auto' }}>
+            {probe.output || '(no output)'}
+          </pre>
+        </div>
+      )}
+
+      {msg && (
+        <div style={{ fontFamily:"'DM Mono',monospace", fontSize:11,
+          color: msg.ok ? 'var(--ok)' : 'var(--error)' }}>
+          {msg.ok ? '✓ ' : ''}{msg.text}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SettingsPanel({ globalConfig, onGlobalConfigChange, onClose, username, isAdmin,
                         emosFleet = true }) {
   const [tab, setTab]             = useState('fleet');
@@ -10531,8 +10753,12 @@ function SettingsPanel({ globalConfig, onGlobalConfigChange, onClose, username, 
   // System is admin-only because both its endpoints are. Kept separate from
   // Config, which is device config pushed to the fleet — these are settings
   // for the controller process itself and never reach a device.
-  const TABS = isAdmin ? ['fleet', 'system', 'users', 'account', 'support'] : ['fleet', 'account'];
-  const TAB_LABELS = { fleet: 'Config', system: 'System', users: 'Users', account: 'Account', support: 'Support' };
+  // Integrations is admin-only because every endpoint behind it is: the
+  // upload stores a binary the device will execute, and the install and the
+  // probe both run over the root shell. A tab a non-admin can only be
+  // refused by is worse than no tab.
+  const TABS = isAdmin ? ['fleet', 'integrations', 'system', 'users', 'account', 'support'] : ['fleet', 'account'];
+  const TAB_LABELS = { fleet: 'Config', integrations: 'Integrations', system: 'System', users: 'Users', account: 'Account', support: 'Support' };
 
   return (
     <div style={{ position:'fixed', inset:0, background:'rgba(180,176,168,0.5)', display:'flex', alignItems:'center', justifyContent:'center', zIndex:200, backdropFilter:'blur(8px)' }}
@@ -10580,6 +10806,8 @@ function SettingsPanel({ globalConfig, onGlobalConfigChange, onClose, username, 
               )}
             </>
           )}
+
+          {tab === 'integrations' && <SpotifyPanel/>}
 
           {tab === 'system' && (
             <div style={{ maxWidth: 560 }}>
