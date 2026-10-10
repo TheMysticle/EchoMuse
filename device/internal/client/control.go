@@ -118,6 +118,7 @@ type ControlClient struct {
 	configAppliedCallback ConfigAppliedCallback
 	playCueCallback       func(string)
 	sendspinTokenCallback func() map[string]any
+	spotifyCmdCallback    func(cmd string, fields map[string]any) map[string]any
 	volumeSetCallback     VolumeSetCallback
 	beamLockCallback      BeamLockCallback
 	speakerFlushCallback  StateCallback
@@ -208,6 +209,19 @@ func (c *ControlClient) OnSendspinToken(cb func() map[string]any) { c.sendspinTo
 // ignored by older controllers.
 func (c *ControlClient) SendSendspinStatus(status any) error {
 	return c.writeJSON(map[string]any{"type": "sendspin_status", "status": status})
+}
+
+// OnSpotifyCmd handles a spotify_cmd from the controller (transport, load,
+// logout). The callback returns the engine's reply, which goes back as
+// spotify_reply with the request id so the dashboard can show a failure.
+func (c *ControlClient) OnSpotifyCmd(cb func(cmd string, fields map[string]any) map[string]any) {
+	c.spotifyCmdCallback = cb
+}
+
+// SendSpotifyStatus reports the Spotify engine's state as it changes; the
+// stats tick carries it too. Older controllers ignore the type.
+func (c *ControlClient) SendSpotifyStatus(status any) error {
+	return c.writeJSON(map[string]any{"type": "spotify_status", "status": status})
 }
 
 // IsConnected reports whether the control WebSocket is registered and
@@ -978,6 +992,25 @@ func (c *ControlClient) connect(ctx context.Context, server *discovery.ServerInf
 				c.playCueCallback(cueMsg.Cue)
 			}
 
+		case "spotify_cmd":
+			var m struct {
+				ID     string         `json:"id"`
+				Cmd    string         `json:"cmd"`
+				Fields map[string]any `json:"fields"`
+			}
+			if err := json.Unmarshal(raw, &m); err != nil {
+				break
+			}
+			reply := map[string]any{"error": "spotify is off"}
+			if c.spotifyCmdCallback != nil {
+				if r := c.spotifyCmdCallback(m.Cmd, m.Fields); r != nil {
+					reply = r
+				}
+			}
+			reply["type"] = "spotify_reply"
+			reply["id"] = m.ID
+			c.writeJSON(reply)
+
 		case "sendspin_token_request":
 			var reply map[string]any
 			if c.sendspinTokenCallback != nil {
@@ -1286,6 +1319,11 @@ func capabilities() []string {
 		"sendspin", "ble_connect"}
 	if als.Present() {
 		caps = append(caps, "ambient_light")
+	}
+	// "spotify": the Connect engine (internal/spotify), emOS only because
+	// the engine binary is musl-static and installed by the controller.
+	if platform.Base() == platform.EmOS {
+		caps = append(caps, "spotify")
 	}
 	return caps
 }

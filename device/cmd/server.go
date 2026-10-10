@@ -353,9 +353,11 @@ func main() {
 			// Synced music (Sendspin) is music too: it streams for hours
 			// and has its own buffer, so it gets the same bursts.
 			ssOn, ssLead := sendspinMusic()
-			music := duty.Yield(now, pcmSpeaker.MusicArriving() || ssOn,
-				max(pcmSpeaker.MusicLead(), ssLead))
+			spOn, spLead := spotifyMusic()
+			music := duty.Yield(now, pcmSpeaker.MusicArriving() || ssOn || spOn,
+				max(pcmSpeaker.MusicLead(), ssLead, spLead))
 			sendspinPoll(pcmSpeaker)
+			spotifyPoll(pcmSpeaker, controlClient, s, deviceID)
 			bleScanner.Yield(music ||
 				dataClient.TurnStreamActive() ||
 				dataClient.ListenOpen() ||
@@ -483,6 +485,7 @@ func main() {
 		// are swallowed by the mute suppression on a muted device.
 		s.SetLinkDown(true)
 		sendspinLinkDown(pcmSpeaker)
+		spotifyLinkDown(pcmSpeaker)
 		go pulseOrange(pulseCtx, s)
 	})
 
@@ -502,6 +505,7 @@ func main() {
 		// buttons do nothing.
 		s.SetLinkDown(true)
 		sendspinLinkDown(pcmSpeaker)
+		spotifyLinkDown(pcmSpeaker)
 		go pulseWhite(pulseCtx, s)
 	})
 
@@ -522,6 +526,7 @@ func main() {
 		pulseKind = "refused"
 		s.SetLinkDown(true)
 		sendspinLinkDown(pcmSpeaker)
+		spotifyLinkDown(pcmSpeaker)
 		go pulseRefused(pulseCtx, s)
 	})
 
@@ -583,6 +588,7 @@ func main() {
 			st.OwwShadow = shadowStats(dataClient)
 			st.AecRef = canceller.RefSource()
 			st.Sendspin = sendspinStatus()
+			st.Spotify = spotifyStatus()
 			controlClient.SendStats(st)
 		}()
 		// Deliver any unacknowledged WiFi change outcome (including the
@@ -615,6 +621,7 @@ func main() {
 		applyAecConfig(canceller, dataClient)
 		applyBleConfig(bleScanner, bleBridge)
 		applySendspinConfig(pcmSpeaker, controlClient, s, deviceID)
+		applySpotifyConfig(pcmSpeaker, controlClient, s, deviceID)
 		applyShadowConfig(dataClient, controlClient, pcmSpeaker, s)
 		syncListenState(dataClient, controlClient, false)
 	})
@@ -631,6 +638,7 @@ func main() {
 	})
 
 	controlClient.OnSendspinToken(sendspinToken)
+	controlClient.OnSpotifyCmd(spotifyCmd)
 
 	// Speaker flush — barge-in: cut buffered TTS the moment the controller
 	// hears the wake word during playback.
@@ -759,6 +767,7 @@ func main() {
 	s.SetVolumeChangeCallback(func(level int) {
 		controlClient.SendVolumeState(level)
 		sendspinVolumeChanged(level)
+		spotifyVolumeChanged(level)
 	})
 
 	// Volume set from controller (HA MediaPlayerCommandRequest forwarded down).
@@ -834,6 +843,7 @@ func main() {
 			}
 			st.TcpUpRetrans, st.TcpUpSegs = upLoss.Drain(snaps...)
 			st.Sendspin = sendspinStatus()
+			st.Spotify = spotifyStatus()
 			controlClient.SendStats(st)
 			if tick%10 == 0 {
 				var ms runtime.MemStats
@@ -873,6 +883,7 @@ func main() {
 	if c := sendspinPlayer(); c != nil {
 		c.Stop("restart")
 	}
+	spotifyShutdown()
 	pcmSpeaker.Close()
 	os.Exit(0)
 }

@@ -152,6 +152,12 @@ type Device struct {
 	// know. Empty falls back to one built from the serial.
 	SendspinName string
 
+	// Spotify Connect engine (internal/spotify, emOS only). Default off: it
+	// opens a listening port and an mDNS record. SpotifyName is what the
+	// Spotify app lists the Echo as; empty falls back to the Sendspin name.
+	SpotifyEnabled *bool
+	SpotifyName    string
+
 	// ListeningAnim carries the controller's current listening-ring
 	// animation spec, raw JSON in the led_anim shape, so the device can
 	// light it locally at its OWN wake crossing (#263) instead of waiting
@@ -220,6 +226,8 @@ func (d *Device) loadDefaults() {
 	d.BleProxyEnabled = &bleProxyEnabled
 	sendspinEnabled, sendspinUnpaired := false, false
 	d.SendspinEnabled, d.SendspinUnpaired = &sendspinEnabled, &sendspinUnpaired
+	spotifyEnabled := false
+	d.SpotifyEnabled = &spotifyEnabled
 	d.Output = outchain.DefaultParams()
 }
 
@@ -322,6 +330,12 @@ func (d *Device) Apply(msg ConfigMessage) {
 	if msg.SendspinName != "" {
 		d.SendspinName = msg.SendspinName
 	}
+	if msg.SpotifyEnabled != nil {
+		d.SpotifyEnabled = msg.SpotifyEnabled
+	}
+	if msg.SpotifyName != "" {
+		d.SpotifyName = msg.SpotifyName
+	}
 	if msg.ListeningAnim != nil {
 		d.ListeningAnim = msg.ListeningAnim
 	}
@@ -418,6 +432,7 @@ func (d *Device) Snapshot() ConfigMessage {
 	volumeButtonSound := d.VolumeButtonSound
 	sendspinEnabled := d.SendspinEnabled != nil && *d.SendspinEnabled
 	sendspinUnpaired := d.SendspinUnpaired != nil && *d.SendspinUnpaired
+	spotifyEnabled := d.SpotifyEnabled != nil && *d.SpotifyEnabled
 	return ConfigMessage{
 		VadThreshold:        d.VadThreshold,
 		VadSpeechMs:         d.VadSpeechMs,
@@ -444,6 +459,8 @@ func (d *Device) Snapshot() ConfigMessage {
 		SendspinEnabled:     &sendspinEnabled,
 		SendspinUnpaired:    &sendspinUnpaired,
 		SendspinName:        d.SendspinName,
+		SpotifyEnabled:      &spotifyEnabled,
+		SpotifyName:         d.SpotifyName,
 		ListeningAnim:       d.ListeningAnim,
 	}
 }
@@ -508,6 +525,8 @@ type ConfigMessage struct {
 	SendspinEnabled     *bool    `json:"sendspinEnabled,omitempty"`
 	SendspinUnpaired    *bool    `json:"sendspinUnpaired,omitempty"`
 	SendspinName        string   `json:"sendspinName,omitempty"`
+	SpotifyEnabled      *bool    `json:"spotifyEnabled,omitempty"`
+	SpotifyName         string   `json:"spotifyName,omitempty"`
 	// WakeSound: a pointer so "off" is distinguishable from absent.
 	WakeSound      *bool  `json:"wakeSound,omitempty"`
 	WakeSoundLevel string `json:"wakeSoundLevel,omitempty"`

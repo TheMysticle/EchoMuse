@@ -70,6 +70,8 @@ type DeviceStats struct {
 	// Sendspin is the player's status (sendspin.Status), nil when it is off.
 	// No secrets: the pairing token is asked for separately.
 	Sendspin interface{} `json:"sendspin,omitempty"`
+	// Spotify is the Connect engine's status (spotify.Status), nil when off.
+	Spotify interface{} `json:"spotify,omitempty"`
 	// Emmc is the eMMC's wear report (platform.Emmc), re-read every few hours
 	// rather than per tick: wear moves in 10% steps over years, and a device
 	// can run for months without the reboot that the register copy needs.

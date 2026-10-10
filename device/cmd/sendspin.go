@@ -86,9 +86,10 @@ func sendspinLinkDown(spk *speaker.PcmSpeaker) {
 	if ss.c == nil {
 		return
 	}
-	spk.SetMusicSource(nil)
 	ss.c.Stop("restart")
 	ss.c = nil
+	ssPresent.Store(false)
+	installMusicMux(spk)
 	firewall.Close(sendspin.DefaultPort)
 	log.Printf("[sendspin] player stopped: controller link down")
 }
@@ -109,13 +110,14 @@ func applySendspinConfig(spk *speaker.PcmSpeaker, cc *client.ControlClient, vol 
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
 	if ss.c != nil && (!on || name != ss.name) {
-		spk.SetMusicSource(nil)
 		reason := "user_request"
 		if on {
 			reason = "restart"
 		}
 		ss.c.Stop(reason)
 		ss.c = nil
+		ssPresent.Store(false)
+		installMusicMux(spk)
 		log.Printf("[sendspin] player stopped (%s)", reason)
 	}
 	if !on {
@@ -152,8 +154,9 @@ func applySendspinConfig(spk *speaker.PcmSpeaker, cc *client.ControlClient, vol 
 			return
 		}
 		c.OnChange(debounce(300*time.Millisecond, func() { cc.SendSendspinStatus(c.Status()) }))
-		spk.SetMusicSource(c)
 		ss.c, ss.name = c, name
+		ssPresent.Store(true)
+		installMusicMux(spk)
 		cc.SendSendspinStatus(c.Status())
 	}
 	ss.c.SetUnpaired(unpaired)
@@ -164,7 +167,7 @@ func applySendspinConfig(spk *speaker.PcmSpeaker, cc *client.ControlClient, vol 
 // player reports itself taken, and the server moves it out of its group.
 func sendspinPoll(spk *speaker.PcmSpeaker) {
 	if c := sendspinPlayer(); c != nil {
-		c.SetExternal(spk.MusicPlaneBusy())
+		c.SetExternal(spk.MusicPlaneBusy() || mux.ownerNow() == ownSpotify)
 		if c.Active() && time.Since(sendspinLoggedAt) >= time.Minute {
 			sendspinLoggedAt = time.Now()
 			logSendspinStats(c.Status())

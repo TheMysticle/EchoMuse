@@ -232,6 +232,14 @@ func (p *Player) Active() bool {
 	return p.Playing()
 }
 
+// Buffered is how much audio is queued and not yet played.
+func (p *Player) Buffered() time.Duration {
+	return time.Duration(p.ring.len()) * time.Second / (48000 * 4)
+}
+
+// Discard drops queued audio, for when another source takes the plane.
+func (p *Player) Discard() { p.ring.flush() }
+
 // Playing reports whether the engine believes it is playing, for deciding
 // whether an arbitration pause is needed.
 func (p *Player) Playing() bool {
