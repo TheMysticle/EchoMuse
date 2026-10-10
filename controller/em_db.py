@@ -260,6 +260,13 @@ DEFAULT_DEVICE_CONFIG = {
     # Echo; emOS only. Default off: it opens a port and an mDNS record, and
     # needs the user's own Premium account and a binary they built.
     "spotifyEnabled":   False,
+    # spotifyVolumeRing: light the cyan volume arc when the volume is moved
+    # from the Spotify app. Default ON, unlike every other remote volume
+    # path, which is silent by design (volumeController.Set's showRing) so
+    # the ring never lights with nobody at the device. A phone's slider is
+    # the exception: somebody is changing the volume on purpose and wants to
+    # see it land. HA and controller sets stay silent.
+    "spotifyVolumeRing": True,
     # beamformingEnabled: True — ch6 (centre/omni) hears the wake word, then
     # the turn locks to the best perimeter mic. The flag ONLY gates Lock():
     # unlocked is always ch6 and the wake path never locks, so the wake

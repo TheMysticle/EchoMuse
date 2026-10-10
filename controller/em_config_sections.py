@@ -78,7 +78,7 @@ SECTIONS: dict[str, dict] = {
     },
     "spotify": {
         "label": "Spotify",
-        "keys": ["spotifyEnabled"],
+        "keys": ["spotifyEnabled", "spotifyVolumeRing"],
     },
 }
 

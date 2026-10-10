@@ -9245,7 +9245,7 @@ const CONFIG_SECTIONS = {
   "advanced": ["agcEnabled", "vadThreshold", "vadSpeechMs", "vadSilenceMs", "buttonSingleTapEvent", "buttonMultiTapMs", "consolePassword", "consoleTimeoutMin", "controllerEndpoints"],
   "bluetooth": ["bleProxyEnabled", "bleProxyConnections"],
   "sendspin": ["sendspinEnabled", "sendspinUnpaired"],
-  "spotify": ["spotifyEnabled"]
+  "spotify": ["spotifyEnabled", "spotifyVolumeRing"]
 };
 
 // Display labels for the section ids, and the reverse key -> section index
@@ -10131,6 +10131,11 @@ function DeviceConfigForm({ config, onChange, disabled, sections, onScopeChange,
             disabled={!spotifyCapable}
             value={config.spotifyEnabled ?? false}
             onChange={v => set('spotifyEnabled', v)}/>
+          <Toggle label="Show the ring on a Spotify volume change"
+            sub={spotifyCapable ? 'lights the volume arc when the phone moves the volume; Home Assistant and the controller stay silent' : 'needs emOS and newer firmware on this Echo'}
+            disabled={!spotifyCapable || !(config.spotifyEnabled ?? false)}
+            value={config.spotifyVolumeRing ?? true}
+            onChange={v => set('spotifyVolumeRing', v)}/>
         </div>
       </Stage>
     </div>

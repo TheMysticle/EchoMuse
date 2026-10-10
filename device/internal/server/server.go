@@ -183,6 +183,19 @@ func (s *Server) SetVolume(level int) {
 	s.volume.Set(level, false)
 }
 
+// SetVolumeRing is SetVolume with the cyan volume arc shown, for a remote
+// change the user is standing in front of — the Spotify app's slider on
+// their phone, under `spotifyVolumeRing`.
+//
+// Deliberately a separate method rather than a flag on SetVolume: every
+// other remote path (HA, the controller, SeedVolume) must stay silent, and
+// a parameter is something a new call site can get wrong by accident. The
+// ring stays "somebody is changing the volume ON PURPOSE, right now".
+func (s *Server) SetVolumeRing(level int) {
+	s.volumeSeeded.Store(true)
+	s.volume.Set(level, true)
+}
+
 // SeedVolume restores the controller's stored startupVolume — the source of
 // truth for volume, kept current by the volume_state echo — on the first
 // config push of each run. Applying it on *every* push would race a live

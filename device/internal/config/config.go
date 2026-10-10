@@ -157,6 +157,12 @@ type Device struct {
 	// Spotify app lists the Echo as; empty falls back to the Sendspin name.
 	SpotifyEnabled *bool
 	SpotifyName    string
+	// SpotifyVolumeRing lights the cyan volume arc when the volume is
+	// changed from the Spotify app rather than by the Echo's own buttons.
+	// A POINTER because false is a real setting: with a plain bool, turning
+	// it off would be indistinguishable from a field nobody sent and could
+	// never reach a device. Same reason as SpotifyEnabled and DuckDb.
+	SpotifyVolumeRing *bool
 
 	// ListeningAnim carries the controller's current listening-ring
 	// animation spec, raw JSON in the led_anim shape, so the device can
@@ -228,6 +234,8 @@ func (d *Device) loadDefaults() {
 	d.SendspinEnabled, d.SendspinUnpaired = &sendspinEnabled, &sendspinUnpaired
 	spotifyEnabled := false
 	d.SpotifyEnabled = &spotifyEnabled
+	spotifyVolumeRing := true
+	d.SpotifyVolumeRing = &spotifyVolumeRing
 	d.Output = outchain.DefaultParams()
 }
 
@@ -333,6 +341,9 @@ func (d *Device) Apply(msg ConfigMessage) {
 	if msg.SpotifyEnabled != nil {
 		d.SpotifyEnabled = msg.SpotifyEnabled
 	}
+	if msg.SpotifyVolumeRing != nil {
+		d.SpotifyVolumeRing = msg.SpotifyVolumeRing
+	}
 	if msg.SpotifyName != "" {
 		d.SpotifyName = msg.SpotifyName
 	}
@@ -433,6 +444,10 @@ func (d *Device) Snapshot() ConfigMessage {
 	sendspinEnabled := d.SendspinEnabled != nil && *d.SendspinEnabled
 	sendspinUnpaired := d.SendspinUnpaired != nil && *d.SendspinUnpaired
 	spotifyEnabled := d.SpotifyEnabled != nil && *d.SpotifyEnabled
+	// Absent reads as ON, matching the controller's default: this only ever
+	// lights the ring on a change somebody made, so the harmless answer is
+	// to show it.
+	spotifyVolumeRing := d.SpotifyVolumeRing == nil || *d.SpotifyVolumeRing
 	return ConfigMessage{
 		VadThreshold:        d.VadThreshold,
 		VadSpeechMs:         d.VadSpeechMs,
@@ -460,6 +475,7 @@ func (d *Device) Snapshot() ConfigMessage {
 		SendspinUnpaired:    &sendspinUnpaired,
 		SendspinName:        d.SendspinName,
 		SpotifyEnabled:      &spotifyEnabled,
+		SpotifyVolumeRing:   &spotifyVolumeRing,
 		SpotifyName:         d.SpotifyName,
 		ListeningAnim:       d.ListeningAnim,
 	}
@@ -526,6 +542,7 @@ type ConfigMessage struct {
 	SendspinUnpaired    *bool    `json:"sendspinUnpaired,omitempty"`
 	SendspinName        string   `json:"sendspinName,omitempty"`
 	SpotifyEnabled      *bool    `json:"spotifyEnabled,omitempty"`
+	SpotifyVolumeRing   *bool    `json:"spotifyVolumeRing,omitempty"`
 	SpotifyName         string   `json:"spotifyName,omitempty"`
 	// WakeSound: a pointer so "off" is distinguishable from absent.
 	WakeSound      *bool  `json:"wakeSound,omitempty"`

@@ -44,6 +44,10 @@ func sendspinPlayer() *sendspin.Client {
 type deviceVolume interface {
 	VolumeLevel() int
 	SetVolume(level int)
+	// SetVolumeRing is SetVolume with the volume arc shown. Only Spotify
+	// uses it, under `spotifyVolumeRing`: a phone's slider is somebody
+	// changing the volume on purpose, where HA and the controller are not.
+	SetVolumeRing(level int)
 }
 
 const volumeMax = 127

@@ -233,7 +233,17 @@ func startSpotifyLocked(spk *speaker.PcmSpeaker, cc *client.ControlClient, vol d
 		ZeroconfPort: spotify.DefaultZeroconfPort,
 		Volume:       pctToU16(levelToPct(vol.VolumeLevel())),
 	})
-	p.OnVolume(func(v uint16) { vol.SetVolume(pctToLevel(u16ToPct(v))) })
+	// Read per event, not captured here: a config change must take effect
+	// without restarting the engine, which would cut the music to change a
+	// ring setting.
+	p.OnVolume(func(v uint16) {
+		level := pctToLevel(u16ToPct(v))
+		if r := config.Get().Snapshot().SpotifyVolumeRing; r == nil || *r {
+			vol.SetVolumeRing(level)
+			return
+		}
+		vol.SetVolume(level)
+	})
 	p.OnChange(debounce(300*time.Millisecond, func() { cc.SendSpotifyStatus(p.Status()) }))
 	if ferr := firewall.Open(spotify.DefaultZeroconfPort); ferr != nil {
 		log.Printf("[spotify] could not open port %d: %v", spotify.DefaultZeroconfPort, ferr)
