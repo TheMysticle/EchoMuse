@@ -18,4 +18,12 @@
 //! Spotify's Web API, a browser and durable storage. The device is handed a
 //! URI to load and reports what it is doing.
 
+pub mod proto;
 pub mod resample;
+
+// The librespot-facing halves. Behind the feature so the pure modules above
+// can be tested on the host without cross-compiling 300 crates.
+#[cfg(feature = "librespot")]
+pub mod mixer;
+#[cfg(feature = "librespot")]
+pub mod sink;
