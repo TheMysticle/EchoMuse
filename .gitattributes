@@ -1,2 +1,9 @@
 /.gitattributes text eol=lf
 *.sh text eol=lf
+# Everything that is read by a Linux toolchain or shipped to the Echo.
+# A CRLF Dockerfile breaks its RUN lines, and a CRLF Cargo.lock churns the
+# diff on every checkout from a Windows machine.
+Dockerfile text eol=lf
+*.rs text eol=lf
+*.toml text eol=lf
+Cargo.lock text eol=lf

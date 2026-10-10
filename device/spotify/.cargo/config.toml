@@ -1,0 +1,24 @@
+# Cross-compilation settings for the Echo's armv7 musl target.
+#
+# The linker is named explicitly because cargo otherwise uses the host's
+# `cc`, which links host glibc objects into an ARM binary and fails with
+# undefined GLIBC symbols — the failure every librespot cross-compile
+# report lands on.
+#
+# `+crt-static` is the default for musl targets and is restated here so
+# nobody removes it by accident: a dynamically linked musl binary needs a
+# musl loader, and the Echo has none. The binary must be static or it does
+# not run at all.
+[target.armv7-unknown-linux-musleabihf]
+linker = "armv7-unknown-linux-musleabihf-gcc"
+rustflags = [
+    "-C", "target-feature=+crt-static",
+    # Radar is a Cortex-A53 with NEON. Naming it lets the resampler and
+    # `ring`'s primitives vectorise instead of compiling for a generic
+    # armv7 with no FP guarantees. Every unit is this SoC (MT8163), so
+    # this is a property of the fleet rather than an optimisation guess.
+    "-C", "target-cpu=cortex-a53",
+]
+
+[build]
+target = "armv7-unknown-linux-musleabihf"

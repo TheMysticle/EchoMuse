@@ -1,0 +1,65 @@
+[package]
+name = "em-spotify"
+version = "0.1.0"
+edition = "2021"
+publish = false
+# What the dependency TREE actually needs, not what librespot declares.
+# librespot-core 0.8.0 says 1.85, but resolving its transitives pulls
+# crates that have moved on (uuid 1.28 → 1.89, cpufeatures 0.3.1 → edition
+# 2024), and the failure reads as "feature `edition2024` is required"
+# rather than as a version complaint. Stated here so the next person does
+# not spend that build working it out.
+rust-version = "1.89"
+
+# Milestone 0 ships ONE binary: the feasibility probe. It is not a stub of
+# the daemon — it answers the three questions that decide whether any of
+# this is possible on the hardware, and it does so through librespot's own
+# dependency tree so the answer transfers:
+#
+#   1. does a static musl armv7 binary execute on Radar's FireOS 6 kernel
+#   2. does DNS resolve through the /etc/resolv.conf emOS's init writes
+#   3. does a rustls handshake to Spotify succeed, with `ring`'s armv7
+#      assembly, on a clock the controller has just set
+#
+# If any of those is no, the whole device-side design is wrong, and the
+# cheapest place to find that out is before anything is built on top.
+[[bin]]
+name = "em-spotify-probe"
+path = "src/probe.rs"
+
+[dependencies]
+# librespot, pinned to the 0.8.0 release tag (10 Nov 2025) rather than a
+# branch or a range. Two reasons to pin exactly: the Spirc API we drive
+# (`load`/`activate`/`set_volume`/`set_position_ms`) moved between 0.5 and
+# 0.8, and 0.8.0 replaced SpotifyId with SpotifyUri — a floating dependency
+# would change the control surface underneath us on a `cargo update`.
+#
+# `default-features = false` everywhere, then rustls with Mozilla's
+# compiled-in roots: the Echo has no system certificate store to read, and
+# native-tls would pull OpenSSL into a musl cross build for nothing.
+librespot-core = { version = "0.8.0", default-features = false, features = ["rustls-tls-webpki-roots"] }
+
+# The probe references librespot-core so the crate is genuinely linked
+# rather than compiled and discarded by the optimiser — proving the
+# dependency tree builds AND links statically, which is the actual risk.
+# hyper and tokio arrive transitively at librespot's own pinned versions,
+# which is what makes the probe's answer transfer to the daemon. The probe
+# itself is synchronous, so it declares no runtime of its own.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-pki-types = "1"
+webpki-roots = "0.26"
+
+[profile.release]
+# Size matters more than the last few percent of speed: this binary is
+# pushed over the shell plane to a device with ~0.9GiB free on /data, and
+# it is deliberately NOT part of the firmware OTA (that would double the
+# payload across both A/B slots — the same reasoning that keeps the ONNX
+# runtime out of the firmware).
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+# A panic in the audio engine should end the process so the supervisor
+# restarts it cleanly, rather than unwinding into a half-dead player that
+# still holds the music source. Also removes the unwinding tables.
+panic = "abort"
