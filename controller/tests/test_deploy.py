@@ -3085,3 +3085,28 @@ def test_spotify_engine_reconciles_on_connect_for_emos_only():
     assert "answered" in fn, "failure to look is not evidence of absence"
     assert "ENGINE" in fn and "ARTEFACTS" not in fn, (
         "only the engine is installed unattended, never the probe")
+
+
+def test_installing_the_spotify_engine_repushes_the_config():
+    """
+    The firmware starts the engine only from a config push.
+
+    A refused start leaves it not waiting (device/cmd/spotify.go), so once
+    the engine is installed nothing retries it and the device goes on
+    reporting "missing" for good — an Install button that appears to work.
+    reconcile_oww_assets re-pushes after a repair for the same reason.
+    """
+    src = (CONTROLLER / "em_api.py").read_text()
+    tree = ast.parse(src)
+    fns = {n.name: n for n in ast.walk(tree)
+           if isinstance(n, ast.AsyncFunctionDef)}
+    fn = ast.unparse(fns["_install_spotify_engine_locked"])
+    assert "send_control" in fn and "'type': 'config'" in fn, (
+        "a successful engine install must push the config again or the "
+        "engine never starts")
+    assert "em_spotify_assets.ENGINE" in fn, (
+        "gate the re-push on the ENGINE: the probe is a diagnostic the "
+        "firmware never loads, so pushing on it is a pointless bounce")
+    assert "_well_typed" in fn, (
+        "push the well-typed effective config, as every other push does: "
+        "one mistyped field drops the whole push on the device")

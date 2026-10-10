@@ -2453,6 +2453,7 @@ async def _install_spotify_engine(live, device_id: str, plan: list[str],
 
 async def _install_spotify_engine_locked(live, device_id: str, plan: list[str],
                                          stored: dict) -> None:
+    installed: list[str] = []
     # The destination directory first, and this is not belt-and-braces.
     # `_stream_file_to_device` probes that the directory EXISTS before it
     # sends, because the heredoc writes with `>` and a write into a missing
@@ -2489,6 +2490,31 @@ async def _install_spotify_engine_locked(live, device_id: str, plan: list[str],
                  f"({len(data):,} bytes)")
         em_dbwriter.submit(db.log_device, device_id, "info", "controller",
                            f"Spotify {name} installed")
+        installed.append(name)
+
+    # The firmware refuses the start when the engine is absent and leaves
+    # itself NOT waiting, so nothing retries it: `applySpotifyConfig` only
+    # ever starts the engine from a config push. Without this the install
+    # succeeds and the device goes on reporting the engine as missing for
+    # good — the control that appears to work. Same mechanism and the same
+    # reason as reconcile_oww_assets re-pushing a repaired wake word. Only
+    # the ENGINE earns it: the probe is a diagnostic the firmware never
+    # loads.
+    if em_spotify_assets.ENGINE not in installed:
+        return
+    live = _devices.get(device_id)
+    if live is None:
+        return
+    loop = asyncio.get_event_loop()
+    effective = await loop.run_in_executor(
+        None, db.get_effective_device_config, device_id
+    )
+    if not effective.get("spotifyEnabled"):
+        return
+    await live.send_control(
+        {"type": "config", **_well_typed(device_id, effective)})
+    log.info(f"[{device_id}] Spotify engine installed — config re-pushed so "
+             f"the device starts it")
 
 
 @auth.require_admin
