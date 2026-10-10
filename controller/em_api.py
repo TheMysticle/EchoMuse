@@ -2575,11 +2575,28 @@ def _extract_binary_version(binary: bytes) -> str | None:
     """
     Scan a compiled Go binary for its embedded EchoMuse version string.
 
-    Two schemes, because compile.sh changed and this did not:
+    Three schemes, because compile.sh changed and this did not:
 
-      v2.12.0-63-g99628d3   `git describe --tags --match 'v*'` — CURRENT
-      20260614-1152-dev     date+suffix — used when the tree is DIRTY, and
-                            the only scheme this function knew until now
+      v2.12.0-63-g99628d3        `git describe --tags --match 'v*'` — GA
+      v2.18.0-ea.1-91-gc84ad8c   the same, describing an EARLY ACCESS tag
+      20260614-1152-dev          date+suffix — used when the tree is DIRTY,
+                                 and the only scheme this knew originally
+
+    The EA form is the same bug a second time. Firmware prereleases are
+    `vX.Y.Z-ea.N` (root CLAUDE.md, "Versioning / releases"), so `git
+    describe` emits `v2.18.0-ea.1-91-gc84ad8c` and the GA pattern cannot
+    match it — the `-ea.1` sits exactly where a `-N-gSHA` suffix was expected. Every
+    EA build uploaded was therefore labelled `local-<timestamp>`, with two
+    consequences, both measured on a Radar 2026-10-11:
+
+      * `_post_device_update`'s `already_running` guard can never fire, so
+        re-uploading the binary a device is already running is accepted
+        instead of refused, and
+      * `_monitor_reconnect` can never confirm, so the device reporting the
+        version it was just given reads as a failure and the dashboard says
+        "auto-rolled back — new binary failed 3 start attempts". Nothing
+        counted any start attempt; that wording is the assumed explanation
+        for a comparison that could not succeed.
 
     Matching only the second is why a clean-tree local build extracted
     nothing, fell back to a `local-<timestamp>` label, and then never matched
@@ -2609,8 +2626,12 @@ def _extract_binary_version(binary: bytes) -> str | None:
     """
     import re as _re
     for pattern in (
-        # git describe, suffixed form only — see above
-        rb'v\d+\.\d+\.\d+-\d+-g[0-9a-f]{7,40}',
+        # git describe, suffixed form only — see above. The optional
+        # `-ea.N` is the firmware prerelease scheme and nothing else: a
+        # looser `-[a-z.0-9]+` would start matching dependency
+        # pseudo-versions, which is the mistake the bare-vX.Y.Z note below
+        # exists to prevent.
+        rb'v\d+\.\d+\.\d+(?:-ea\.\d+)?-\d+-g[0-9a-f]{7,40}',
         # dirty-tree builds, and every binary predating the compile.sh change
         rb'20\d{6}-\d{4}-[a-z][a-z0-9]*',
     ):

@@ -38,6 +38,15 @@ def _extract():
     # git describe — what compile.sh produces from a clean tree today
     (b"junk\x00v2.12.0-63-g99628d3\x00junk", "v2.12.0-63-g99628d3"),
     (b"\x00v3.0.0-1-gabcdef0\x00",           "v3.0.0-1-gabcdef0"),
+    # git describe over an EARLY ACCESS tag. Firmware prereleases are
+    # vX.Y.Z-ea.N, so this is what every EA build embeds — and the GA
+    # pattern cannot match it, because -ea.1 sits where the -N-gSHA suffix
+    # was expected. Measured on a Radar 2026-10-11: the real firmware
+    # extracted None, so the upload was labelled local-<timestamp>, the
+    # already_running guard could not fire, and a successful deploy was
+    # reported as "auto-rolled back — new binary failed 3 start attempts".
+    (b"x\x00v2.18.0-ea.1-91-gc84ad8c\x00x", "v2.18.0-ea.1-91-gc84ad8c"),
+    (b"\x00v3.0.0-ea.12-7-gabcdef0\x00",    "v3.0.0-ea.12-7-gabcdef0"),
     # date scheme — dirty tree, and every binary predating the change
     (b"junk 20260614-1152-dev junk",         "20260614-1152-dev"),
     (b"20260614-0513-release",               "20260614-0513-release"),
@@ -124,3 +133,49 @@ def test_the_dashboard_only_claims_a_rollback_when_it_can_prove_one():
     assert calls, "no _pollReconnect call sites found"
     for args in calls:
         assert "," in args, f"_pollReconnect({args}) is missing priorVersion"
+
+
+def test_a_bare_ea_tag_build_extracts_nothing_either():
+    """
+    Same rule as the bare GA tag: with no `-N-gSHA` suffix there is nothing
+    to make it unique, and a build made exactly on an EA tag belongs on the
+    release path, where the version comes from the release.
+    """
+    assert _extract()(b"v2.18.0-ea.1 and v1.5.3 and v0.41.0") is None
+
+
+def test_the_prerelease_segment_does_not_open_the_door_to_dependencies():
+    """
+    Why the optional segment is `-ea.N` exactly and not `-[a-z.0-9]+`.
+
+    Go embeds dependency pseudo-versions of the shape
+    `v0.0.0-20220815104727-7e27d6ce89b6`, which a loose middle segment
+    would start matching — handing the controller somebody else's version
+    number to label the deploy with, and then a rollback report when the
+    device disagreed. That is the failure the bare-vX.Y.Z rule above
+    exists to prevent, so widening this must not reintroduce it from the
+    other side.
+    """
+    f = _extract()
+    assert f(b"v0.0.0-20220815104727-7e27d6ce89b6") is None
+    assert f(b"v0.0.0-20250417130911-3f050ff8c56d") is None
+    # A prerelease word we do not publish is not ours to claim either.
+    assert f(b"v2.18.0-rc.1-91-gc84ad8c") is None
+
+
+def test_the_real_firmware_is_recognised_if_one_has_been_built():
+    """
+    The bytes, not a sample. Every version of this bug survived unit tests
+    over hand-written strings and was found on hardware, so when a build is
+    present it is the thing to assert against.
+    """
+    binary = CONTROLLER.parent / "device" / "build" / "server"
+    if not binary.exists():
+        pytest.skip("no firmware built in device/build")
+    got = _extract()(binary.read_bytes())
+    assert got is not None, (
+        "the freshly built firmware's version could not be extracted, which "
+        "labels its upload local-<timestamp> and reports a successful deploy "
+        "as a rollback")
+    assert re.fullmatch(r"v\d+\.\d+\.\d+(?:-ea\.\d+)?-\d+-g[0-9a-f]{7,40}"
+                        r"|20\d{6}-\d{4}-[a-z][a-z0-9]*", got), got
