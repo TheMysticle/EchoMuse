@@ -152,6 +152,7 @@ type PcmSpeaker struct {
 	// pulled rather than pushed because it must place audio in TIME, and
 	// only this loop knows when the period it is building reaches the DAC.
 	src       atomic.Pointer[sourceBox]
+	srcStarve SourceStarve // periods the pull source had audio for and missed
 	srcBuf    []byte
 	srcLastNs atomic.Int64 // last period the source played
 	dacStep   dacStepLog   // pullSource's alone
@@ -209,6 +210,13 @@ func (p *PcmSpeaker) pullSource() []byte {
 	playAt := now.Add(time.Duration(d) * time.Second / 48000)
 	p.dacStep.note(playAt, read, string(b), time.Duration(len(p.srcBuf)/4)*time.Second/48000)
 	if !box.s.Fill(p.srcBuf, playAt, read/2) {
+		// The pull path's underrun. The channel-fed planes have counted and
+		// logged theirs since v7; this one discarded it silently, so a brief
+		// dropout on Spotify or Sendspin audio left no trace anywhere.
+		if total, shout := p.srcStarve.Note(now, p.srcLastNs.Load()); shout {
+			log.Printf("[speaker] music source starved — %d period(s) since boot "+
+				"it had audio for and could not fill; a brief click is this", total)
+		}
 		return nil
 	}
 	p.srcLastNs.Store(now.UnixNano())
