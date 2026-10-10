@@ -10575,6 +10575,15 @@ function SpotifyPanel() {
   }, []);
 
   useEffect(() => { loadEngine(); loadDevices(); }, [loadEngine, loadDevices]);
+  // The per-device Spotify line below is read off this list, so it has to
+  // be refreshed or it shows whatever was true when the tab was opened —
+  // most often "Waiting for the Echo to report", for ever. /api/devices is
+  // the cheap one; the per-device engine GET is NOT polled with it (see the
+  // key below).
+  useEffect(() => {
+    const poll = setInterval(loadDevices, 5000);
+    return () => clearInterval(poll);
+  }, [loadDevices]);
 
   const refreshDevice = useCallback(async (id) => {
     // Fetched before the state update, not inside it: a state updater is
@@ -10587,8 +10596,14 @@ function SpotifyPanel() {
     }
   }, []);
 
-  useEffect(() => { devices.forEach(d => refreshDevice(d.device_id)); },
-    [devices, refreshDevice]);
+  // Keyed on the device IDS, not the array: `loadDevices` builds a fresh
+  // array every 5s, and this effect runs `busybox md5sum` over each
+  // device's shell plane plus a ~4MB read controller-side. Polling that is
+  // far more expensive than the thing it would be keeping current, and the
+  // install actions already refresh it themselves.
+  const deviceIds = devices.map(d => d.device_id).join(',');
+  useEffect(() => { deviceIds.split(',').filter(Boolean).forEach(refreshDevice); },
+    [deviceIds, refreshDevice]);
 
   async function upload(file) {
     if (!file) return;

@@ -2469,7 +2469,7 @@ async def _install_spotify_engine_locked(live, device_id: str, plan: list[str],
     directory = em_spotify_assets.assets_dir()
     for name in plan:
         dest = em_spotify_assets.device_path(name)
-        data = (directory / name).read_bytes()
+        data = await asyncio.to_thread((directory / name).read_bytes)
         # require_verify=True: this is a binary we are about to execute, so
         # an unverifiable transfer is refused rather than accepted with a
         # warning. Firmware passes True for the same reason — a corrupt
@@ -5548,7 +5548,12 @@ async def _sync_spotify_engine(live, device_id: str) -> None:
     )
     if not effective.get("spotifyEnabled"):
         return
-    stored = {n: a.md5 for n, a in _stored_spotify_artefacts().items()}
+    # In a thread, and read ONCE: this reads a ~4MB binary and md5s it, and
+    # unlike the request handlers that share the helper, this path runs on
+    # every emOS connect — on the loop that sends speaker periods and LED
+    # frames. Same reason no coroutine here calls db.* directly.
+    artefacts = await asyncio.to_thread(_stored_spotify_artefacts)
+    stored = {n: a.md5 for n, a in artefacts.items()}
     # The probe is a diagnostic; only the engine is installed unattended.
     wanted = (em_spotify_assets.ENGINE,)
     if not any(n in stored for n in wanted):
@@ -5560,7 +5565,7 @@ async def _sync_spotify_engine(live, device_id: str) -> None:
     if not plan:
         return
     log.info(f"[api] [{device_id}] Spotify engine out of date — installing")
-    await _install_spotify_engine(live, device_id, plan, _stored_spotify_artefacts())
+    await _install_spotify_engine(live, device_id, plan, artefacts)
 
 
 async def reconcile_on_connect(device_id: str, live) -> None:
