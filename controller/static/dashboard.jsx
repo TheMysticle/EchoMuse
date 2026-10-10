@@ -10658,6 +10658,15 @@ function SpotifyPanel() {
               <div style={{ flex:'1 1 180px', minWidth:0 }}>
                 <div style={{ fontFamily:"'DM Sans',sans-serif", fontSize:13, color:'var(--text)' }}>{d.label}</div>
                 <div style={{ fontFamily:"'DM Mono',monospace", fontSize:10, color:'var(--text2)' }}>{label}</div>
+                {d.spotifyCapable ? (() => {
+                  const line = spotifyLine(d.spotify);
+                  const color = { ok:'var(--ok)', warn:'var(--warn)', error:'var(--error)', muted:'var(--muted)' }[line.tone];
+                  return <div style={{ fontFamily:"'DM Mono',monospace", fontSize:10, color }}>Spotify: {line.text}</div>;
+                })() : (
+                  <div style={{ fontFamily:"'DM Mono',monospace", fontSize:10, color:'var(--muted)' }}>
+                    Spotify: this firmware or userspace cannot run it (needs emOS and a newer firmware)
+                  </div>
+                )}
               </div>
               <Pill small disabled={!!busy[d.device_id] || have.size === 0}
                 onClick={() => install(d)}>Install</Pill>
@@ -10669,6 +10678,23 @@ function SpotifyPanel() {
             </div>
           );
         })}
+      </div>
+
+      <div className="em-panel" style={{ padding:'16px 18px', marginBottom:18 }}>
+        <div className="em-label" style={{ marginBottom:10 }}>Spotify Developer app (for voice play)</div>
+        <div style={{ fontFamily:"'DM Mono',monospace", fontSize:10, color:'var(--text2)', lineHeight:1.7 }}>
+          Playing by name needs the Spotify Web API, which needs an app of your
+          own. Casting from the Spotify app does not.
+          <ol style={{ margin:'8px 0 8px 18px', padding:0 }}>
+            <li>Open developer.spotify.com/dashboard, sign in with the Premium account and choose Create app.</li>
+            <li>Under Redirect URIs add <code>http://127.0.0.1:8888/callback</code>. Spotify accepts a loopback address over plain http and refuses <code>localhost</code>; nothing listens on it, you paste the address back.</li>
+            <li>Tick Web API, save, and copy the Client ID. The client secret is not needed and is never entered here.</li>
+          </ol>
+          An app in development mode only serves the users you list under User
+          Management, and Spotify has narrowed what such apps may call, so the
+          account that owns the app should be the one you play on. Premium is
+          required on that account.
+        </div>
       </div>
 
       {probe && (
