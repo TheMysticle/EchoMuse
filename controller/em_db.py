@@ -256,6 +256,10 @@ DEFAULT_DEVICE_CONFIG = {
     # token and without it anyone on the LAN can claim to be a server.
     "sendspinEnabled":  False,
     "sendspinUnpaired": False,
+    # spotifyEnabled: run the Spotify Connect engine (device/spotify) on this
+    # Echo; emOS only. Default off: it opens a port and an mDNS record, and
+    # needs the user's own Premium account and a binary they built.
+    "spotifyEnabled":   False,
     # beamformingEnabled: True — ch6 (centre/omni) hears the wake word, then
     # the turn locks to the best perimeter mic. The flag ONLY gates Lock():
     # unlocked is always ch6 and the wake path never locks, so the wake

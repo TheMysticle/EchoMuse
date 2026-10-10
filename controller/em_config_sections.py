@@ -76,6 +76,10 @@ SECTIONS: dict[str, dict] = {
         "label": "Sendspin",
         "keys": ["sendspinEnabled", "sendspinUnpaired"],
     },
+    "spotify": {
+        "label": "Spotify",
+        "keys": ["spotifyEnabled"],
+    },
 }
 
 # Keys that live in the config dict but are NOT user-facing settings, and so

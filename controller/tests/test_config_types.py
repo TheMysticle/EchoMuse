@@ -32,7 +32,8 @@ UNLISTED = {
 # ConfigMessage fields that are not config values. sendspinName is the
 # device's label, pushed beside the config rather than stored in it.
 NOT_CONFIG = {"type", "hasBeamforming", "listeningAnim",
-              "consolePassword", "consoleTimeoutMin", "sendspinName"}
+              "consolePassword", "consoleTimeoutMin", "sendspinName",
+              "spotifyName"}
 
 GO_KIND = {"int": T.INT, "float64": T.FLOAT, "bool": T.BOOL,
            "string": T.STR, "[]float64": T.FLOAT_LIST}

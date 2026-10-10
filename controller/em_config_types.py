@@ -61,6 +61,7 @@ KINDS: dict[str, str] = {
     "bleProxyConnections": BOOL,
     "sendspinEnabled": BOOL,
     "sendspinUnpaired": BOOL,
+    "spotifyEnabled": BOOL,
     "wakeSound": BOOL,
     "wakeSoundLevel": STR,
     "volumeButtonSound": BOOL,
