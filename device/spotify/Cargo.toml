@@ -23,9 +23,32 @@ rust-version = "1.89"
 #
 # If any of those is no, the whole device-side design is wrong, and the
 # cheapest place to find that out is before anything is built on top.
+[lib]
+name = "em_spotify"
+path = "src/lib.rs"
+
 [[bin]]
 name = "em-spotify-probe"
 path = "src/probe.rs"
+required-features = ["librespot"]
+
+# The pure modules — the resampler today — build and test with no librespot
+# in the graph at all, which is what lets CI run them on the host in seconds
+# instead of cross-compiling 300 crates to find out whether a filter has the
+# right DC gain. `--no-default-features` is the fast path; the default
+# includes librespot so an ordinary `cargo build` produces the real thing.
+[features]
+default = ["librespot"]
+librespot = [
+    "dep:librespot-core",
+    "dep:librespot-playback",
+    "dep:librespot-connect",
+    "dep:librespot-discovery",
+    "dep:librespot-metadata",
+    "dep:rustls",
+    "dep:rustls-pki-types",
+    "dep:webpki-roots",
+]
 
 [dependencies]
 # librespot, pinned to the 0.8.0 release tag (10 Nov 2025) rather than a
@@ -37,7 +60,11 @@ path = "src/probe.rs"
 # `default-features = false` everywhere, then rustls with Mozilla's
 # compiled-in roots: the Echo has no system certificate store to read, and
 # native-tls would pull OpenSSL into a musl cross build for nothing.
-librespot-core = { version = "0.8.0", default-features = false, features = ["rustls-tls-webpki-roots"] }
+librespot-core = { optional = true, version = "0.8.0", default-features = false, features = ["rustls-tls-webpki-roots"] }
+librespot-playback = { optional = true, version = "0.8.0", default-features = false, features = ["rustls-tls-webpki-roots"] }
+librespot-connect = { optional = true, version = "0.8.0", default-features = false, features = ["rustls-tls-webpki-roots"] }
+librespot-discovery = { optional = true, version = "0.8.0", default-features = false, features = ["rustls-tls-webpki-roots", "with-libmdns"] }
+librespot-metadata = { optional = true, version = "0.8.0", default-features = false, features = ["rustls-tls-webpki-roots"] }
 
 # The probe references librespot-core so the crate is genuinely linked
 # rather than compiled and discarded by the optimiser — proving the
@@ -45,9 +72,9 @@ librespot-core = { version = "0.8.0", default-features = false, features = ["rus
 # hyper and tokio arrive transitively at librespot's own pinned versions,
 # which is what makes the probe's answer transfer to the daemon. The probe
 # itself is synchronous, so it declares no runtime of its own.
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
-rustls-pki-types = "1"
-webpki-roots = "0.26"
+rustls = { optional = true, version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-pki-types = { version = "1", optional = true }
+webpki-roots = { version = "0.26", optional = true }
 
 [profile.release]
 # Size matters more than the last few percent of speed: this binary is
