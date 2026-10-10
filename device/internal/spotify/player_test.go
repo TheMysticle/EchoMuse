@@ -223,3 +223,25 @@ func TestVolumeIsMonotonic(t *testing.T) {
 		}
 	}
 }
+
+func TestBinaryChangedOnlyOnEvidence(t *testing.T) {
+	// The restart this drives cuts the music and drops the Spotify link, so
+	// it must happen on a known change and nothing else. An unreadable stamp
+	// is the case that matters: os.Stat failing is not a new binary.
+	cases := []struct {
+		name, started, current string
+		want                   bool
+	}{
+		{"a new binary was installed", "100:7", "104:9", true},
+		{"the same binary", "100:7", "100:7", false},
+		{"the running stamp is unknown", "", "104:9", false},
+		{"the current stamp is unreadable", "100:7", "", false},
+		{"neither is known", "", "", false},
+	}
+	for _, c := range cases {
+		if got := BinaryChanged(c.started, c.current); got != c.want {
+			t.Errorf("%s: BinaryChanged(%q, %q) = %v, want %v",
+				c.name, c.started, c.current, got, c.want)
+		}
+	}
+}

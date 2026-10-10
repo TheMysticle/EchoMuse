@@ -110,3 +110,26 @@ func PercentToU16(pct int) uint16 {
 func U16ToPercent(v uint16) int {
 	return (int(v)*100 + 32767) / 65535
 }
+
+// BinaryChanged says whether a newly installed engine replaced the one a
+// running engine was started from.
+//
+// Installing the binary does not restart the process, so without this a new
+// engine sits on disk while the old one goes on serving — the dashboard
+// reports "installed" and the device keeps running the previous code, for as
+// long as the process lives. That is the shape this project calls a control
+// that appears to work, and it would silently swallow every future engine
+// update rather than just one.
+//
+// `started` and `current` are opaque stamps of the file (see BinaryStamp); an
+// EMPTY one means it could not be read, and an unreadable stamp must NOT
+// provoke a restart. Failure to look is not evidence of a change, and the
+// cost of being wrong is asymmetric: a missed restart leaves the old engine
+// playing, while a spurious one cuts the music off and drops the Spotify
+// link every time a config is pushed.
+func BinaryChanged(started, current string) bool {
+	if started == "" || current == "" {
+		return false
+	}
+	return started != current
+}

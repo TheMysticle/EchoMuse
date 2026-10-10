@@ -1,7 +1,9 @@
 package main
 
 import (
+	"fmt"
 	"log"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -33,6 +35,7 @@ var sp struct {
 	p       *spotify.Player
 	failed  *spotify.Player // start refused (engine missing); only its status is kept
 	name    string
+	stamp   string // the engine binary the running process was started from
 	waiting bool // enabled, but not started yet (wall clock not set)
 	paused  bool // arbitration pause already sent for the current takeover
 }
@@ -147,6 +150,21 @@ func spotifyLinkDown(spk *speaker.PcmSpeaker) {
 
 func spotifyClockSane() bool { return time.Now().Year() >= 2024 }
 
+// spotifyBinaryStamp identifies the engine binary on disk. Empty when it
+// cannot be read, which BinaryChanged treats as "no evidence of a change"
+// rather than as a change.
+//
+// Size and mtime, not an md5: the controller already md5-verified the
+// transfer, the install renames a fresh file into place so the mtime moves,
+// and hashing 4MB on every config push is a cost with nothing to buy.
+func spotifyBinaryStamp() string {
+	fi, err := os.Stat(spotifyBinary)
+	if err != nil {
+		return ""
+	}
+	return fmt.Sprintf("%d:%d", fi.Size(), fi.ModTime().UnixNano())
+}
+
 // applySpotifyConfig starts, stops or renames the engine to match config.
 // Like Sendspin it runs on a config push, so only with the link up, and a
 // rename restarts it because the name is in the zeroconf record.
@@ -166,12 +184,22 @@ func applySpotifyConfig(spk *speaker.PcmSpeaker, cc *client.ControlClient, vol d
 
 	sp.mu.Lock()
 	defer sp.mu.Unlock()
-	if sp.p != nil && (!on || name != sp.name) {
+	// A newly installed engine has to be picked up, and installing the file
+	// does not restart the process. The controller pushes the config again
+	// after an install for exactly this; without the stamp check that push
+	// is a no-op whenever the engine is already running, so the new binary
+	// would sit on disk while the old one kept playing.
+	upgraded := sp.p != nil && spotify.BinaryChanged(sp.stamp, spotifyBinaryStamp())
+	if sp.p != nil && (!on || name != sp.name || upgraded) {
 		sp.p.Stop()
 		sp.p = nil
 		spPresent.Store(false)
 		installMusicMux(spk)
-		log.Printf("[spotify] engine stopped (config)")
+		if upgraded {
+			log.Printf("[spotify] engine stopped: a new engine was installed")
+		} else {
+			log.Printf("[spotify] engine stopped (config)")
+		}
 	}
 	sp.waiting = on
 	if !on || name != sp.name {
@@ -224,6 +252,7 @@ func startSpotifyLocked(spk *speaker.PcmSpeaker, cc *client.ControlClient, vol d
 		return
 	}
 	sp.p = p
+	sp.stamp = spotifyBinaryStamp()
 	sp.failed = nil
 	spPresent.Store(true)
 	installMusicMux(spk)
