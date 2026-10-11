@@ -103,3 +103,63 @@ func (s *SourceStarve) Note(now time.Time, playedNs int64) (uint64, bool) {
 
 // Total is every starve counted since boot.
 func (s *SourceStarve) Total() uint64 { return s.total() }
+
+// AlsaMargin is how close the DAC came to running dry, which is the question
+// an XRUN check cannot answer.
+//
+// tinyalsa's pcm_write handles -EPIPE itself: it bumps a private counter,
+// calls pcm_prepare and retries, returning success. The substream is back to
+// RUNNING microseconds later, on the same goroutine that would read the
+// status file — so `state: XRUN` is essentially never observable from procfs
+// and a detector for it reports nothing while clicks are audible (measured
+// on a Radar 2026-10-11, exactly that).
+//
+// The margin is observable on every ordinary period. pullSource already
+// reads the queued frames to place audio in time, so this costs a compare
+// and is the same reasoning behind min_depth on the channel-fed planes:
+// an underrun is binary and rare, the margin says how close every period
+// came and degrades visibly before anything is audible.
+type AlsaMargin struct {
+	tally
+	primed atomic.Bool
+	lowest atomic.Int64
+}
+
+// MarginFloorFrames is the depth below which a period is worth reporting:
+// one 2048-frame period at 48kHz, 42.7ms. Under that, a single late write
+// is silence rather than a near miss.
+const MarginFloorFrames = 2048
+
+// Note records the frames queued ahead of the DAC for this period. Returns
+// the lowest depth seen and whether to log now.
+//
+// A stream has to be PRIMED first — the buffer is legitimately shallow while
+// it fills, and counting that would report a fault at the start of every
+// track, the same innocent case SourceStarve excludes.
+func (m *AlsaMargin) Note(now time.Time, frames int) (int, bool) {
+	if frames >= MarginFloorFrames {
+		m.primed.Store(true)
+		return int(m.lowest.Load()), false
+	}
+	if !m.primed.Load() {
+		return int(m.lowest.Load()), false
+	}
+	for {
+		old := m.lowest.Load()
+		if old != 0 && old <= int64(frames) {
+			break
+		}
+		if m.lowest.CompareAndSwap(old, int64(frames)) {
+			break
+		}
+	}
+	total, shout := m.add(now)
+	_ = total
+	return int(m.lowest.Load()), shout
+}
+
+// Lowest is the shallowest depth seen since boot, 0 if never below the floor.
+func (m *AlsaMargin) Lowest() int { return int(m.lowest.Load()) }
+
+// Thin is how many periods have been below the floor since boot.
+func (m *AlsaMargin) Thin() uint64 { return m.total() }

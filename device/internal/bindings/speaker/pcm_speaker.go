@@ -152,8 +152,9 @@ type PcmSpeaker struct {
 	// pulled rather than pushed because it must place audio in TIME, and
 	// only this loop knows when the period it is building reaches the DAC.
 	src       atomic.Pointer[sourceBox]
-	srcStarve SourceStarve // periods the pull source had audio for and missed
-	alsaXrun  AlsaXrun     // periods on which the DAC had already run dry
+	srcStarve  SourceStarve // periods the pull source had audio for and missed
+	alsaXrun   AlsaXrun     // periods on which the DAC had already run dry
+	alsaMargin AlsaMargin   // how close the DAC has come to running dry
 	srcBuf    []byte
 	srcLastNs atomic.Int64 // last period the source played
 	dacStep   dacStepLog   // pullSource's alone
@@ -219,6 +220,15 @@ func (p *PcmSpeaker) pullSource() []byte {
 			}
 		}
 		return nil
+	}
+	// How close the DAC came to empty. The XRUN check above is nearly
+	// unobservable — tinyalsa recovers from -EPIPE inside pcm_write — so the
+	// margin on an ordinary period is the measurement that actually reports.
+	if low, shout := p.alsaMargin.Note(now, d); shout {
+		log.Printf("[speaker] ALSA buffer thin — %d frames queued (%.1fms), "+
+			"lowest %d, %d period(s) under %d since boot; this is where a "+
+			"click comes from", d, float64(d)*1000/48000, low,
+			p.alsaMargin.Thin(), MarginFloorFrames)
 	}
 	playAt := now.Add(time.Duration(d) * time.Second / 48000)
 	p.dacStep.note(playAt, read, string(b), time.Duration(len(p.srcBuf)/4)*time.Second/48000)
