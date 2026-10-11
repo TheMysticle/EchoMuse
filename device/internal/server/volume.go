@@ -147,16 +147,42 @@ func (vc *volumeController) Set(level int, showRing bool) bool {
 	apply := vc.apply
 	vc.mu.Unlock()
 
+	// Applied unconditionally: it is idempotent, and the speaker starts
+	// silent until told a level, so a Set that matches vc.level may still be
+	// the first one the hardware has seen.
 	if apply != nil {
 		apply(level)
 	}
 
-	log.Printf("Volume set to %d/%d", level, volumeMax)
+	// The ring is unconditional too, and deliberately: an extra Volume Up at
+	// the ceiling replays the max-level cue even though the level cannot
+	// change, which is what makes the top of the range feel like a limit
+	// rather than a dead button.
 	if showRing {
 		vc.showLEDs(level)
 	}
-	if cb != nil {
-		cb(level)
+
+	// NOTHING IS NOTIFIED ON A NO-OP. `changed` was computed and returned
+	// here from the start, and ignored — so every Set told the controller,
+	// Sendspin and Spotify about a level that had not moved.
+	//
+	// That is a pump, not just waste. The callback reaches
+	// spotifyVolumeChanged, which hands the level to the engine, and
+	// librespot's spirc then PUBLISHES it to Spotify's servers ("delayed
+	// volume update for all devices"). Spotify stores volume as an integer
+	// percent and can hand it back, so re-announcing a level we already had
+	// invites it to come round again. Measured on a Radar 2026-10-11: 14,963
+	// `Volume set to` lines in one session, the same values repeating in
+	// pairs, which is this branch firing twice for one real change.
+	//
+	// It is the rule the engine's own mixer already follows for the same
+	// reason — ReportingMixer::set_volume reports only on a change, because
+	// spirc writes the volume on every state report.
+	if changed {
+		log.Printf("Volume set to %d/%d", level, volumeMax)
+		if cb != nil {
+			cb(level)
+		}
 	}
 	return changed
 }

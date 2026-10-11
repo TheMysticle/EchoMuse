@@ -256,3 +256,62 @@ func TestStepArcHalfBrightnessBetweenLEDs(t *testing.T) {
 		t.Errorf("below the bottom step: %v, want one half-bright LED", a)
 	}
 }
+
+// A Set that does not move the level must notify nobody.
+//
+// `changed` was computed and returned from the start and then ignored, so
+// every Set told the controller, Sendspin and Spotify about a level that had
+// not moved — and the Spotify side publishes it to Spotify's servers, which
+// store volume as an integer percent and can hand it back. Re-announcing a
+// level we already had invites it round again. Measured on a Radar
+// 2026-10-11: 14,963 "Volume set to" lines in one session, values repeating
+// in pairs, which is one real change notified twice.
+func TestANoOpSetNotifiesNobody(t *testing.T) {
+	vc := newVolumeController(func() led.Controller { return nil })
+	var applied, notified int
+	vc.SetApply(func(int) { applied++ })
+	vc.SetOnVolumeChange(func(int) { notified++ })
+	applied = 0 // SetApply applies once at wiring time, by design
+
+	if !vc.Set(60, false) {
+		t.Fatal("the first Set to a new level reported no change")
+	}
+	if notified != 1 {
+		t.Fatalf("one real change notified %d times, want 1", notified)
+	}
+	for i := 0; i < 20; i++ {
+		if vc.Set(60, false) {
+			t.Fatal("an unchanged Set reported a change")
+		}
+	}
+	if notified != 1 {
+		t.Errorf("unchanged Sets notified %d times, want 1", notified)
+	}
+	// Still applied: idempotent, and the speaker starts silent until told a
+	// level, so a Set matching vc.level may be the first the hardware sees.
+	if applied != 21 {
+		t.Errorf("apply ran %d times, want 21 (it is unconditional)", applied)
+	}
+}
+
+func TestAChangeAfterNoOpsStillNotifies(t *testing.T) {
+	// The gate must not latch: suppressing repeats cannot cost the next real
+	// move, or the volume would stop tracking after any duplicate.
+	vc := newVolumeController(func() led.Controller { return nil })
+	var levels []int
+	vc.SetOnVolumeChange(func(l int) { levels = append(levels, l) })
+	vc.Set(50, false)
+	vc.Set(50, false)
+	vc.Set(70, false)
+	vc.Set(70, false)
+	vc.Set(50, false)
+	want := []int{50, 70, 50}
+	if len(levels) != len(want) {
+		t.Fatalf("notified %v, want %v", levels, want)
+	}
+	for i := range want {
+		if levels[i] != want[i] {
+			t.Fatalf("notified %v, want %v", levels, want)
+		}
+	}
+}
