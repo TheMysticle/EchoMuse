@@ -288,10 +288,23 @@ func TestTheBottomOfScaleGlyph(t *testing.T) {
 			t.Errorf("glyph LED %d = %d, want full: %v", i, a[i], a)
 		}
 	}
-	// It ends at the arc's start and runs counter-clockwise, so the arc
-	// grows clockwise out of it rather than back over it.
-	if glyph[0] != ringVolumeStart {
-		t.Errorf("glyph starts at %d, want the anchor %d", glyph[0], ringVolumeStart)
+	// THE GLYPH IS THE ARC'S OWN LOW END. The lowest volume and the first
+	// step above it must light the same place, or the ring jumps when you
+	// come off the floor — and it is what stops the glyph being put on the
+	// wrong side of the anchor, which took three attempts to get right.
+	order := ringOrder(n, ringVolumeStart, ringVolumeSweep)
+	for i, g := range glyph {
+		if g != order[i] {
+			t.Fatalf("glyph %v is not the start of the arc %v", glyph, order[:len(glyph)])
+		}
+	}
+	// Concretely: whatever a low volume lights must be exactly the glyph.
+	low := volumeArc(11, n, false)
+	for i, v := range low {
+		if (v != 0) != in[i] {
+			t.Errorf("11%% lights %v but the glyph is %v — they must agree", low, a)
+			break
+		}
 	}
 	for i, v := range a {
 		if !in[i] && v != 0 {

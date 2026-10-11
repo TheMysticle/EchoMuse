@@ -65,19 +65,20 @@ const (
 	// ringBottomLED and ringLEDOffset's geometry — calibrated on biscuit
 	// against mic angles from tone injection — holds on this board too.
 	//
-	// The glyph is {9, 10}: the anchor plus the LED before it, straddling
-	// the button between them, with the arc then growing clockwise from 10.
-	// Three rounds on the hardware to get there, recorded because each step
-	// says which way a change moves things:
+	// The glyph is {10, 11} — the arc's own first two LEDs, which is how
+	// minGlyph defines it. Four rounds on the hardware to get there, and the
+	// lesson is that rotating the anchor was chasing symptoms of two other
+	// faults: a 3-wide glyph, and a glyph placed on the wrong side of the
+	// anchor. The anchor itself was right from the start.
 	//
-	//	{9,10,11} symmetric  one LED too far clockwise (11 is the extra)
-	//	start 9  -> {8,9}    dropped the wrong end, added one anticlockwise
-	//	start 11 -> {10,11}  dropped the wrong end the other way
-	//	start 10 -> {10,9}   correct
+	//	{9,10,11} symmetric  too wide, and one LED too far
+	//	start 9  -> {8,9}    extended away from the button
+	//	start 11 -> {10,11}  right LEDs, right by accident
+	//	start 10, glyph with the sweep -> {10,11}  correct, by construction
 	//
-	// So it was never the anchor: the faults were a 3-wide glyph and
-	// symmetric growth. Set the volume to its lowest and watch which LEDs
-	// pulse if this ever needs checking on a new board.
+	// Set the volume to its lowest and watch which LEDs pulse if this ever
+	// needs checking on a new board: they must be the same ones a low
+	// volume lights.
 	ringVolumeStart = ringBottomLED
 
 	// ringVolumeSweep is which way the arc grows from the anchor: +1 for
@@ -403,16 +404,22 @@ func ringOrder(n, start, sweep int) []int {
 	return out
 }
 
-// minGlyph is the bottom-of-scale indicator: `width` LEDs ending at the
-// arc's start and running AGAINST the sweep, so a 2-wide glyph straddles the
-// anchor between two LEDs and the arc grows out of it rather than back over
-// it.
+// minGlyph is the bottom-of-scale indicator: the FIRST `width` LEDs of the
+// arc itself.
+//
+// Defining it as the arc's own low end is the point. The lowest volume and
+// the first step above it must light the same place, or the ring jumps when
+// you come off the floor — and it means the glyph cannot be put on the wrong
+// side of the anchor, which is the mistake this went through three times.
+// The operator's own description settled it: "the pulse should be where 11
+// percent is, those 2 LEDs that light up at 11 percent". At 11% the arc is 3
+// half-LEDs, so exactly these two.
+//
+// It follows the sweep for the same reason, so it needs no direction rule of
+// its own.
 func minGlyph(n, start, width, sweep int) []int {
-	out := make([]int, 0, width)
-	for i := 0; i < width && i < n; i++ {
-		out = append(out, ((start-i*sweep)%n+n)%n)
-	}
-	return out
+	order := ringOrder(n, start, sweep)
+	return order[:min(width, len(order))]
 }
 
 // volumeArc is the ring for a volume, in half-LEDs per LED: 2 full, 1
