@@ -573,7 +573,8 @@ class EchoMuseSatellite(SatelliteServerProtocol):
         if server is None:
             return
         om = server.output_mute
-        level = (om.mute(em_volume.ha_volume_to_device(server.volume))
+        level = (om.mute(em_volume.ha_volume_to_device(server.volume,
+                                                        server.board_id))
                  if mute else om.unmute())
         log.info(f"[{self._log_name}] output {'mute' if mute else 'unmute'}"
                  f"{'' if level is None else f' → level {level}'}")
@@ -707,6 +708,8 @@ class EchoMuseSatellite(SatelliteServerProtocol):
             # how "No wake word" survives a reconnect.
             srv = self._owning_server
             enabled = srv is None or srv.wake_word_enabled
+            if srv is not None:
+                srv.wake_word_told = enabled
             yield api_pb2.VoiceAssistantConfigurationResponse(
                 available_wake_words=[
                     api_pb2.VoiceAssistantWakeWord(
@@ -749,7 +752,8 @@ class EchoMuseSatellite(SatelliteServerProtocol):
                 # The conversion is em_volume's, not a local `* 175`: the
                 # ceiling is the codec's unity gain, above which the DAC
                 # clips (see em_volume's docstring).
-                level = em_volume.ha_volume_to_device(msg.volume)
+                level = em_volume.ha_volume_to_device(
+                    msg.volume, self._owning_server.board_id)
                 self._owning_server.output_mute.volume_set(level)
                 log.debug(
                     f"[{self._log_name}] MediaPlayerCommandRequest: "
@@ -1255,6 +1259,10 @@ class EchoMuseSatellite(SatelliteServerProtocol):
             on_finished=reply,
             log_name=self._log_name,
             preannounce_media_id=preannounce_media_id,
+            # The Echo listens straight after this message, so its quiet
+            # tail is time the person waits before they can answer.
+            tail=((lambda pcm: em_announce.set_trailing_quiet(pcm, WIRE_RATE))
+                  if start_conversation else None),
         )
 
         # AFTER the reply, deliberately. HA blocks on AnnounceFinished for the
@@ -2443,9 +2451,14 @@ class DeviceESPhomeServer:
         # compared against to tell a press from the device's re-report.
         self.mic_muted: bool = False
         self.wake_word_enabled: bool = True
+        # What HA last read of it, None until it asks (em_wakeword.ha_needs_refresh).
+        self.wake_word_told: bool | None = None
         # Injected by device_connected(); applies HA's wake word choice
         # synchronously. None when no device is connected.
         self._set_wake_word = None
+        # The connected device's board (em_controller.Device.board_id), for
+        # em_volume: Radar reads the HA float on its stock volume law.
+        self.board_id: str | None = None
         # Injected by device_connected() — async callable(pcm_bytes) for
         # standalone announce playback (setup wizard, push TTS) when no
         # voice turn is active.
@@ -3227,6 +3240,7 @@ async def device_connected(
     start_conversation=None,
     set_wake_word=None,
     wake_word_enabled: bool = True,
+    board_id=None,
 ) -> None:
     """
     Called by em_controller.handle_control() when an Echo Dot connects.
@@ -3280,6 +3294,7 @@ async def device_connected(
     server._start_conversation = start_conversation
     server._set_wake_word = set_wake_word
     server.wake_word_enabled = bool(wake_word_enabled)
+    server.board_id = board_id
     if server._server is not None:
         log.debug(f"[esphome.{device_id[-8:]}] device_connected: port {server.port} already listening")
         return
@@ -3460,13 +3475,24 @@ def update_mic_muted(device_id: str, muted: bool) -> None:
     satellite._send_one(satellite._mic_muted_msg())
 
 
-def update_wake_word(device_id: str, enabled: bool) -> None:
-    """Record HA's wake word choice (#286). Nothing to push: HA re-reads the
-    configuration itself after writing it."""
+def update_wake_word(device_id: str, enabled: bool, refresh: bool = False) -> None:
+    """Record the wake word state HA's picker shows (#286). After HA's own
+    write there is nothing to push: it re-reads the configuration itself.
+    `refresh` is for a change HA did not ask for (#776): it reads the state
+    only at connect, so the connection is bounced when what it last read is
+    now wrong, as update_oww_model does."""
     server = _servers.get(device_id)
     if server is None:
         return
     server.wake_word_enabled = bool(enabled)
+    if not refresh or not em_wakeword.ha_needs_refresh(
+            told=server.wake_word_told, enabled=server.wake_word_enabled):
+        return
+    satellite = server.get_satellite()
+    if satellite is not None:
+        log.info(f"[{device_id}] Wake word state changed — bouncing HA "
+                 f"connection so its picker reads it again")
+        satellite.disconnect()
 
 
 def output_mute_report(device_id: str, level: int) -> tuple[bool, int | None]:

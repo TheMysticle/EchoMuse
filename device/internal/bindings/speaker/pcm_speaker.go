@@ -27,12 +27,18 @@ const periodSize = 2048
 // The hardware tier: what ALSA holds ahead of the DAC. It is sized ONLY for
 // this loop's scheduling lateness — WiFi is the deep queue's job — and every
 // frame of it is latency a duck cannot touch, since ducking happens as audio
-// leaves the deep queue. It was 4 x 2048 (171ms). Measured on VVV 2026-09-22
-// under music, wake scoring, the output chain and turns: the loop was never
-// more than 19ms late (worst gap 61.7ms against a 42.7ms period). 4 x 1024 is
-// 85ms. Each mixed period is written as two halves, so the mix cadence, the
-// stream units and the wire are all unchanged.
-const alsaPeriodSize = 1024
+// leaves the deep queue.
+//
+// 4 x 2048 (171ms). It was cut to 4 x 1024 (85ms) on 2026-09-22, after the
+// loop was measured never more than 19ms late on VVV (worst gap 61.7ms
+// against a 42.7ms period). The same worst gaps (51-62ms) still underflowed
+// it: on a Radar, 2026-10-11, the kernel logged mtk_pcm_I2S0dl1_pointer
+// underflow and the stream restarted (an audible dropout) five times in
+// ~13 minutes of music, in minutes whose worst gap was well under 85ms.
+// The usable margin is smaller than the ring; why is not established. On
+// 4 x 2048, 9 minutes with gaps up to 66.5ms and no underflow. 6 x 1024 is
+// refused by the Radar's driver (cannot prepare channel).
+const alsaPeriodSize = 2048
 const alsaPeriodCount = 4
 const alsaBufferFrames = alsaPeriodSize * alsaPeriodCount
 const periodBytes = periodSize * 2 * 2 // 2 channels * 2 bytes = 8192
@@ -65,6 +71,11 @@ var silencePeriod = make([]byte, periodBytes)
 
 type PcmSpeaker struct {
 	radar bool
+	// radarSpeakerBiquad and radarJackBiquad are Radar's two codec filter
+	// profiles, read from the device in Init; nil off Radar, or when the jack
+	// profile could not be read (see radarJackRouting).
+	radarSpeakerBiquad []string
+	radarJackBiquad    []string
 	// pcm is the playback device, found by name (pkg/board) in Init, and
 	// statusFile its substream's status in procfs.
 	pcm        board.PCMAddr
@@ -75,9 +86,14 @@ type PcmSpeaker struct {
 	// jackKnown says whether one has been applied at all. The reconcile loop
 	// needs a DESIRED state to compare against, and before jack.Watch has run
 	// there is none — acting on a default would fight whatever Init set up.
+	//
+	// chainParams is the output chain configuration last pushed by the
+	// controller, kept so a plug change can re-derive the chain from it
+	// (chainForJack). Under jackMu, since both inputs to that derivation are.
 	jackMu       sync.Mutex
 	jackInserted bool
 	jackKnown    bool
+	chainParams  outchain.Params
 	// deadCh is closed by silenceLoop on any exit so a pump call can return
 	// an error rather than block indefinitely waiting for a dead consumer.
 	deadCh chan struct{}
@@ -246,14 +262,16 @@ func (p *PcmSpeaker) OnStreamStats(cb func(StreamStats)) {
 }
 
 func NewPcmSpeaker(echoTap func([]byte), levelTap func(rms float64)) (*PcmSpeaker, error) {
+	boardID := board.IDOf(board.Current())
 	s := &PcmSpeaker{
 		stopCh:        make(chan struct{}),
 		deadCh:        make(chan struct{}),
 		echoTap:       echoTap,
 		levelTap:      levelTap,
-		chain:         outchain.New(48000),
+		chain:         outchain.NewForBoard(48000, boardID, radarTuning(boardID)),
 		chainBuf:      make([]byte, periodBytes),
 		srcBuf:        make([]byte, periodBytes),
+		chainParams:   outchain.DefaultParams(),
 		responseMix:   make([]float64, periodSize*2),
 		responseGains: make([]float64, periodSize),
 	}
@@ -263,6 +281,9 @@ func NewPcmSpeaker(echoTap func([]byte), levelTap func(rms float64)) (*PcmSpeake
 	s.mixer.SetGainImmediate(unityGain)
 	s.response.setDB(0)
 	s.response.cur = 1
+	// Silent until told a volume, like s.vol — a chain that takes the
+	// volume must not play its first period at full scale.
+	s.chain.SetVolumeGain(0)
 	if err := s.Init(); err != nil {
 		return nil, err
 	}
@@ -305,9 +326,10 @@ func (p *PcmSpeaker) Init() (err error) {
 	exec.Command("stop", "media").Run()
 	waitForFreePcm(p.pcm.Card, p.pcm.Device, pcmFreeTimeout)
 	if p.radar {
-		if err = prepareRadarSpeaker("/system/etc/audio_device.xml"); err != nil {
+		if err = prepareRadarSpeaker(radarDeviceXML); err != nil {
 			return err
 		}
+		p.radarSpeakerBiquad, p.radarJackBiquad = loadRadarJackProfiles(radarDeviceXML)
 	}
 	// Connect the DAC to the output mixer before opening the stream: DAPM
 	// decides what to power at stream open, and an unrouted DAC is powered
@@ -415,11 +437,24 @@ func (p *PcmSpeaker) SetJackRouting(inserted bool) {
 	p.jackMu.Lock()
 	p.jackInserted = inserted
 	p.jackKnown = true
+	p.chain.SetParams(chainForJack(p.chainParams, inserted))
+	guardBypassed := inserted && p.chainParams.GuardEnabled
 	p.jackMu.Unlock()
 
-	p.applyJackWrites(jackRouting(inserted))
+	p.applyJackWrites(p.jackWrites(inserted))
 	log.Printf("[speaker] jack routing applied (%s)",
 		map[bool]string{true: "external", false: "internal"}[inserted])
+	if guardBypassed {
+		log.Printf("[speaker] output chain: bass guard bypassed while the jack is in use")
+	}
+}
+
+// jackWrites is the routing for a plug position on this board.
+func (p *PcmSpeaker) jackWrites(inserted bool) []mixerWrite {
+	if p.radar {
+		return radarJackRouting(inserted, p.radarSpeakerBiquad, p.radarJackBiquad)
+	}
+	return jackRouting(inserted)
 }
 
 func (p *PcmSpeaker) applyJackWrites(ws []mixerWrite) {
@@ -566,10 +601,16 @@ func (p *PcmSpeaker) silenceLoop() {
 		if wideResponse {
 			wide := p.mixer.MixResponse(p.responseMix, voice, music, p.duckTarget.Load(), responseGains)
 			if applied := p.chain.ProcessFloat(wide, responseGains); applied != nil {
-				log.Printf("[speaker] output chain: %s", applied)
+				log.Printf("[speaker] output chain: %s", p.chain.Describe(*applied))
 			}
 			out = voice
-			p.vol.applyFloat(wide, out, response.volumeTarget)
+			// A chain that takes the volume (Radar) has applied it already,
+			// ahead of its compressors.
+			if p.chain.TookVolume() {
+				p.vol.settleFloat(wide, out)
+			} else {
+				p.vol.applyFloat(wide, out, response.volumeTarget)
+			}
 		} else {
 			out = p.mixer.Mix(voice, music, p.duckTarget.Load())
 			process := out != nil
@@ -583,9 +624,18 @@ func (p *PcmSpeaker) silenceLoop() {
 			}
 			if process {
 				if applied := p.chain.Process(out); applied != nil {
-					log.Printf("[speaker] output chain: %s", applied)
+					log.Printf("[speaker] output chain: %s", p.chain.Describe(*applied))
 				}
-				p.vol.apply(out)
+				// On Radar the active chain applies the volume itself, AHEAD
+				// of its compressors (outchain.Chain.TakesVolume), so it must
+				// not be applied again here. softVolume still tracks the
+				// target, so the day the chain goes inactive it carries on
+				// from the right gain.
+				if p.chain.TookVolume() {
+					p.vol.settle()
+				} else {
+					p.vol.apply(out)
+				}
 			} else {
 				p.vol.settle()
 			}
@@ -711,8 +761,15 @@ func (p *PcmSpeaker) SetDuck(db float64) {
 
 // SetOutputChain sets the output chain's configuration; it lands on the next
 // period, keeping filter and limiter state, so a change mid-song is heard
-// within ~43ms and does not click.
-func (p *PcmSpeaker) SetOutputChain(params outchain.Params) { p.chain.SetParams(params) }
+// within ~43ms and does not click. A plug in the jack bypasses the bass guard
+// whatever the params say (chainForJack), and SetJackRouting re-derives the
+// chain from these params when the plug position changes.
+func (p *PcmSpeaker) SetOutputChain(params outchain.Params) {
+	p.jackMu.Lock()
+	p.chainParams = params
+	p.chain.SetParams(chainForJack(params, p.jackKnown && p.jackInserted))
+	p.jackMu.Unlock()
+}
 
 // SetOutputChainActive hands the output chain to this device (true) or back
 // to the controller (false). Only the controller's `output_chain` feature
@@ -796,7 +853,7 @@ func (p *PcmSpeaker) EndMusicStream() { p.music.endStream() }
 //     ~1.3s skip). The controller sends the EOS on the cancel path too, so
 //     the discard always terminates.
 //
-// Up to alsaBufferFrames (~85ms) already handed to the hardware
+// Up to alsaBufferFrames (~171ms) already handed to the hardware
 // still play — cutting those needs a stream restart, which costs more in
 // click/pop than it saves.
 func (p *PcmSpeaker) Flush() { p.voice.flush() }
@@ -816,7 +873,11 @@ const dacUnity = "127"
 
 // SetVolume sets the playback volume as a device level (0..127, 0.5dB per
 // step, unity at 127). Takes effect from the next period, ramped across it.
-func (p *PcmSpeaker) SetVolume(level int) { p.vol.set(VolumeGain(level)) }
+func (p *PcmSpeaker) SetVolume(level int) {
+	g := VolumeGain(level)
+	p.vol.set(g)
+	p.chain.SetVolumeGain(g)
+}
 
 // SetResponseGainDB sets the gain applied only to the voice plane, before it is
 // mixed with music. It is relative to the device volume and dynamically capped
