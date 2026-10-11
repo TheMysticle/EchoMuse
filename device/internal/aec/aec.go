@@ -40,6 +40,7 @@ import (
 	"log"
 	"math"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unsafe"
 )
@@ -174,7 +175,24 @@ type Canceller struct {
 	// ProcessWithRef cannot disagree about which source is live: a period
 	// pushed into the ring while the hardware path is running would be
 	// consumed by nothing and sit there aging.
-	hwRef bool
+	// ATOMIC, and that is the fix for a 38-53ms stall of the speaker's
+	// write loop (measured on a Radar).
+	//
+	// WriteFar is the speaker's echo tap: it runs once per playback period,
+	// from the ALSA write loop, and on the hardware path it has nothing to
+	// do. It used to take c.mu to discover that — and c.mu is held by
+	// ProcessMicsWithRef for a WHOLE mic block, which is 5 frames across
+	// every microphone. So the write loop blocked on a mutex held for tens
+	// of milliseconds, against a period budget of 42.7ms, and the DAC ran
+	// dry: `mtk_pcm_I2S0dl1_pointer underflow` in dmesg, then a PCM
+	// prepare/start 12-25ms later, which is the audible dropout.
+	//
+	// An atomic lets WriteFar answer "not my path" without the lock at all.
+	// It must not be a plain bool read outside the lock: SetHardwareRef
+	// writes it at runtime when the detector promotes ch8, so that would be
+	// a data race — the kind the race detector only finds if a test happens
+	// to run both sides at once.
+	hwRef atomic.Bool
 	// Periods cancelled against a hardware reference, and periods where one
 	// was expected and did not arrive (nil, or a length mismatch with the
 	// near end). A rising hwMissing with cancellation on is an extraction
@@ -201,10 +219,10 @@ type Canceller struct {
 func (c *Canceller) SetHardwareRef(on bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.hwRef == on {
+	if c.hwRef.Load() == on {
 		return
 	}
-	c.hwRef = on
+	c.hwRef.Store(on)
 	c.head, c.tail, c.count = 0, 0, 0
 	c.dsum, c.dcnt = 0, 0
 	log.Printf("[aec] far-end reference: %s",
@@ -224,7 +242,7 @@ func (c *Canceller) SetHardwareRef(on bool) {
 
 // effectiveTailLocked is the filter length for the reference in use.
 func (c *Canceller) effectiveTailLocked() int {
-	if c.hwRef {
+	if c.hwRef.Load() {
 		return hwTailMs
 	}
 	return c.tailMs
@@ -244,11 +262,10 @@ func (c *Canceller) Enabled() bool {
 	return c.enabled
 }
 
-// HardwareRef reports the current far-end source.
+// HardwareRef reports the current far-end source. Lock-free: the value is
+// atomic so the hot path can read it without the AEC lock.
 func (c *Canceller) HardwareRef() bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.hwRef
+	return c.hwRef.Load()
 }
 
 // RefSource names the far-end reference in use, for the stats report:
@@ -264,7 +281,7 @@ func (c *Canceller) RefSource() string {
 	switch {
 	case !c.enabled:
 		return "off"
-	case c.hwRef:
+	case c.hwRef.Load():
 		return "hw"
 	default:
 		return "sw"
@@ -309,7 +326,7 @@ func (c *Canceller) SetParams(enabled bool, delayMs, tailMs int) {
 	//
 	// Stored anyway, so a later fall back to the software tap uses the
 	// operator's current settings rather than stale ones.
-	if c.hwRef && c.st != nil && enabled == c.enabled {
+	if c.hwRef.Load() && c.st != nil && enabled == c.enabled {
 		c.delayMs, c.tailMs = delayMs, tailMs
 		return
 	}
@@ -339,7 +356,7 @@ func (c *Canceller) buildLocked() {
 	c.micBuf = (*C.spx_int16_t)(C.malloc(FrameSize * 2))
 	c.refBuf = (*C.spx_int16_t)(C.malloc(FrameSize * 2))
 	c.outBuf = (*C.spx_int16_t)(C.malloc(FrameSize * 2))
-	if c.hwRef {
+	if c.hwRef.Load() {
 		for i := range c.micStates {
 			c.micStates[i] = C.speex_echo_state_init(C.int(FrameSize), tailSamples)
 			C.speex_echo_ctl(c.micStates[i], C.SPEEX_ECHO_SET_SAMPLING_RATE, unsafe.Pointer(&rate))
@@ -393,15 +410,18 @@ func (c *Canceller) pushLocked(s int16) {
 // crude, but the echo content is voice-band and the canceller adapts to
 // the filter's response like any other part of the echo path).
 func (c *Canceller) WriteFar(period []byte) {
+	// BEFORE the lock, deliberately. This is the speaker's write loop, once
+	// per period, and on the hardware path there is nothing to do — so
+	// taking c.mu here only waits for whatever mic block is holding it.
+	// Nothing drains the ring on that path anyway, so filling it would peg
+	// it at ringCap and leave the far-end telemetry describing a buffer no
+	// cancellation ever reads. See the hwRef field for the measurement.
+	if c.hwRef.Load() {
+		return
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if !c.enabled {
-		return
-	}
-	if c.hwRef {
-		// Nothing drains the ring on the hardware path, so filling it would
-		// peg it at ringCap and leave the far-end telemetry describing a
-		// buffer no cancellation ever reads.
 		return
 	}
 	n := len(period) / 4 // frames (2ch × 2 bytes)
@@ -483,8 +503,8 @@ func (c *Canceller) processLocked(mono, hwref []byte) []byte {
 	}
 	// The hardware path is only taken when both sides agree it is live and
 	// the caller actually supplied a matching period.
-	useHW := c.hwRef && hwref != nil && len(hwref) == len(mono)
-	if c.hwRef && !useHW {
+	useHW := c.hwRef.Load() && hwref != nil && len(hwref) == len(mono)
+	if c.hwRef.Load() && !useHW {
 		// Counted, not logged per period: at 31 periods/s a log line here
 		// would bury the very telemetry used to diagnose it.
 		c.hwMissing++
@@ -651,7 +671,7 @@ func (c *Canceller) ProcessMicsWithRef(mics [][]byte, active int, ref []byte) []
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	mono := mics[active]
-	ok := c.enabled && c.hwRef && c.micStates[0] != nil && len(mics) == NumMics &&
+	ok := c.enabled && c.hwRef.Load() && c.micStates[0] != nil && len(mics) == NumMics &&
 		len(mono) > 0 && len(mono)%(FrameSize*2) == 0 && len(ref) == len(mono)
 	for _, m := range mics {
 		ok = ok && len(m) == len(mono)

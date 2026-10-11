@@ -251,8 +251,9 @@ func (p *PcmSpeaker) pullSource() []byte {
 	// margin on an ordinary period is the measurement that actually reports.
 	if low, shout := p.alsaMargin.Note(now, d); shout {
 		log.Printf("[speaker] ALSA buffer thin — %d frames queued (%.1fms), "+
-			"lowest %d, %d period(s) under %d since boot; this is where a "+
-			"click comes from", d, float64(d)*1000/48000, low,
+			"lowest seen >=%d (a bound, not the minimum — see AlsaMargin), "+
+			"%d period(s) under %d since boot; this is where a click comes "+
+			"from", d, float64(d)*1000/48000, low,
 			p.alsaMargin.Thin(), MarginFloorFrames)
 	}
 	playAt := now.Add(time.Duration(d) * time.Second / 48000)

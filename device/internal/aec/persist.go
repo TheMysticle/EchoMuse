@@ -40,7 +40,7 @@ func (c *Canceller) SetStatePath(path string) {
 // loadStateLocked loads the saved echo path into a freshly built
 // hardware-path filter. One small file read, once per boot.
 func (c *Canceller) loadStateLocked() {
-	if c.statePath == "" || !c.hwRef || c.st == nil {
+	if c.statePath == "" || !c.hwRef.Load() || c.st == nil {
 		return
 	}
 	c.loadMicsLocked()
@@ -136,7 +136,7 @@ func (c *Canceller) loadMicsLocked() {
 // the same terms: the window is the active microphone's, and all seven are
 // written because all seven adapted on the same playback.
 func (c *Canceller) maybeSaveMicsLocked(attDb float64, playing bool) {
-	if c.statePath == "" || !c.hwRef || !playing || attDb < saveMinDb {
+	if c.statePath == "" || !c.hwRef.Load() || !playing || attDb < saveMinDb {
 		return
 	}
 	if !c.lastMicsSaveTry.IsZero() && time.Since(c.lastMicsSaveTry) < saveEvery {
@@ -154,7 +154,7 @@ func (c *Canceller) maybeSaveMicsLocked(attDb float64, playing bool) {
 // 16KB copy under the lock; the file write runs on its own goroutine so the
 // mic goroutine never waits on flash.
 func (c *Canceller) maybeSaveLocked(attDb float64, playing bool) {
-	if c.statePath == "" || !c.hwRef || !playing || attDb < saveMinDb {
+	if c.statePath == "" || !c.hwRef.Load() || !playing || attDb < saveMinDb {
 		return
 	}
 	if !c.lastSaveTry.IsZero() && time.Since(c.lastSaveTry) < saveEvery {

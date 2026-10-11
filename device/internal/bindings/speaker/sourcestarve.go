@@ -158,7 +158,22 @@ func (m *AlsaMargin) Note(now time.Time, frames int) (int, bool) {
 	return int(m.lowest.Load()), shout
 }
 
-// Lowest is the shallowest depth seen since boot, 0 if never below the floor.
+// Lowest is the shallowest depth SAMPLED since boot, 0 if never below the
+// floor. It is an upper bound on the true minimum, so read it as "got at
+// least this close" and never as "got no closer than this".
+//
+// The loop that samples it is the loop that stalls. A write blocked for 40ms
+// takes no sample at all for those 40ms, and the DAC drains the whole time —
+// dmesg's `mtk_pcm_I2S0dl1_pointer underflow` says it reached zero. The next
+// sample comes after tinyalsa's pcm_prepare/pcm_start has refilled, so the
+// deepest part of every real dropout is structurally invisible here. A run
+// that logged `lowest 1984` had audible clicks and underflows in dmesg; the
+// true minimum was zero.
+//
+// That is a property of sampling from the affected thread rather than a bug
+// to fix. The honest fix is the kernel's own counter, which is what dmesg is
+// reporting, so the two are read together: this for how margin trends on
+// ordinary periods, dmesg for whether it hit the floor.
 func (m *AlsaMargin) Lowest() int { return int(m.lowest.Load()) }
 
 // Thin is how many periods have been below the floor since boot.
