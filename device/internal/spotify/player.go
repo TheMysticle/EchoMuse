@@ -413,6 +413,13 @@ func (p *Player) acceptAudio(ln net.Listener) {
 		if old != nil {
 			old.Close()
 			p.ring.flush()
+			// Logged because the flush is AUDIBLE. Discarding the ring
+			// mid-stream is a skip, and a skip with no trace is what made
+			// the last four instruments useless: every one of them asked a
+			// question that assumed the cause, and the answer came back
+			// empty while the audio was plainly glitching.
+			log.Printf("[spotify] audio socket taken over by a newer " +
+				"connection — ring flushed, this is an audible skip")
 		}
 		go p.readAudio(c)
 	}
