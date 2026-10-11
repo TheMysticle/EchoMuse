@@ -221,23 +221,26 @@ func TestVolumeArcTracksTheSliderPercentage(t *testing.T) {
 	}
 }
 
-func TestVolumeArcGrowsFromTheBottomCentre(t *testing.T) {
+func TestVolumeArcGrowsClockwiseFromTheAnchor(t *testing.T) {
 	const n = 12
-	// LED 10 is 6 o'clock, flanked by 9 and 11. It used to start at index 0,
-	// which is wherever index 0 happens to sit on the ring.
+	// The arc starts at the minus button and sweeps one way. It used to
+	// start at index 0 — wherever index 0 happens to sit — and an earlier
+	// attempt grew symmetrically outward, which is not what stock does.
 	a := volumeArc(4, n, false)
-	if a[ringBottomLED] == 0 {
-		t.Errorf("the bottom LED is dark at a low volume: %v", a)
+	if a[ringVolumeStart] == 0 {
+		t.Errorf("the anchor LED is dark at a low volume: %v", a)
 	}
 	for i, v := range a {
-		if v != 0 && i != ringBottomLED {
-			t.Errorf("LED %d lit before the bottom centre filled: %v", i, a)
+		if v != 0 && i != ringVolumeStart {
+			t.Errorf("LED %d lit before the anchor filled: %v", i, a)
 		}
 	}
-	// Growth is outward from there, never wrapping the far side first.
-	order := ringOrder(n, ringBottomLED)
-	if order[0] != ringBottomLED || order[1] != 9 || order[2] != 11 {
-		t.Errorf("fill order starts %v, want bottom then its neighbours", order[:3])
+	// Clockwise is increasing index, wrapping.
+	order := ringOrder(n, ringVolumeStart)
+	for i := range order {
+		if want := (ringVolumeStart + i) % n; order[i] != want {
+			t.Fatalf("fill order %v is not clockwise from %d", order, ringVolumeStart)
+		}
 	}
 	if len(order) != n {
 		t.Fatalf("fill order covers %d LEDs, want %d", len(order), n)
@@ -267,20 +270,30 @@ func TestVolumeArcGrowsFromTheBottomCentre(t *testing.T) {
 	}
 }
 
-// The bottom of the scale is the stock glyph: the bottom centre full with
-// its two neighbours at half. It says "as quiet as it goes", which no
-// fraction of a 12-LED ring can.
+// The bottom of the scale is a glyph straddling the anchor, not a fraction.
+// It says "as quiet as it goes", which no fraction of a 12-LED ring can.
+// Three LEDs was tried first and read as far too much.
 func TestTheBottomOfScaleGlyph(t *testing.T) {
 	const n = 12
 	a := volumeArc(3, n, true)
-	if a[ringBottomLED] != 2 {
-		t.Errorf("bottom centre = %d, want full: %v", a[ringBottomLED], a)
+	glyph := minGlyph(n, ringVolumeStart, minGlyphLEDs)
+	if len(glyph) != minGlyphLEDs {
+		t.Fatalf("glyph covers %d LEDs, want %d", len(glyph), minGlyphLEDs)
 	}
-	if a[9] != 1 || a[11] != 1 {
-		t.Errorf("flanks = %d/%d, want half bright: %v", a[9], a[11], a)
+	in := map[int]bool{}
+	for _, i := range glyph {
+		in[i] = true
+		if a[i] != 2 {
+			t.Errorf("glyph LED %d = %d, want full: %v", i, a[i], a)
+		}
+	}
+	// It ends at the arc's start and runs counter-clockwise, so the arc
+	// grows clockwise out of it rather than back over it.
+	if glyph[0] != ringVolumeStart {
+		t.Errorf("glyph starts at %d, want the anchor %d", glyph[0], ringVolumeStart)
 	}
 	for i, v := range a {
-		if i != 9 && i != 10 && i != 11 && v != 0 {
+		if !in[i] && v != 0 {
 			t.Errorf("LED %d lit in the minimum glyph: %v", i, a)
 		}
 	}

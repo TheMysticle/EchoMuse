@@ -47,13 +47,33 @@ const (
 	// volume arc now shares it rather than keeping a second copy.
 	ringLEDOffset = 240
 
-	// ringBottomLED is the LED at 6 o'clock — the physical bottom of the
-	// ring, and where the volume arc starts, as stock's does.
+	// ringBottomLED is the LED at 6 o'clock by the direction arc's geometry:
+	// ((180 - 240 + 360) % 360) / 30 = 10. A test pins it against
+	// SetDirectionLEDs' own answer so the two cannot drift.
 	//
-	// Derived rather than typed: ((180 - 240 + 360) % 360) / 30 = 10, with 9
-	// and 11 flanking it. A test pins it against SetDirectionLEDs' own answer
-	// for 180 degrees so the two cannot drift.
+	// NOTE this offset was calibrated for BISCUIT, against mic angles
+	// confirmed by tone injection (internal/beamformer, micAngles). Whether
+	// Radar's ring is mounted at the same rotation is unverified, which is
+	// why the volume anchor below is its own constant rather than this one.
 	ringBottomLED = ((180 - ringLEDOffset + 360) % 360) / 30
+
+	// ringVolumeStart is the first LED of the volume arc, which then grows
+	// CLOCKWISE (increasing index — LED i sits at ringLEDOffset + 30i
+	// degrees clockwise from 12 o'clock).
+	//
+	// Stock anchors this on the MINUS button, not on 6 o'clock, and the two
+	// are not the same place. It is a constant because it is a physical fact
+	// about the board that can only be read off the hardware: set the volume
+	// to its lowest, see which LEDs pulse, and move this until the glyph sits
+	// under the minus button. Reported one LED clockwise of correct with the
+	// arc anchored at ringBottomLED, hence the -1.
+	ringVolumeStart = (ringBottomLED - 1 + numLEDs) % numLEDs
+
+	// minGlyphLEDs is how wide the bottom-of-scale glyph is. The anchor falls
+	// BETWEEN two LEDs when this is 2, which is what straddling the minus
+	// button looks like; 1 puts a single LED under it. Three was tried first
+	// and read as far too much.
+	minGlyphLEDs = 2
 
 	// minPulse* shape the bottom-of-scale breathe. A ~1.2s cycle reads as a
 	// pulse rather than a flash, and the floor keeps the glyph visible at
@@ -61,6 +81,17 @@ const (
 	minPulseTick   = 60 * time.Millisecond
 	minPulsePeriod = 1200 * time.Millisecond
 	minPulseFloor  = 0.35
+
+	// minPulseExtra lengthens the DISPLAY WINDOW at the bottom of the scale,
+	// so the glyph breathes a little longer than an ordinary arc shows for.
+	// One pulse cycle is 1.2s against a 2s window, so without this the
+	// glyph is cut off mid-breath and reads as a glitch.
+	//
+	// It extends the window rather than outliving it. The first version ran
+	// the pulse on an unbounded ticker: the clear timer fired at 2s, handed
+	// the ring back to whatever was underneath, and the pulse carried on
+	// painting over it for ever.
+	minPulseExtra = 1200 * time.Millisecond
 )
 
 // radarVolumeSteps are stock Radar's 30 button steps, as device levels: each
@@ -247,6 +278,9 @@ func (vc *volumeController) Set(level int, showRing bool, src string) bool {
 // listening frame lands within a round trip; clearing to black here would put
 // a visible dark gap between the two. The arc simply stops being sovereign.
 func (vc *volumeController) CancelDisplay() {
+	// The pulse paints on its own goroutine, so releasing the hold without
+	// stopping it leaves it writing over whatever paints next.
+	vc.stopMinPulse()
 	vc.mu.Lock()
 	if vc.timer != nil {
 		vc.timer.Stop()
@@ -334,22 +368,26 @@ func clampToButtonBand(level int) int {
 	return level
 }
 
-// ringOrder is the LED indices from the bottom centre outwards, taking each
-// side in turn and ending at the top.
+// ringOrder is the LED indices of the volume arc in fill order: from `start`
+// CLOCKWISE around the ring, which is increasing index.
 //
-// For 12 LEDs with the bottom at 10 that is 10, 9, 11, 8, 0, 7, 1, 6, 2, 5,
-// 3, 4. Growth alternates sides, so one press moves one half-LED and two
-// presses widen the arc evenly — which is how stock's reads in motion.
-func ringOrder(n, bottom int) []int {
-	out := make([]int, 0, n)
-	out = append(out, bottom)
-	for d := 1; len(out) < n; d++ {
-		left := ((bottom-d)%n + n) % n
-		right := (bottom + d) % n
-		out = append(out, left)
-		if right != left && len(out) < n {
-			out = append(out, right)
-		}
+// Stock sweeps one way from its anchor rather than growing symmetrically
+// outward, and symmetric was tried first and is wrong.
+func ringOrder(n, start int) []int {
+	out := make([]int, n)
+	for i := range out {
+		out[i] = (start + i) % n
+	}
+	return out
+}
+
+// minGlyph is the bottom-of-scale indicator: the LEDs ENDING at the arc's
+// start, counter-clockwise, so a 2-wide glyph straddles the anchor between
+// them and the arc then grows clockwise out of it.
+func minGlyph(n, start, width int) []int {
+	out := make([]int, 0, width)
+	for i := 0; i < width && i < n; i++ {
+		out = append(out, ((start-i)%n+n)%n)
 	}
 	return out
 }
@@ -377,11 +415,10 @@ func ringOrder(n, bottom int) []int {
 // is as quiet as it goes" and no fraction of a 12-LED ring can.
 func volumeArc(pct, n int, atMin bool) []int {
 	units := make([]int, n)
-	order := ringOrder(n, ringBottomLED)
+	order := ringOrder(n, ringVolumeStart)
 	if atMin {
-		units[order[0]] = 2
-		for _, i := range order[1:min(3, len(order))] {
-			units[i] = 1
+		for _, i := range minGlyph(n, ringVolumeStart, minGlyphLEDs) {
+			units[i] = 2
 		}
 		return units
 	}
@@ -502,6 +539,10 @@ func (vc *volumeController) showLEDs(level int) {
 	} else {
 		vc.stopMinPulse()
 	}
+	hold := volumeLEDSecs * time.Second
+	if atMin {
+		hold += minPulseExtra
+	}
 
 	// Cancel any existing clear timer and start a new one
 	vc.mu.Lock()
@@ -509,7 +550,8 @@ func (vc *volumeController) showLEDs(level int) {
 	if vc.timer != nil {
 		vc.timer.Stop()
 	}
-	vc.timer = time.AfterFunc(volumeLEDSecs*time.Second, func() {
+	vc.timer = time.AfterFunc(hold, func() {
+		vc.stopMinPulse()
 		vc.mu.Lock()
 		vc.displayActive = false
 		expire := vc.onDisplayExpire
