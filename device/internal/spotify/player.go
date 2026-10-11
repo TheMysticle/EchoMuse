@@ -99,6 +99,7 @@ type Player struct {
 	mu       sync.Mutex
 	st       Status
 	ctl      net.Conn
+	aud      net.Conn // the audio connection that owns the ring
 	cmdID    uint64
 	onChange func()
 	onVolume func(uint16)
@@ -383,25 +384,69 @@ func (p *Player) apply(e *event) {
 	}
 }
 
+// acceptAudio takes the newest audio connection and displaces the previous
+// one, the same single-owner rule acceptControl has always had.
+//
+// It used to accept every connection and let them ALL write into one ring,
+// with nothing ever displaced. That is only safe while exactly one engine
+// can exist, and on 2026-10-11 two did on a Radar — an engine started
+// 23:46:18 was still alive when another started 00:10:43, confirmed by pid.
+// Both would have been streaming into this ring at once: two PCM streams
+// interleaved at arbitrary byte offsets, which is not a glitch but garbage,
+// and heard as crackling. Meanwhile control went only to the newest, so
+// commands reached one engine while the other played — "it keeps playing
+// and I cannot pause it".
+//
+// The ring is flushed on takeover: whatever the old engine left in it
+// belongs to a different stream at a different position, so playing it out
+// is a click by construction.
 func (p *Player) acceptAudio(ln net.Listener) {
 	for {
 		c, err := ln.Accept()
 		if err != nil {
 			return
 		}
-		go func() {
-			defer c.Close()
-			buf := make([]byte, 8192)
-			for {
-				n, err := c.Read(buf)
-				if n > 0 && !p.ring.write(buf[:n]) {
-					return
-				}
-				if err != nil {
-					return
-				}
+		p.mu.Lock()
+		old := p.aud
+		p.aud = c
+		p.mu.Unlock()
+		if old != nil {
+			old.Close()
+			p.ring.flush()
+		}
+		go p.readAudio(c)
+	}
+}
+
+func (p *Player) readAudio(c net.Conn) {
+	defer func() {
+		c.Close()
+		p.mu.Lock()
+		if p.aud == c {
+			p.aud = nil
+		}
+		p.mu.Unlock()
+	}()
+	buf := make([]byte, 8192)
+	for {
+		n, err := c.Read(buf)
+		// A displaced connection must stop writing. Checking ownership per
+		// read rather than trusting Close to race us: the old engine can
+		// have bytes already in flight.
+		if n > 0 {
+			p.mu.Lock()
+			mine := p.aud == c
+			p.mu.Unlock()
+			if !mine {
+				return
 			}
-		}()
+			if !p.ring.write(buf[:n]) {
+				return
+			}
+		}
+		if err != nil {
+			return
+		}
 	}
 }
 
