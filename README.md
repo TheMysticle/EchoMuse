@@ -182,6 +182,7 @@ Everything else is in the [issue tracker](https://github.com/wilbowes/EchoMuse/i
 | [How the voice pipeline works](docs/voice-pipeline.md) | The path from wake word to answer. |
 | [Device ↔ controller protocol](docs/device-controller-interface.md) | For porting EchoMuse to new hardware. |
 | [Boards](docs/boards.md) | How the firmware finds its hardware by name, and how to describe a new board. |
+| [Spotify](docs/spotify.md) | Making an Echo a Spotify Connect speaker, and asking for music by name. |
 | [Profiling a new Echo](porting/README.md) | Scripts that collect what a port needs from an unsupported device. |
 | [Contributing](CONTRIBUTING.md) | Building from source, tests, and how to send changes. |
 | [Engineering journal](JOURNAL.md) | How each part was worked out, including the dead ends. |

@@ -28,6 +28,10 @@ Deeper technical references live elsewhere:
 - [boards.md](boards.md) — how the firmware detects its board and finds each
   part by name, which files describe a board, and what to watch for when
   trying the firmware on new hardware.
+- [spotify.md](spotify.md) — making an Echo a Spotify Connect speaker, and
+  the optional Home Assistant integration that lets you ask for music by
+  name. Includes why the feature is emOS only, and what to check when an Echo
+  does not appear in the Spotify app.
 - [audio-states.md](audio-states.md) — who owns the speaker and what is on the
   wire: the two audio planes, ducking, flush semantics, and the open questions
   about how voice, music, announcements and alarms interact.
