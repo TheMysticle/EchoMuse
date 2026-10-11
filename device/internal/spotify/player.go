@@ -42,6 +42,12 @@ const (
 	// after a pause, so this is also the tail you hear.
 	ringBytes = 48000
 
+	// primePeriods is how much must be queued before reading resumes after a
+	// gap. Three periods is ~64ms at the speaker's 1024-frame period — deep
+	// enough that ordinary scheduling jitter cannot empty it, and far short
+	// of the ring's 250ms, so the tail you hear after a pause is unchanged.
+	primePeriods = 3
+
 	restartMin = 2 * time.Second
 	restartMax = 60 * time.Second
 	// healthyRun is how long a process must last for its death not to count
@@ -252,12 +258,15 @@ func (p *Player) Playing() bool {
 // Fill writes one period. A short read is zero-padded: a partial period
 // only happens at the end of a stream, where the tail is silence anyway.
 func (p *Player) Fill(out []byte, _ time.Time, _ time.Duration) bool {
-	n := p.ring.read(out)
-	if n == 0 {
-		return false
-	}
-	clear(out[n:])
-	return true
+	// A WHOLE period or none. See ring.readPeriod: taking a partial one and
+	// zero-padding it put silence in the middle of the waveform — a click no
+	// counter could see, because the period itself was delivered on time and
+	// full length.
+	//
+	// primePeriods of refill after a gap, so jitter around a period boundary
+	// costs one gap rather than a run of them. Expressed in periods rather
+	// than bytes so it follows whatever period the speaker asks for.
+	return p.ring.readPeriod(out, primePeriods*len(out))
 }
 
 // ── Commands ───────────────────────────────────────────────────────────────

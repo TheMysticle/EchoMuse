@@ -16,6 +16,7 @@ type ring struct {
 	buf    []byte
 	r, n   int
 	closed bool
+	primed bool // a whole period has been available since the last gap
 }
 
 func newRing(size int) *ring {
@@ -42,6 +43,50 @@ func (g *ring) write(p []byte) bool {
 		g.n += c
 		p = p[c:]
 	}
+	return true
+}
+
+// readPeriod copies exactly len(out) bytes out, or nothing at all.
+//
+// THIS IS THE RULE A PARTIAL READ BROKE. Fill used to take whatever was
+// queued, zero-pad the rest of the period and report success — splicing
+// silence into the middle of the waveform, which is a click. And it was
+// invisible to every instrument: the period was delivered, on time, full
+// length, so nothing starved, the ALSA buffer stayed healthy and the DAC
+// never ran dry. Four counters in a row reported nothing while the audio
+// was plainly glitching (Radar, 2026-10-11).
+//
+// Declining instead leaves those bytes queued, so the waveform resumes
+// intact rather than with a hole punched in it. The cost is that the gap is
+// a whole period instead of part of one — which is why `prime` exists: after
+// a decline the ring must refill to `prime` before it is read again, so a
+// brief jitter costs one gap rather than a run of them as the buffer
+// oscillates around a period boundary.
+//
+// A decline is a starve and the caller counts it, which is what finally
+// makes this measurable.
+func (g *ring) readPeriod(out []byte, prime int) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if !g.primed {
+		if g.n < prime {
+			return false
+		}
+		g.primed = true
+	}
+	if g.n < len(out) {
+		g.primed = false
+		return false
+	}
+	got := 0
+	for got < len(out) {
+		c := min(len(out)-got, g.n, len(g.buf)-g.r)
+		copy(out[got:], g.buf[g.r:g.r+c])
+		g.r = (g.r + c) % len(g.buf)
+		g.n -= c
+		got += c
+	}
+	g.space.Broadcast()
 	return true
 }
 
@@ -72,7 +117,7 @@ func (g *ring) len() int {
 // flush discards everything queued, for a track change or a stop.
 func (g *ring) flush() {
 	g.mu.Lock()
-	g.r, g.n = 0, 0
+	g.r, g.n, g.primed = 0, 0, false
 	g.space.Broadcast()
 	g.mu.Unlock()
 }
@@ -89,6 +134,6 @@ func (g *ring) close() {
 func (g *ring) reopen() {
 	g.mu.Lock()
 	g.closed = false
-	g.r, g.n = 0, 0
+	g.r, g.n, g.primed = 0, 0, false
 	g.mu.Unlock()
 }

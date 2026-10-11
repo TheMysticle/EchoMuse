@@ -97,20 +97,78 @@ func TestNonLinkedSessionIsNotConnected(t *testing.T) {
 	}
 }
 
-func TestAudioReachesFillAndShortReadIsPadded(t *testing.T) {
+// The old test here was named ...AndShortReadIsPadded and asserted the
+// defect: a partial period zero-padded and reported as success. That put
+// silence into the middle of the waveform — a click — and no counter could
+// see it, because the period was delivered on time and full length. Four
+// instruments reported nothing while a Radar was plainly glitching
+// (2026-10-11). A test that pins a bug is worse than no test, because it is
+// cited as the reason not to change the thing.
+func TestAWholePeriodOrNothingAndTheRestStaysQueued(t *testing.T) {
 	p, dir := startPlayer(t)
 	_, aud := fakeDaemon(t, dir)
+	const period = 8
+	prime := primePeriods * period
+
 	aud.Write([]byte{1, 2, 3, 4, 5, 6})
 	waitFor(t, "ring", func() bool { return p.ring.len() == 6 })
 	out := []byte{9, 9, 9, 9, 9, 9, 9, 9}
-	if !p.Fill(out, time.Time{}, 0) {
-		t.Fatal("Fill reported nothing")
+	if p.Fill(out, time.Time{}, 0) {
+		t.Fatal("a partial period was delivered; it would be padded with silence")
 	}
-	if string(out) != string([]byte{1, 2, 3, 4, 5, 6, 0, 0}) {
-		t.Fatalf("out = %v", out)
+	if p.ring.len() != 6 {
+		t.Fatalf("declining consumed %d bytes; they must stay queued so the "+
+			"waveform resumes intact", 6-p.ring.len())
+	}
+
+	// Enough to prime. The first period must be the original bytes in order,
+	// with nothing spliced in.
+	rest := make([]byte, prime-6)
+	for i := range rest {
+		rest[i] = byte(7 + i)
+	}
+	aud.Write(rest)
+	waitFor(t, "primed", func() bool { return p.ring.len() == prime })
+	if !p.Fill(out, time.Time{}, 0) {
+		t.Fatal("a primed ring did not deliver a period")
+	}
+	for i := range out {
+		if out[i] != byte(1+i) {
+			t.Fatalf("out = %v, want 1..%d — the stream is not contiguous",
+				out, period)
+		}
+	}
+}
+
+func TestAGapRequiresARefillBeforeReadingResumes(t *testing.T) {
+	// Without this the buffer oscillates around a period boundary and every
+	// other period is a gap — a run of clicks instead of one.
+	p, dir := startPlayer(t)
+	_, aud := fakeDaemon(t, dir)
+	const period = 8
+	prime := primePeriods * period
+	out := make([]byte, period)
+
+	aud.Write(make([]byte, prime))
+	waitFor(t, "primed", func() bool { return p.ring.len() == prime })
+	for i := 0; i < primePeriods; i++ {
+		if !p.Fill(out, time.Time{}, 0) {
+			t.Fatalf("period %d of a primed ring was declined", i)
+		}
 	}
 	if p.Fill(out, time.Time{}, 0) {
-		t.Fatal("empty ring must report no audio")
+		t.Fatal("an empty ring delivered a period")
+	}
+	// One period back is NOT enough to resume: it must refill to prime.
+	aud.Write(make([]byte, period))
+	waitFor(t, "one period", func() bool { return p.ring.len() == period })
+	if p.Fill(out, time.Time{}, 0) {
+		t.Fatal("reading resumed on one period; a refill to prime is required")
+	}
+	aud.Write(make([]byte, prime-period))
+	waitFor(t, "refilled", func() bool { return p.ring.len() == prime })
+	if !p.Fill(out, time.Time{}, 0) {
+		t.Fatal("a refilled ring did not resume")
 	}
 }
 
