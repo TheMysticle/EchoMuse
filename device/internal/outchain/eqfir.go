@@ -69,25 +69,30 @@ func radarEQBand(gain float64, boundaries []float64) int {
 // computing a wrong answer. Tests exercise exactly periodSamples per
 // call, same as production, and prove the general overlap-save MATH via
 // fft_test.go instead (which is not tied to any one block size).
+//
+// The input is real, so each period is transformed with a complex FFT of
+// HALF the block size and the usual even/odd split (realFFT), and only the
+// half spectrum is multiplied: about half the work of a full complex FFT of
+// a real signal, with every twiddle precomputed. The result is the same
+// convolution to rounding.
 type eqFIR struct {
-	h        []complex128   // the current band's taps, zero-padded and transformed
-	hs       [][]complex128 // every band's, the same way; h is one of these
+	hs       [][]complex128 // per band: the taps' half spectrum, bins 0..n/2
 	band     int
-	fadeFrom int          // band to crossfade FROM on the next period, or -1
-	fadeBuf  []complex128 // the old band's product during a crossfade
-	m        int          // filter length (taps)
-	period   int          // fixed new-samples-per-call this was sized for
-	fftSize  int
+	fadeFrom int // band to crossfade FROM on the next period, or -1
+	m        int // filter length (taps)
+	period   int // fixed new-samples-per-call this was sized for
+	rf       *realFFT
 	overlap  []float64 // last m-1 raw input samples carried across periods
 
-	// Reused across every call — one FFT-sized heap buffer and one output
-	// buffer, allocated once here rather than per period. This runs every
-	// ~42.7ms on hardware the rest of this package is visibly tuned to
-	// keep allocation-free (device/CLAUDE.md's measured per-period costs);
-	// a fresh 4096-complex128 buffer every period is exactly the kind of
-	// GC pressure that tuning exists to avoid.
-	buf []complex128
-	out []float64
+	// Reused across every call, so a period allocates nothing: this runs
+	// every ~42.7ms on hardware the rest of this package is visibly tuned
+	// to keep allocation-free.
+	in      []float64    // the block: overlap, then the period, then zeros
+	spec    []complex128 // the block's half spectrum
+	prod    []complex128 // spectrum times a band's
+	time    []float64    // a product back in time
+	out     []float64
+	fadeOut []float64
 }
 
 // newEQFIR builds an overlap-save FIR for taps, sized for exactly
@@ -108,31 +113,39 @@ func newEQFIRBands(bands [][]float64, periodSamples int) *eqFIR {
 		return nil
 	}
 	m := len(bands[0])
-	fftSize := nextPow2(m - 1 + periodSamples)
+	n := nextPow2(m - 1 + periodSamples)
+	if n < 4 {
+		n = 4
+	}
+	rf := newRealFFT(n)
 
 	hs := make([][]complex128, len(bands))
+	padded := make([]float64, n)
 	for b, taps := range bands {
 		if len(taps) != m {
 			return nil
 		}
-		h := make([]complex128, fftSize)
-		for i, v := range taps {
-			h[i] = complex(v, 0)
+		for i := range padded {
+			padded[i] = 0
 		}
-		fft(h, false)
-		hs[b] = h
+		copy(padded, taps)
+		hs[b] = make([]complex128, n/2+1)
+		rf.forward(padded, hs[b])
 	}
 
 	return &eqFIR{
-		h:        hs[0],
 		hs:       hs,
 		fadeFrom: -1,
 		m:        m,
 		period:   periodSamples,
-		fftSize:  fftSize,
+		rf:       rf,
 		overlap:  make([]float64, m-1),
-		buf:      make([]complex128, fftSize),
+		in:       make([]float64, n),
+		spec:     make([]complex128, n/2+1),
+		prod:     make([]complex128, n/2+1),
+		time:     make([]float64, n),
 		out:      make([]float64, periodSamples),
+		fadeOut:  make([]float64, periodSamples),
 	}
 }
 
@@ -146,66 +159,46 @@ func (f *eqFIR) process(x []float64) []float64 {
 		panic("eqFIR.process: called with a different length than newEQFIR was sized for")
 	}
 
-	buf := f.buf
-	for i := range buf {
-		buf[i] = 0
+	in := f.in
+	copy(in, f.overlap)
+	copy(in[f.m-1:], x)
+	for i := f.m - 1 + len(x); i < len(in); i++ {
+		in[i] = 0
 	}
-	for i, v := range f.overlap {
-		buf[i] = complex(v, 0)
-	}
-	for i, v := range x {
-		buf[f.m-1+i] = complex(v, 0)
-	}
+	f.rf.forward(in, f.spec)
 
-	fft(buf, false)
-	fading := f.fadeFrom >= 0
-	if fading {
-		if f.fadeBuf == nil {
-			f.fadeBuf = make([]complex128, f.fftSize)
-		}
-		old := f.hs[f.fadeFrom]
-		for i := range buf {
-			f.fadeBuf[i] = buf[i] * old[i]
-		}
-		fft(f.fadeBuf, true)
-		f.fadeFrom = -1
+	if f.fadeFrom >= 0 {
+		f.convolve(f.hs[f.fadeFrom], f.fadeOut)
 	}
-	for i := range buf {
-		buf[i] *= f.h[i]
-	}
-	fft(buf, true)
-
-	out := f.out
-	for i := range out {
-		out[i] = real(buf[f.m-1+i])
-	}
-	if fading {
+	f.convolve(f.hs[f.band], f.out)
+	if f.fadeFrom >= 0 {
 		// Linear crossfade across the period from the old band's output to
 		// the new one's — both filtered the same input history, so this is
 		// a change of curve, faded so it does not land as a step.
+		out := f.out
 		n := float64(len(out))
 		for i := range out {
 			w := float64(i+1) / n
-			out[i] = real(f.fadeBuf[f.m-1+i])*(1-w) + out[i]*w
+			out[i] = f.fadeOut[i]*(1-w) + out[i]*w
 		}
+		f.fadeFrom = -1
 	}
 
 	// Carry the last m-1 RAW input samples for the next call — history of
-	// the signal, not of the filtered output. period is fixed and the
-	// overlap is always exactly m-1 long, so (since period > 0) the new
-	// overlap is always drawn entirely from x: the old overlap has fully
-	// rolled off UNLESS period < m-1, in which case part of it survives.
-	// Updated IN PLACE (no new allocation) — copy() is memmove-like, so
-	// the keep-branch's overlapping src/dst within f.overlap is safe.
-	if f.period >= f.m-1 {
-		copy(f.overlap, x[f.period-(f.m-1):])
-	} else {
-		keep := f.m - 1 - f.period
-		copy(f.overlap[:keep], f.overlap[f.period:f.period+keep])
-		copy(f.overlap[keep:], x)
-	}
+	// the signal, not of the filtered output. They are the tail of the
+	// block just assembled.
+	copy(f.overlap, in[len(x):len(x)+f.m-1])
+	return f.out
+}
 
-	return out
+// convolve multiplies the block's spectrum by h and writes the valid part
+// of the circular convolution — the period's new samples — to out.
+func (f *eqFIR) convolve(h []complex128, out []float64) {
+	for k, v := range f.spec {
+		f.prod[k] = v * h[k]
+	}
+	f.rf.inverse(f.prod, f.time)
+	copy(out, f.time[f.m-1:f.m-1+len(out)])
 }
 
 // setBand switches filter; the next process crossfades into it. Setting the
@@ -216,7 +209,6 @@ func (f *eqFIR) setBand(b int) {
 	}
 	f.fadeFrom = f.band
 	f.band = b
-	f.h = f.hs[b]
 }
 
 // startOn puts the filter on band b with no crossfade — for its first
@@ -225,7 +217,7 @@ func (f *eqFIR) startOn(b int) {
 	if b < 0 || b >= len(f.hs) {
 		return
 	}
-	f.band, f.h, f.fadeFrom = b, f.hs[b], -1
+	f.band, f.fadeFrom = b, -1
 }
 
 func (f *eqFIR) reset() {
