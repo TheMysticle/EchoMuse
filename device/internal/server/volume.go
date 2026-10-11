@@ -61,20 +61,24 @@ const (
 	// CLOCKWISE (increasing index — LED i sits at ringLEDOffset + 30i
 	// degrees clockwise from 12 o'clock).
 	//
-	// Stock anchors this on the MINUS button, not on 6 o'clock, and the two
-	// are not the same place.
+	// CONFIRMED ON RADAR: the minus button is at 6 o'clock, so the anchor is
+	// ringBottomLED and ringLEDOffset's geometry — calibrated on biscuit
+	// against mic angles from tone injection — holds on this board too.
 	//
-	// Both this and ringVolumeSweep are PHYSICAL FACTS about the board that
-	// can only be read off the hardware, which is why they are constants
-	// with the method written down rather than something derived. Set the
-	// volume to its lowest and watch which LEDs pulse: this rotates the
-	// glyph, ringVolumeSweep decides which way the arc grows out of it.
+	// The glyph is {9, 10}: the anchor plus the LED before it, straddling
+	// the button between them, with the arc then growing clockwise from 10.
+	// Three rounds on the hardware to get there, recorded because each step
+	// says which way a change moves things:
 	//
-	// History, because it says which direction each step moves things: the
-	// glyph at ringBottomLED read one LED too far one way; -1 moved it the
-	// WRONG way (further the same way), so index DECREASING is that
-	// direction and +1 is the correction.
-	ringVolumeStart = (ringBottomLED + 1) % numLEDs
+	//	{9,10,11} symmetric  one LED too far clockwise (11 is the extra)
+	//	start 9  -> {8,9}    dropped the wrong end, added one anticlockwise
+	//	start 11 -> {10,11}  dropped the wrong end the other way
+	//	start 10 -> {10,9}   correct
+	//
+	// So it was never the anchor: the faults were a 3-wide glyph and
+	// symmetric growth. Set the volume to its lowest and watch which LEDs
+	// pulse if this ever needs checking on a new board.
+	ringVolumeStart = ringBottomLED
 
 	// ringVolumeSweep is which way the arc grows from the anchor: +1 for
 	// increasing LED index, -1 for decreasing.
