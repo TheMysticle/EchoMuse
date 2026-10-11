@@ -137,7 +137,23 @@ into your Home Assistant `config/custom_components/` folder and restart HA.
 **3. Add it.** Settings → Devices & Services → **Add Integration** →
 *EchoMuse Spotify* → paste the Client ID → approve on Spotify's page.
 
-**4. Ask for something.** *"Play Bohemian Rhapsody on the bedroom echo."*
+**4. Ask for something.** The sentences Home Assistant recognises for this
+are specific, and `in` and `on` are not interchangeable:
+
+| Say | Matches |
+|---|---|
+| "play *X* **on** bedroom echo" | the **entity** called that |
+| "play *X* **in** bedroom" | an **area** called Bedroom |
+| "play the album *X* on bedroom echo" | as above, restricted to albums |
+| "play *X*" | the area the Echo you spoke to is in |
+
+So **"play music in bedroom" only works if Bedroom is a Home Assistant
+area**. If Bedroom is the device's name, say "play music **on** bedroom". A
+mismatch here is reported as *"I did not catch that"* — the sentence matched
+no intent at all, which looks like the integration failing and is not.
+
+Assigning each player to an area is worth doing anyway: it makes "play *X*"
+work in the room you are standing in.
 
 ### An Echo only appears once Spotify has seen it
 
@@ -170,9 +186,11 @@ request, and so are "Don't Stop Me Now" and "dont stop me now".
 
 ### What it does not do
 
-- **No browsing.** It resolves a name to something playable. Playlists,
-  queues and a catalogue tree are Music Assistant's job and are not
-  reimplemented here.
+- **No catalogue tree.** The media player card's media button opens a root
+  with a **search box** — that is how you search from the UI. It does not
+  list your playlists or saved albums; that needs two more read scopes and a
+  re-authorisation, so it is not done by default. Queues are not managed
+  here either.
 - **Nothing is sent anywhere else.** Search results come from Spotify to your
   Home Assistant and stop. No catalogue data is sent to any other service.
 
@@ -214,10 +232,23 @@ Development mode serves only the five accounts on the app's User Management
 list, and search is limited to 10 results. Check the account you are playing
 on is listed.
 
+**"I did not catch that."**
+The sentence matched no intent — nothing to do with the integration. Almost
+always `in` versus `on`: "play music **in** bedroom" needs Bedroom to be an
+**area**, while "play music **on** bedroom" targets an entity by name. See
+the table above.
+
 **Home Assistant says it cannot find a player.**
-The intent needs a player advertising both search and play. If you have both
-this integration and HA's own Spotify integration, name the Echo explicitly
-in the request.
+The intent needs a player advertising both search and play, and it needs
+exactly ONE match. If you have both this integration and HA's own Spotify
+integration, or two players in the same area, name the one you mean.
+
+**You cannot browse from the media player card.**
+There is nothing to browse: this resolves a name to something playable rather
+than holding a catalogue. The card's media button opens a root with a
+**search box**, which is the way in. Listing the account's own playlists and
+saved albums would need two more read scopes and a re-authorisation; it is
+not done by default.
 
 **Checking what is actually running on an Echo**, over the dashboard console:
 

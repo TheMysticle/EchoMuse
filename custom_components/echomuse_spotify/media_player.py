@@ -45,6 +45,13 @@ from . import search as ranking
 FEATURES = (
     MediaPlayerEntityFeature.SEARCH_MEDIA
     | MediaPlayerEntityFeature.PLAY_MEDIA
+    # BROWSE_MEDIA is what puts the entity's media button in the Home
+    # Assistant UI at all, and the browse ROOT is where the frontend finds
+    # `can_search` and offers a search box. Without it the entity could be
+    # searched only from Developer Tools, which is where this was left
+    # after the first pass — `search_media` worked and there was no way to
+    # reach it by hand.
+    | MediaPlayerEntityFeature.BROWSE_MEDIA
     | MediaPlayerEntityFeature.PLAY
     | MediaPlayerEntityFeature.PAUSE
     | MediaPlayerEntityFeature.NEXT_TRACK
@@ -254,6 +261,39 @@ class SpotifyConnectPlayer(CoordinatorEntity[SpotifyCoordinator], MediaPlayerEnt
             # name to something playable and stops. A browse tree is a
             # different feature and claiming it would give an empty one.
             can_expand=False,
+        )
+
+    # ── Browse ──────────────────────────────────────────────────────────────
+
+    async def async_browse_media(
+        self,
+        media_content_type: MediaType | str | None = None,
+        media_content_id: str | None = None,
+    ) -> BrowseMedia:
+        """
+        A root that can be SEARCHED, with nothing to drill into.
+
+        This integration resolves a name to something playable; it does not
+        hold a catalogue. So the root advertises `can_search` — which is what
+        the frontend reads to offer a search box — and has no children,
+        rather than claiming a tree and presenting an empty one.
+
+        Listing the account's own playlists and saved albums here would need
+        `playlist-read-private` and `user-library-read`, and every existing
+        connection would have to be re-authorised to pick them up. Worth
+        doing deliberately rather than as a side effect of wanting a search
+        box.
+        """
+        return BrowseMedia(
+            media_class=MediaClass.DIRECTORY,
+            media_content_id="search",
+            media_content_type=MediaType.MUSIC,
+            title="Spotify",
+            can_play=False,
+            can_expand=True,
+            can_search=True,
+            children=[],
+            children_media_class=MediaClass.TRACK,
         )
 
     # ── Commands ────────────────────────────────────────────────────────────

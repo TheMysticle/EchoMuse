@@ -57,6 +57,21 @@ Assistant `config/custom_components/` folder, then restart.
    so none is needed and none is stored.
 5. Settings → Devices & Services → **Add Integration** → *EchoMuse Spotify*.
 
+## Asking for music
+
+Home Assistant's sentences for this are specific, and `in` and `on` are not
+interchangeable:
+
+- "play *X* **on** *entity name*"
+- "play *X* **in** *area*"
+- "play *X*" — the area you are speaking in
+- "play the **album** *X* on *entity name*"
+
+**"play music in bedroom" only works if Bedroom is an area.** If it is the
+device's name, say "on bedroom". A mismatch is reported as *"I did not catch
+that"*: the sentence matched no intent at all, which looks like this
+integration failing and is not.
+
 ## What you get
 
 | | |
@@ -86,8 +101,11 @@ request, as are *Don't Stop Me Now* and *dont stop me now*.
 
 ## What it deliberately does not do
 
-- **No browsing.** It resolves a name to something playable and stops.
-  Playlists, queues and a catalogue tree are a different feature.
+- **No catalogue tree.** The media button opens a root with a **search
+  box**, which is the way in. It does not list your playlists or saved
+  albums — that would need `playlist-read-private` and `user-library-read`
+  and a re-authorisation, so it is not done by default. Queues are not
+  managed here either.
 - **No scopes beyond playback.** It asks for `user-read-private`,
   `user-read-playback-state` and `user-modify-playback-state`, because
   transferring playback is impossible without the last one.
