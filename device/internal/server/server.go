@@ -237,6 +237,14 @@ func (s *Server) SetVolumeApply(fn func(level int)) {
 	s.volume.SetApply(fn)
 }
 
+// SetVolumePercent wires how a level becomes the 0-100 number every slider
+// shows, so the LED arc agrees with it. See volumeController.SetPercent —
+// the conversion is the board's, and this package knows nothing about
+// boards.
+func (s *Server) SetVolumePercent(fn func(level int) int) {
+	s.volume.SetPercent(fn)
+}
+
 // SetVolumeChangeCallback wires a callback invoked when volume changes.
 // The callback receives the new level (0–volumeMax).
 func (s *Server) SetVolumeChangeCallback(cb func(level int)) {
@@ -388,8 +396,8 @@ func (s *Server) SetDirectionLEDs(angleDeg float64) {
 	}
 
 	const (
-		nLEDs     = 12
-		ledOffset = 240
+		nLEDs     = numLEDs
+		ledOffset = ringLEDOffset
 	)
 
 	normAngle := int(math.Round(angleDeg/30)) * 30

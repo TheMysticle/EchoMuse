@@ -2,6 +2,7 @@ package server
 
 import (
 	"log"
+	"math"
 	"sync"
 	"time"
 
@@ -39,6 +40,27 @@ const (
 	// what Init used to leave the DAC at, and so what this read back.
 	volumeBoot = 100
 	numLEDs    = 12
+
+	// ringLEDOffset places LED 0 on the ring: an angle in degrees clockwise
+	// from 12 o'clock maps to ((angle - ringLEDOffset + 360) % 360) / 30.
+	// SetDirectionLEDs has used this since the beamformer arc existed; the
+	// volume arc now shares it rather than keeping a second copy.
+	ringLEDOffset = 240
+
+	// ringBottomLED is the LED at 6 o'clock — the physical bottom of the
+	// ring, and where the volume arc starts, as stock's does.
+	//
+	// Derived rather than typed: ((180 - 240 + 360) % 360) / 30 = 10, with 9
+	// and 11 flanking it. A test pins it against SetDirectionLEDs' own answer
+	// for 180 degrees so the two cannot drift.
+	ringBottomLED = ((180 - ringLEDOffset + 360) % 360) / 30
+
+	// minPulse* shape the bottom-of-scale breathe. A ~1.2s cycle reads as a
+	// pulse rather than a flash, and the floor keeps the glyph visible at
+	// its dimmest — going fully dark would read as the ring dropping out.
+	minPulseTick   = 60 * time.Millisecond
+	minPulsePeriod = 1200 * time.Millisecond
+	minPulseFloor  = 0.35
 )
 
 // radarVolumeSteps are stock Radar's 30 button steps, as device levels: each
@@ -59,6 +81,9 @@ var radarVolumeSteps = []int{
 type volumeController struct {
 	mu    sync.Mutex
 	level int
+	// pct turns a level into the 0-100 scale the sliders show; see
+	// SetPercent. nil falls back to a proportion of the button band.
+	pct func(level int) int
 	// steps is the board's own button ladder (radarVolumeSteps); nil keeps
 	// the volumeStep band above volumeButtonFloor.
 	steps          []int
@@ -74,6 +99,9 @@ type volumeController struct {
 	// back to the listening/thinking/playing animation instead of going
 	// dark. The muted → red-ring case stays here either way.
 	onDisplayExpire func()
+	// minPulse stops the bottom-of-scale pulse. Non-nil only while that
+	// glyph is on the ring.
+	minPulse chan struct{}
 }
 
 // DisplayActive reports whether the volume arc is currently on the ring.
@@ -108,6 +136,20 @@ func newVolumeController(ledGetter func() led.Controller) *volumeController {
 	}
 	log.Printf("Volume controller initialised at %d/%d", vc.level, volumeMax)
 	return vc
+}
+
+// SetPercent wires how a level becomes the 0-100 number every slider shows
+// (em_volume on the controller, StockVolumeValue on Radar, a proportion of
+// volumeMax elsewhere). The ring is drawn from it, so the arc and the slider
+// cannot disagree.
+//
+// Wired from cmd because the conversion is the BOARD's, and this package
+// knows nothing about boards. Absent, the arc falls back to a proportion of
+// the button band — the old behaviour.
+func (vc *volumeController) SetPercent(fn func(level int) int) {
+	vc.mu.Lock()
+	vc.pct = fn
+	vc.mu.Unlock()
 }
 
 // SetApply wires what actually changes the loudness — the speaker's software
@@ -292,27 +334,127 @@ func clampToButtonBand(level int) int {
 	return level
 }
 
-// stepArc is the volume arc for a stepped ladder, in half-LEDs per LED:
-// 2 full, 1 half-bright, 0 off. 30 steps over 12 LEDs is two and a half
-// steps to an LED, so lighting whole LEDs only moves the ring every second
-// or third press. The LED a step has only partly reached glows at half
-// brightness, so the ring moves on nearly every press: the arc is 2*n
-// half-LEDs, a step rounds up to the next, and the top step fills it. A
-// level below the ladder's bottom (HA can put it there) still shows one
-// half-LED, so a quiet device does not read as off.
-func stepArc(steps []int, level, n int) []int {
-	half := (stepIndex(steps, level)*2*n + len(steps) - 1) / len(steps)
+// ringOrder is the LED indices from the bottom centre outwards, taking each
+// side in turn and ending at the top.
+//
+// For 12 LEDs with the bottom at 10 that is 10, 9, 11, 8, 0, 7, 1, 6, 2, 5,
+// 3, 4. Growth alternates sides, so one press moves one half-LED and two
+// presses widen the arc evenly — which is how stock's reads in motion.
+func ringOrder(n, bottom int) []int {
+	out := make([]int, 0, n)
+	out = append(out, bottom)
+	for d := 1; len(out) < n; d++ {
+		left := ((bottom-d)%n + n) % n
+		right := (bottom + d) % n
+		out = append(out, left)
+		if right != left && len(out) < n {
+			out = append(out, right)
+		}
+	}
+	return out
+}
+
+// volumeArc is the ring for a volume, in half-LEDs per LED: 2 full, 1
+// half-bright, 0 off.
+//
+// `pct` is the 0-100 scale EVERY SLIDER SHOWS — Home Assistant's, the
+// Spotify app's, the dashboard's. That is the change: the arc used to be
+// drawn from the step index out of the board's 30-step ladder, which is a
+// different scale, and it over-read badly at the bottom. Measured on Radar:
+// slider 3% lit 10% of the ring, 10% lit 17%, 20% lit 23%, 50% lit 47%. The
+// ring now agrees with whatever number the user is looking at, by
+// construction.
+//
+// The arc grows from the bottom centre rather than from LED 0, which was
+// wherever index 0 happens to sit. A half-bright LED at the leading edge
+// keeps the ring moving on nearly every press: 30 steps over 12 LEDs is two
+// and a half steps per LED, so whole LEDs alone would move it on 12 presses
+// in 30.
+//
+// `atMin` is the bottom of the scale, and it is a FIXED GLYPH rather than a
+// proportion: the bottom centre at full brightness with its two neighbours
+// at half, which is how a stock Echo shows its lowest volume. It says "this
+// is as quiet as it goes" and no fraction of a 12-LED ring can.
+func volumeArc(pct, n int, atMin bool) []int {
+	units := make([]int, n)
+	order := ringOrder(n, ringBottomLED)
+	if atMin {
+		units[order[0]] = 2
+		for _, i := range order[1:min(3, len(order))] {
+			units[i] = 1
+		}
+		return units
+	}
+	half := (pct*2*n + 50) / 100
 	if half < 1 {
+		// Above silence but below half an LED still shows something: a ring
+		// that reads as off when the device is merely quiet is a fault.
 		half = 1
 	}
 	if half > 2*n {
 		half = 2 * n
 	}
-	out := make([]int, n)
-	for i := range out {
-		out[i] = min(max(half-2*i, 0), 2)
+	for _, i := range order {
+		u := min(half, 2)
+		units[i] = u
+		half -= u
+		if half <= 0 {
+			break
+		}
 	}
-	return out
+	return units
+}
+
+// startMinPulse breathes the bottom-of-scale glyph for the display window.
+//
+// Driven here rather than through the LED animator because the volume arc
+// deliberately OWNS the ring against animations — DisplayActive suppresses
+// them, so an animation would be suppressed by the very frame it is meant to
+// be. It is one i2c write per tick for at most the display window, the same
+// cost class the animator already pays at ~100ms.
+func (vc *volumeController) startMinPulse(lc led.Controller, base []int) {
+	vc.stopMinPulse()
+	stop := make(chan struct{})
+	vc.mu.Lock()
+	vc.minPulse = stop
+	vc.mu.Unlock()
+	go func() {
+		t := time.NewTicker(minPulseTick)
+		defer t.Stop()
+		step := 0
+		for {
+			select {
+			case <-stop:
+				return
+			case <-t.C:
+				step++
+				// Phase from elapsed ticks, not a frame counter that drifts:
+				// the same reason runPulse derives its phase from time.
+				scale := minPulseFloor + (1-minPulseFloor)*
+					(1+math.Cos(2*math.Pi*float64(step)*float64(minPulseTick)/
+						float64(minPulsePeriod)))/2
+				leds := make([]led.Led, numLEDs)
+				for i := 0; i < numLEDs; i++ {
+					v := uint8(float64(100*base[i]) * scale)
+					leds[i] = led.Led{ID: i, R: 0, G: v, B: v}
+				}
+				if lc.SetLEDs(leds...) != nil {
+					return
+				}
+			}
+		}
+	}()
+}
+
+// stopMinPulse ends the pulse if one is running. Idempotent.
+func (vc *volumeController) stopMinPulse() {
+	vc.mu.Lock()
+	stop := vc.minPulse
+	vc.minPulse = nil
+	vc.mu.Unlock()
+	if stop != nil {
+		close(stop)
+	}
 }
 
 // showLEDs lights N of 12 LEDs in cyan proportional to volume, then clears after 2s.
@@ -322,27 +464,28 @@ func (vc *volumeController) showLEDs(level int) {
 		return
 	}
 
-	// The arc spans the BUTTON band, not the full control: over 0..volumeMax
-	// the audible range crowds into the top LEDs and a press often moves
-	// nothing. One LED stays lit anywhere above silence so the ring never
-	// reads as "off" when the device is merely quiet.
-	span := volumeMax - volumeButtonFloor
-	lit := (level - volumeButtonFloor) * numLEDs / span
-	if lit < 1 && level > volumeMin {
-		lit = 1
+	vc.mu.Lock()
+	pctOf, steps := vc.pct, vc.steps
+	vc.mu.Unlock()
+
+	// The arc reads the 0-100 scale the sliders show, so the ring agrees
+	// with whatever number the user is looking at. Without a conversion
+	// wired, fall back to a proportion of the BUTTON band: over 0..volumeMax
+	// the audible range crowds into the top LEDs.
+	pct := 0
+	if pctOf != nil {
+		pct = pctOf(level)
+	} else if span := volumeMax - volumeButtonFloor; span > 0 {
+		pct = (level - volumeButtonFloor) * 100 / span
 	}
-	if lit > numLEDs {
-		lit = numLEDs
-	}
-	// Whole LEDs in units of two: 2 is full cyan, 1 is the half-bright
-	// LED. The ladder's arc is in half-LEDs; the band's stays whole.
-	units := make([]int, numLEDs)
-	for i := 0; i < lit; i++ {
-		units[i] = 2
-	}
-	if vc.steps != nil {
-		units = stepArc(vc.steps, level, numLEDs)
-	}
+	pct = min(max(pct, 0), 100)
+
+	// The bottom of the scale is a glyph, not a fraction — the lowest step
+	// of the board's ladder, or the button floor without one.
+	atMin := level > volumeMin && ((steps != nil && level <= steps[0]) ||
+		(steps == nil && level <= volumeButtonFloor))
+	units := volumeArc(pct, numLEDs, atMin)
+
 	leds := make([]led.Led, numLEDs)
 	for i := 0; i < numLEDs; i++ {
 		leds[i] = led.Led{ID: i, R: 0, G: uint8(100 * units[i]), B: uint8(100 * units[i])} // cyan, 200 at full
@@ -350,6 +493,14 @@ func (vc *volumeController) showLEDs(level int) {
 	if err := lc.SetLEDs(leds...); err != nil {
 		log.Printf("Volume LED set failed: %v", err)
 		return
+	}
+	// At the bottom of the scale the glyph PULSES for the display window,
+	// as stock's does. It is what distinguishes "as quiet as it goes" from a
+	// small arc, which a static three LEDs cannot.
+	if atMin {
+		vc.startMinPulse(lc, units)
+	} else {
+		vc.stopMinPulse()
 	}
 
 	// Cancel any existing clear timer and start a new one

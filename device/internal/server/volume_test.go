@@ -186,74 +186,131 @@ func TestStepIndex(t *testing.T) {
 	}
 }
 
-// The arc on stock's 30-step ladder moves on nearly every press, and the
-// LED a step has only partly reached is at half brightness.
-func TestStepArcHalfBrightnessBetweenLEDs(t *testing.T) {
+// The ring must agree with the number the user is looking at.
+//
+// The arc used to be drawn from the step index out of the board's 30-step
+// ladder while every slider — Home Assistant's, the Spotify app's, the
+// dashboard's — shows the 0-100 stock value. Two different scales, and it
+// over-read worst at the bottom: measured on Radar, slider 3% lit 10% of the
+// ring, 10% lit 17%, 20% lit 23%, 50% lit 47%.
+func TestVolumeArcTracksTheSliderPercentage(t *testing.T) {
 	const n = 12
-	arc := func(idx int) []int { return stepArc(radarVolumeSteps, radarVolumeSteps[idx-1], n) }
 	sum := func(a []int) (t int) {
 		for _, v := range a {
 			t += v
 		}
 		return
 	}
-	// Step 1 is a single half-bright LED, step 2 fills it, step 3 starts the next.
-	for idx, want := range map[int][]int{
-		1:  {1},
-		2:  {2},
-		3:  {2, 1},
-		5:  {2, 2},
-		30: {2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2},
-	} {
-		got := arc(idx)
-		for i, w := range want {
-			if got[i] != w {
-				t.Errorf("step %d LED %d = %d, want %d (arc %v)", idx, i, got[i], w, got)
-			}
+	for _, pct := range []int{1, 3, 10, 20, 30, 50, 70, 90, 100} {
+		got := sum(volumeArc(pct, n, false))
+		want := (pct*2*n + 50) / 100
+		if want < 1 {
+			want = 1
 		}
-		for i := len(want); i < n; i++ {
-			if got[i] != 0 {
-				t.Errorf("step %d LED %d = %d, want off (arc %v)", idx, i, got[i], got)
+		if got != want {
+			t.Errorf("%d%%: %d half-LEDs, want %d (%.0f%% of the ring)",
+				pct, got, want, float64(got)/float64(2*n)*100)
+		}
+	}
+	// Full means full, and nothing above silence is ever dark.
+	if a := volumeArc(100, n, false); sum(a) != 2*n {
+		t.Errorf("100%% = %v, want every LED full", a)
+	}
+	if a := volumeArc(0, n, false); sum(a) != 1 {
+		t.Errorf("0%% = %v, want one half-bright LED rather than a dark ring", a)
+	}
+}
+
+func TestVolumeArcGrowsFromTheBottomCentre(t *testing.T) {
+	const n = 12
+	// LED 10 is 6 o'clock, flanked by 9 and 11. It used to start at index 0,
+	// which is wherever index 0 happens to sit on the ring.
+	a := volumeArc(4, n, false)
+	if a[ringBottomLED] == 0 {
+		t.Errorf("the bottom LED is dark at a low volume: %v", a)
+	}
+	for i, v := range a {
+		if v != 0 && i != ringBottomLED {
+			t.Errorf("LED %d lit before the bottom centre filled: %v", i, a)
+		}
+	}
+	// Growth is outward from there, never wrapping the far side first.
+	order := ringOrder(n, ringBottomLED)
+	if order[0] != ringBottomLED || order[1] != 9 || order[2] != 11 {
+		t.Errorf("fill order starts %v, want bottom then its neighbours", order[:3])
+	}
+	if len(order) != n {
+		t.Fatalf("fill order covers %d LEDs, want %d", len(order), n)
+	}
+	seen := map[int]bool{}
+	for _, i := range order {
+		if seen[i] {
+			t.Fatalf("LED %d appears twice in the fill order: %v", i, order)
+		}
+		seen[i] = true
+	}
+	// The arc is contiguous around the bottom at every level.
+	for pct := 0; pct <= 100; pct++ {
+		arc := volumeArc(pct, n, false)
+		lit := 0
+		for _, i := range order {
+			if arc[i] == 0 {
+				break
+			}
+			lit++
+		}
+		for _, i := range order[lit:] {
+			if arc[i] != 0 {
+				t.Fatalf("%d%%: LED %d lit beyond the arc: %v", pct, i, arc)
 			}
 		}
 	}
-	// Never lights past the front: at most one LED is half-bright, and every
-	// LED before it is full.
-	moves, prev := 0, 0
-	for idx := 1; idx <= len(radarVolumeSteps); idx++ {
-		a := arc(idx)
-		halves, seenOff := 0, false
-		for _, v := range a {
-			if v == 1 {
-				halves++
-			}
-			if seenOff && v != 0 {
-				t.Errorf("step %d: lit LED after an off one: %v", idx, a)
-			}
-			if v < 2 {
-				seenOff = true
-			}
-		}
-		if halves > 1 {
-			t.Errorf("step %d: %d half-bright LEDs: %v", idx, halves, a)
-		}
-		if s := sum(a); s < prev {
-			t.Errorf("step %d: arc shrank %d -> %d", idx, prev, s)
-		} else {
-			if s > prev {
-				moves++
-			}
-			prev = s
+}
+
+// The bottom of the scale is the stock glyph: the bottom centre full with
+// its two neighbours at half. It says "as quiet as it goes", which no
+// fraction of a 12-LED ring can.
+func TestTheBottomOfScaleGlyph(t *testing.T) {
+	const n = 12
+	a := volumeArc(3, n, true)
+	if a[ringBottomLED] != 2 {
+		t.Errorf("bottom centre = %d, want full: %v", a[ringBottomLED], a)
+	}
+	if a[9] != 1 || a[11] != 1 {
+		t.Errorf("flanks = %d/%d, want half bright: %v", a[9], a[11], a)
+	}
+	for i, v := range a {
+		if i != 9 && i != 10 && i != 11 && v != 0 {
+			t.Errorf("LED %d lit in the minimum glyph: %v", i, a)
 		}
 	}
-	// Whole LEDs alone changed the ring on 12 of 30 presses; with the half
-	// step it changes on 24.
-	if moves != 24 {
-		t.Errorf("ring changes on %d of 30 steps, want 24", moves)
+	// The glyph ignores the percentage: it is a state, not a level.
+	if b := volumeArc(50, n, true); !equalInts(a, b) {
+		t.Errorf("the glyph changed with the percentage: %v vs %v", a, b)
 	}
-	// Below the ladder: one half-bright LED, never dark above silence.
-	if a := stepArc(radarVolumeSteps, 1, n); a[0] != 1 || sum(a) != 1 {
-		t.Errorf("below the bottom step: %v, want one half-bright LED", a)
+}
+
+func equalInts(a, b []int) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// The volume arc and the beamformer's direction arc must agree on where the
+// bottom of the ring is, or one of them is pointing somewhere else.
+func TestRingGeometryMatchesTheDirectionArc(t *testing.T) {
+	// SetDirectionLEDs' own maths for 180 degrees, which is 6 o'clock.
+	const nLEDs, ledOffset = numLEDs, ringLEDOffset
+	primary := ((180 - ledOffset + 360) % 360) / 30 % nLEDs
+	if primary != ringBottomLED {
+		t.Errorf("direction arc puts 180 degrees at LED %d, the volume arc at %d",
+			primary, ringBottomLED)
 	}
 }
 

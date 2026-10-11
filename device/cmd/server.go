@@ -762,6 +762,12 @@ func main() {
 	if pcmSpeaker != nil {
 		s.SetVolumeApply(pcmSpeaker.SetVolume)
 	}
+	// The LED arc is drawn from the same 0-100 scale Home Assistant, the
+	// Spotify app and the dashboard show — levelToPct, which on Radar is
+	// stock's own value table. Before this the arc came from the step index
+	// out of 30, a different scale that over-read at the bottom: slider 3%
+	// lit 10% of the ring, 10% lit 17%, 20% lit 23%.
+	s.SetVolumePercent(levelToPct)
 	// Volume change — notify controller so HA entity and dashboard reflect it.
 	// Fires on every Set() call: physical button press or future volume_set command.
 	s.SetVolumeChangeCallback(func(level int) {
