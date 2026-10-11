@@ -151,3 +151,6 @@ func (l *stockLimiter) takeStats() (float64, uint64, uint64) {
 	l.minG = 1
 	return r, l.clipped, l.clippedBypassed
 }
+
+// clipCount is the running clip totals, without clearing anything.
+func (l *stockLimiter) clipCount() (uint64, uint64) { return l.clipped, l.clippedBypassed }

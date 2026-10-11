@@ -172,3 +172,10 @@ func (l *limiter) takeStats() (float64, uint64, uint64) {
 	l.maxReductionDb = 0
 	return r, l.clipped, l.clippedBypassed
 }
+
+// clipCount is the running clip totals, without clearing anything.
+//
+// Separate from takeStats because the reductions are a per-REPORT maximum
+// and the clip counts are monotonic. A reader that only wants the clip
+// totals must not clear a reduction the stream report is about to publish.
+func (l *limiter) clipCount() (uint64, uint64) { return l.clipped, l.clippedBypassed }

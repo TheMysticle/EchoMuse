@@ -107,6 +107,9 @@ type peakLimiter interface {
 	// takeStats returns the worst reduction since the last call (and clears
 	// it) and the running clip counts.
 	takeStats() (maxReductionDb float64, clipped, clippedBypassed uint64)
+	// clipCount is the same running totals WITHOUT clearing the reduction,
+	// for a reader that is not publishing a stream report.
+	clipCount() (clipped, clippedBypassed uint64)
 }
 
 // Chain runs EQ → bass guard → limiter on stereo S16_LE periods.
@@ -466,6 +469,16 @@ type Stats struct {
 	Clipped            uint64 // must stay 0 while limiting
 	ClippedBypassed    uint64
 }
+
+// ClipCount is the chain's running clip totals, which are monotonic.
+//
+// `Clipped` must stay 0 while limiting — a sample past the ceiling after the
+// limiter is a defined fault, and it is heard as a brief crackle. It was
+// only ever reported when a channel-fed stream ENDED, so during Sendspin or
+// Spotify playback, which has no stream completion, a clipping chain was
+// invisible. The chain runs on the MIX, so this is the one fault that
+// affects every source alike.
+func (c *Chain) ClipCount() (uint64, uint64) { return c.lim.clipCount() }
 
 // TakeStats returns and clears the maximum reductions since the last call.
 // ALSA goroutine only.
