@@ -20,6 +20,7 @@ from aiohttp import ClientError, ClientResponseError, ClientSession
 from homeassistant.exceptions import HomeAssistantError
 
 from .const import API_BASE
+from .playback import play_payload
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -183,19 +184,60 @@ class SpotifyApi:
 
     # ── Playback ────────────────────────────────────────────────────────────
 
+    async def track(self, spotify_id: str) -> dict:
+        """One track, for the album it belongs to. See `play_uri`."""
+        body = await self._request("GET", f"/tracks/{spotify_id}")
+        return body if isinstance(body, dict) else {}
+
     async def play_uri(self, device_id: str, uri: str) -> None:
         """
         Start `uri` on `device_id`, transferring playback if needed.
 
-        A track goes in `uris` and everything else in `context_uri`: Spotify
-        refuses a context_uri that is a track and a uris list that is not,
-        and getting it the wrong way round fails the whole request rather
-        than degrading.
+        A SINGLE TRACK IS PLAYED IN ITS ALBUM'S CONTEXT, not on its own, and
+        that is the point of the extra request this makes.
+
+        Spotify accepts a bare track through `uris` with no context, and it
+        plays — but it leaves the Connect session with no context at all, and
+        a librespot device then cannot function as one. Observed on an Echo,
+        2026-10-11: `couldn't load context info because: context is not
+        available. type: Default`, then the context resolver's request
+        refused with a 400 (`librespot_connect::spirc`, which logs it and
+        marks the context unavailable), and at the end of the track `Not
+        playing next track because there are no more tracks left in queue`.
+        Playing again into that state wedged the device until em-spotify was
+        killed. The Spotify app never does this to it, because the app always
+        sends a context.
+
+        So a track is sent as its album plus an `offset`, which is what a
+        phone does when you tap a track in an album. The visible difference
+        is that playback CONTINUES with the rest of the album rather than
+        stopping after one track, and next/previous work.
+
+        `offset` is valid for an album, playlist or show context; it is not
+        for an artist, which is why only the album case sends one.
         """
+        album_uri: str | None = None
         if uri.startswith("spotify:track:"):
-            payload: dict[str, Any] = {"uris": [uri]}
-        else:
-            payload = {"context_uri": uri}
+            try:
+                album = (await self.track(uri.split(":")[-1])).get("album")
+                if isinstance(album, dict) and isinstance(album.get("uri"), str):
+                    album_uri = album["uri"]
+            except SpotifyError as err:
+                # The lookup is an improvement on the request, not a
+                # precondition for it. Losing it costs the queue and risks
+                # the state above, so it is said out loud and play still
+                # goes ahead.
+                _LOGGER.warning(
+                    "could not look up the album for %s (%s); playing it "
+                    "without a context, which leaves the device with an "
+                    "empty queue",
+                    uri,
+                    err,
+                )
+        try:
+            payload = play_payload(uri, album_uri)
+        except ValueError as err:
+            raise SpotifyError(str(err)) from err
         await self._request(
             "PUT", "/me/player/play", params={"device_id": device_id}, json=payload
         )
