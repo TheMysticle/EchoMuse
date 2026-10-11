@@ -33,6 +33,7 @@ answer.
 
 from __future__ import annotations
 
+from aiohttp import ClientError, ClientResponseError
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
@@ -40,8 +41,23 @@ from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers import config_entry_oauth2_flow
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
+try:  # HA >= 2025.7
+    from homeassistant.exceptions import (
+        OAuth2TokenRequestError,
+        OAuth2TokenRequestReauthError,
+    )
+except ImportError:  # pragma: no cover - older cores
+
+    class OAuth2TokenRequestError(Exception):  # type: ignore[no-redef]
+        """Placeholder so the except clauses below stay valid."""
+
+    class OAuth2TokenRequestReauthError(OAuth2TokenRequestError):  # type: ignore[no-redef]
+        """Placeholder so the except clauses below stay valid."""
+
+
 from .api import SpotifyApi, SpotifyAuthExpired, SpotifyError
-from .const import DOMAIN
+from .auth import register_implementation
+from .const import CONF_CLIENT_ID, DOMAIN
 from .coordinator import SpotifyCoordinator
 
 PLATFORMS = [Platform.MEDIA_PLAYER]
@@ -51,33 +67,49 @@ type EchoMuseSpotifyEntry = ConfigEntry[SpotifyCoordinator]
 
 async def async_setup_entry(hass: HomeAssistant, entry: EchoMuseSpotifyEntry) -> bool:
     """Set up one Spotify account."""
-    implementation = (
-        await config_entry_oauth2_flow.async_get_config_entry_implementation(
-            hass, entry
+    client_id = entry.data.get(CONF_CLIENT_ID)
+    if not client_id:
+        # Entry made by the first version, which never saved the Client ID.
+        # Reauth asks for it again and keeps the entry (and its entities).
+        raise ConfigEntryAuthFailed("Client ID missing; reconnect to save it")
+
+    # The registration lives only in memory, so it is redone on every start.
+    register_implementation(hass, client_id)
+    try:
+        implementation = (
+            await config_entry_oauth2_flow.async_get_config_entry_implementation(
+                hass, entry
+            )
         )
-    )
+    except config_entry_oauth2_flow.ImplementationUnavailableError as err:
+        raise ConfigEntryNotReady("OAuth implementation unavailable") from err
     oauth = config_entry_oauth2_flow.OAuth2Session(hass, entry, implementation)
 
     async def token() -> str:
         # Refreshed per request rather than cached here: OAuth2Session owns
-        # the refresh and the expiry, and a second copy of that state is one
-        # that can disagree with the entry's.
-        await oauth.async_ensure_token_valid()
+        # the refresh and the expiry, and persists the new token to the entry.
+        try:
+            await oauth.async_ensure_token_valid()
+        except OAuth2TokenRequestReauthError as err:
+            raise SpotifyAuthExpired("Spotify refused the saved login") from err
+        except OAuth2TokenRequestError as err:
+            raise SpotifyError(f"token refresh failed: {err}") from err
+        except ClientResponseError as err:
+            if err.status in (400, 401, 403):
+                raise SpotifyAuthExpired("Spotify refused the saved login") from err
+            raise SpotifyError(f"token refresh failed ({err.status})") from err
+        except ClientError as err:
+            raise SpotifyError(f"could not reach Spotify ({type(err).__name__})") from err
         return oauth.token["access_token"]
 
     api = SpotifyApi(async_get_clientsession(hass), token)
     coordinator = SpotifyCoordinator(hass, entry, api)
 
-    try:
-        await coordinator.async_config_entry_first_refresh()
-    except SpotifyAuthExpired as err:
-        # Reauth rather than retry: a refused token will be refused again,
-        # and retrying forever shows the integration as merely slow.
-        raise ConfigEntryAuthFailed(str(err)) from err
-    except SpotifyError as err:
-        raise ConfigEntryNotReady(str(err)) from err
+    # Raises ConfigEntryAuthFailed / ConfigEntryNotReady by itself.
+    await coordinator.async_config_entry_first_refresh()
 
     entry.runtime_data = coordinator
+
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
 

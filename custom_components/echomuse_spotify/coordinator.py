@@ -16,6 +16,7 @@ from datetime import datetime, timedelta
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.util import dt as dt_util
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
@@ -74,10 +75,12 @@ class SpotifyCoordinator(DataUpdateCoordinator[AccountState]):
         try:
             devices = await self.api.devices()
             playback = await self.api.playback()
-        except SpotifyAuthExpired:
-            # Let the entry's reauth flow handle it rather than logging an
-            # error every interval for something only the user can fix.
-            raise
+        except SpotifyAuthExpired as err:
+            # MUST be ConfigEntryAuthFailed: DataUpdateCoordinator only starts
+            # the reauth flow for that exact type. Our own SpotifyAuthExpired
+            # was just logged as "unexpected error" every poll and, during
+            # first refresh, turned into endless setup retries.
+            raise ConfigEntryAuthFailed(str(err)) from err
         except SpotifyError as err:
             raise UpdateFailed(str(err)) from err
 

@@ -33,10 +33,13 @@ import re
 from typing import Any
 
 import voluptuous as vol
-from homeassistant.config_entries import ConfigFlowResult
+from aiohttp import ClientError
+from homeassistant.config_entries import SOURCE_REAUTH, ConfigFlowResult
 from homeassistant.helpers import config_entry_oauth2_flow
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .const import AUTHORIZE_URL, CONF_CLIENT_ID, DOMAIN, SCOPES, TOKEN_URL
+from .auth import register_implementation
+from .const import API_BASE, CONF_CLIENT_ID, DOMAIN, SCOPES
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -52,6 +55,10 @@ class OAuth2FlowHandler(
 
     DOMAIN = DOMAIN
     VERSION = 1
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._client_id: str | None = None
 
     @property
     def logger(self) -> logging.Logger:
@@ -71,17 +78,8 @@ class OAuth2FlowHandler(
             if not _CLIENT_ID.match(client_id):
                 errors[CONF_CLIENT_ID] = "invalid_client_id"
             else:
-                config_entry_oauth2_flow.async_register_implementation(
-                    self.hass,
-                    DOMAIN,
-                    config_entry_oauth2_flow.LocalOAuth2ImplementationWithPkce(
-                        self.hass,
-                        DOMAIN,
-                        client_id,
-                        AUTHORIZE_URL,
-                        TOKEN_URL,
-                    ),
-                )
+                self._client_id = client_id
+                register_implementation(self.hass, client_id)
                 return await self.async_step_pick_implementation()
 
         return self.async_show_form(
@@ -94,4 +92,55 @@ class OAuth2FlowHandler(
         self, entry_data: dict[str, Any]
     ) -> ConfigFlowResult:
         """Spotify stopped accepting the saved connection."""
-        return await self.async_step_user()
+        self._client_id = entry_data.get(CONF_CLIENT_ID)
+        return await self.async_step_reauth_confirm()
+
+    async def async_step_reauth_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Confirm, then re-run consent with the Client ID already saved."""
+        if user_input is None:
+            return self.async_show_form(step_id="reauth_confirm")
+        if not self._client_id:
+            # Entry created by the first version, which never saved it.
+            return await self.async_step_user()
+        register_implementation(self.hass, self._client_id)
+        return await self.async_step_pick_implementation()
+
+    async def _async_whoami(self, access_token: str) -> dict[str, Any]:
+        """The account behind the token, for a stable unique_id and title."""
+        try:
+            resp = await async_get_clientsession(self.hass).get(
+                f"{API_BASE}/me",
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+            if resp.status == 200:
+                body = await resp.json(content_type=None)
+                return body if isinstance(body, dict) else {}
+            _LOGGER.warning("Spotify /me returned %s during setup", resp.status)
+        except (ClientError, ValueError) as err:
+            _LOGGER.warning("Could not read the Spotify profile: %s", err)
+        return {}
+
+    async def async_oauth_create_entry(self, data: dict[str, Any]) -> ConfigFlowResult:
+        """Save the Client ID with the tokens so setup can rebuild the OAuth
+        implementation after a restart."""
+        data = {**data, CONF_CLIENT_ID: self._client_id}
+        me = await self._async_whoami(data["token"]["access_token"])
+        spotify_id = me.get("id")
+        title = me.get("display_name") or spotify_id or "Spotify"
+
+        if self.source == SOURCE_REAUTH:
+            entry = self._get_reauth_entry()
+            if spotify_id and entry.unique_id and entry.unique_id != spotify_id:
+                return self.async_abort(reason="wrong_account")
+            return self.async_update_reload_and_abort(
+                entry,
+                unique_id=spotify_id or entry.unique_id,
+                data={**entry.data, **data},
+            )
+
+        if spotify_id:
+            await self.async_set_unique_id(spotify_id)
+            self._abort_if_unique_id_configured()
+        return self.async_create_entry(title=title, data=data)

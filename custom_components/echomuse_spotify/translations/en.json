@@ -10,6 +10,10 @@
       },
       "pick_implementation": {
         "title": "Authenticate with Spotify"
+      },
+      "reauth_confirm": {
+        "title": "Reconnect Spotify",
+        "description": "Spotify no longer accepts the saved login. Continue to sign in to Spotify again; your players and their areas are kept."
       }
     },
     "error": {
@@ -22,7 +26,8 @@
       "oauth_failed": "Authentication with Spotify failed.",
       "oauth_timeout": "Authentication with Spotify timed out.",
       "oauth_unauthorized": "Spotify refused the authorisation. Check the Client ID, and that https://my.home-assistant.io/redirect/oauth is registered on the app under Redirect URIs.",
-      "reauth_successful": "Spotify was reconnected."
+      "reauth_successful": "Spotify was reconnected.",
+      "wrong_account": "That is a different Spotify account from the one this entry was set up with."
     }
   }
 }
