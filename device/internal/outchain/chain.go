@@ -303,65 +303,20 @@ func (c *Chain) Idle() bool {
 // The first return is non-nil only when a queued SetParams changed the chain
 // on this period, so the caller can log what the audio is now going through.
 func (c *Chain) Process(buf []byte) (applied *Params) {
-	if p, changed := c.takePending(); changed {
-		applied = &p
-	}
-	active := c.active.Load()
-	if active != c.running {
-		// Entering or leaving: the chain's state belongs to audio it last
-		// saw, which is not the audio arriving now. Start clean.
-		c.reset()
-		c.running = active
-		// A gain carried from audio the chain last saw would ramp from a
-		// stale value; start at where the volume is now.
-		c.preCur = math.Float64frombits(c.preTarget.Load())
-	}
-	c.tookVolume = active && c.takesVolume
+	applied, active := c.beginProcess()
 	if !active {
 		return applied
 	}
 
 	frames := len(buf) / 4
+	c.sizeFIR(frames)
 
-	// FIR on/off is decided in apply(), but SIZED here — this is the first
-	// point the chain knows the period's frame count. In production this
-	// never changes between calls, so sizing happens once; a device that
-	// somehow called Process with a varying frames count would panic
-	// inside eqFIR.process, which is the right failure for that bug
-	// rather than a wrong answer.
-	if c.wantFIR && c.fir == nil {
-		c.fir = newEQFIRBands(c.firBands, frames)
-		c.fir.startOn(radarEQBand(math.Float64frombits(c.preTarget.Load()), c.firBounds))
-		if c.firScratch == nil || len(c.firScratch) != frames {
-			c.firScratch = make([]float64, frames)
-		}
-	} else if !c.wantFIR && c.fir != nil {
-		c.fir = nil
-	}
-	// The period's mono input, with the volume applied first when this
-	// chain takes it — same arithmetic as em_eq.StreamingEQ._apply_volume.
+	// Stereo in, stereo out, but the chain is mono — exact, since the wire
+	// is mono.
 	if len(c.inScratch) != frames {
 		c.inScratch = make([]float64, frames)
 	}
-	for i := 0; i < frames; i++ {
-		off := i * 4
-		l := int16(uint16(buf[off]) | uint16(buf[off+1])<<8)
-		r := int16(uint16(buf[off+2]) | uint16(buf[off+3])<<8)
-		c.inScratch[i] = (float64(l) + float64(r)) / 2
-	}
-	if c.takesVolume {
-		c.applyVolume(c.inScratch)
-	}
-	if c.fir != nil {
-		// The curve stock plays at this volume, read from the target the
-		// volume is ramping to — once per period, as em_eq reads it once
-		// per call. A change crossfades across this period.
-		c.fir.setBand(radarEQBand(math.Float64frombits(c.preTarget.Load()), c.firBounds))
-		copy(c.firScratch, c.inScratch)
-		copy(c.firScratch, c.fir.process(c.firScratch))
-	}
-
-	silentIn, silentOut := true, true
+	silentIn := true
 	for i := 0; i < frames; i++ {
 		off := i * 4
 		l := int16(uint16(buf[off]) | uint16(buf[off+1])<<8)
@@ -369,26 +324,14 @@ func (c *Chain) Process(buf []byte) (applied *Params) {
 		if l != 0 || r != 0 {
 			silentIn = false
 		}
-		var x float64
-		if c.fir != nil {
-			// Radar's stock curve, layered ahead of the bands below —
-			// additive with them, same as controller/em_eq.py's
-			// StreamingEQ(stock_curve=True), never a replacement.
-			x = c.firScratch[i]
-			for j := range c.peq {
-				x = c.peq[j].step(x)
-			}
-		} else {
-			x = c.inScratch[i]
-		}
+		c.inScratch[i] = (float64(l) + float64(r)) / 2
+	}
 
-		x = c.eq.step(x)
-		x = c.guard.step(x)
-		x = c.lim.step(x)
-		if c.fir != nil {
-			x *= c.trimGain // OutputTrim: after MBCL's limiter, as in AFE.cfg
-		}
+	c.processMono(c.inScratch)
 
+	silentOut := true
+	for i := 0; i < frames; i++ {
+		x := c.inScratch[i]
 		// Backstop, then truncation toward zero — np.clip(...).astype(int16)
 		// in the reference.
 		if x > ceiling {
@@ -403,11 +346,12 @@ func (c *Chain) Process(buf []byte) (applied *Params) {
 		if c.takesVolume {
 			x = math.RoundToEven(x)
 		}
-		s := int16(x)
-		if s != 0 {
+		v := int16(x)
+		if v != 0 {
 			silentOut = false
 		}
-		lo, hi := byte(uint16(s)), byte(uint16(s)>>8)
+		off := i * 4
+		lo, hi := byte(uint16(v)), byte(uint16(v)>>8)
 		buf[off], buf[off+1], buf[off+2], buf[off+3] = lo, hi, lo, hi
 	}
 
@@ -422,6 +366,82 @@ func (c *Chain) Process(buf []byte) (applied *Params) {
 		c.idle = false
 	}
 	return applied
+}
+
+// scaleAt is the full-scale multiplier for one frame, defaulting to 1 when
+// the caller supplied none for it.
+func scaleAt(fullScales []float64, i int) float64 {
+	if i < len(fullScales) && fullScales[i] > 0 {
+		return fullScales[i]
+	}
+	return 1
+}
+
+// sizeFIR allocates or drops the stock FIR for this period's frame count.
+//
+// FIR on/off is decided in apply(), but SIZED here — this is the first point
+// the chain knows the period's frame count. In production it never changes
+// between calls, so sizing happens once; a caller that varied it would panic
+// inside eqFIR.process, which is the right failure for that bug rather than
+// a wrong answer.
+func (c *Chain) sizeFIR(frames int) {
+	if c.wantFIR && c.fir == nil {
+		c.fir = newEQFIRBands(c.firBands, frames)
+		c.fir.startOn(radarEQBand(math.Float64frombits(c.preTarget.Load()), c.firBounds))
+		if c.firScratch == nil || len(c.firScratch) != frames {
+			c.firScratch = make([]float64, frames)
+		}
+	} else if !c.wantFIR && c.fir != nil {
+		c.fir = nil
+	}
+}
+
+// processMono runs every stage over one period of mono samples, in place.
+//
+// ONE implementation, two entry points. Process and ProcessFloat differ only
+// in how samples arrive and how they are written back; the stages are held
+// bit-exact to a Python reference, so a second copy of them is a second
+// thing to keep in step with that reference and with each other.
+//
+// Stage-by-stage over the block rather than sample-by-sample through the
+// stages: for a series of causal per-sample filters the two are identical,
+// since each filter still sees the period in order and each sample still
+// passes the same sequence. The FIR is a block operation and has to be done
+// this way regardless.
+func (c *Chain) processMono(mono []float64) {
+	// The volume first when this chain takes it — same arithmetic as
+	// em_eq.StreamingEQ._apply_volume, and ahead of the compressors because
+	// that is where stock applies it (device/CLAUDE.md, Volume).
+	if c.takesVolume {
+		c.applyVolume(mono)
+	}
+	if c.fir != nil {
+		// The curve stock plays at this volume, read from the target the
+		// volume is ramping to — once per period, as em_eq reads it once
+		// per call. A change crossfades across this period.
+		c.fir.setBand(radarEQBand(math.Float64frombits(c.preTarget.Load()), c.firBounds))
+		copy(c.firScratch, mono)
+		copy(c.firScratch, c.fir.process(c.firScratch))
+		// Radar's stock curve, layered ahead of the bands below — additive
+		// with them, as controller/em_eq.py's StreamingEQ(stock_curve=True)
+		// is, never a replacement.
+		for i := range mono {
+			x := c.firScratch[i]
+			for j := range c.peq {
+				x = c.peq[j].step(x)
+			}
+			mono[i] = x
+		}
+	}
+	for i := range mono {
+		x := c.eq.step(mono[i])
+		x = c.guard.step(x)
+		x = c.lim.step(x)
+		if c.fir != nil {
+			x *= c.trimGain // OutputTrim: after MBCL's limiter, as in AFE.cfg
+		}
+		mono[i] = x
+	}
 }
 
 // applyVolume scales x in place, ramping from the gain last applied to the
@@ -445,6 +465,90 @@ func (c *Chain) applyVolume(x []float64) {
 		g += step
 		x[i] *= g
 	}
+}
+
+// ProcessFloat is Process for a wide-precision interleaved stereo period.
+// fullScales contains one full-scale multiplier per frame. Samples are
+// normalised into the chain's ordinary S16 signal domain and returned to the
+// wide domain afterward. Keeping the chain's state normalised makes switching
+// between ordinary and boosted periods seamless, while the caller retains
+// headroom until the later master-volume stage.
+func (c *Chain) ProcessFloat(buf []float64, fullScales []float64) (applied *Params) {
+	applied, active := c.beginProcess()
+	if !active {
+		return applied
+	}
+
+	frames := len(buf) / 2
+	c.sizeFIR(frames)
+	if len(c.inScratch) != frames {
+		c.inScratch = make([]float64, frames)
+	}
+
+	silentIn := true
+	for i := 0; i < frames; i++ {
+		l, r := buf[i*2], buf[i*2+1]
+		if l != 0 || r != 0 {
+			silentIn = false
+		}
+		c.inScratch[i] = (l + r) / (2 * scaleAt(fullScales, i))
+	}
+
+	// THE SAME STAGES as Process, which is the point of processMono. The
+	// stages are held bit-exact to a Python reference
+	// (testdata/gen_vectors.py) and the vectors drive the S16 path, so a
+	// second copy here would be a second implementation of a bit-exact
+	// chain with nothing checking it. On Radar it would also silently drop
+	// the stock curve, the pre-chain volume and the output trim — stages
+	// this entry point never had.
+	c.processMono(c.inScratch)
+
+	silentOut := true
+	for i := 0; i < frames; i++ {
+		x := c.inScratch[i]
+		if x > ceiling {
+			x = ceiling
+		} else if x < -fullScale {
+			x = -fullScale
+		}
+		// Back to the wide domain, and NOT rounded: the caller keeps the
+		// headroom until its own master-volume stage, which is the whole
+		// reason this entry point exists.
+		x *= scaleAt(fullScales, i)
+		if math.Abs(x) >= 1 {
+			silentOut = false
+		}
+		buf[i*2], buf[i*2+1] = x, x
+	}
+	if silentIn && silentOut {
+		c.reset()
+		c.idle = true
+	} else {
+		c.idle = false
+	}
+	return applied
+}
+
+func (c *Chain) beginProcess() (applied *Params, active bool) {
+	if p, changed := c.takePending(); changed {
+		applied = &p
+	}
+	active = c.active.Load()
+	if active != c.running {
+		// Entering or leaving: the chain's state belongs to audio it last
+		// saw, which is not the audio arriving now. Start clean.
+		c.reset()
+		c.running = active
+		// A gain carried from audio the chain last saw would ramp from a
+		// stale value; start at where the volume is now. Here rather than
+		// in a caller because a caller cannot see that a transition
+		// happened — this is the only thing that knows.
+		c.preCur = math.Float64frombits(c.preTarget.Load())
+	}
+	// Whether THIS period's volume was applied by the chain, which the
+	// speaker asks so it does not apply it a second time.
+	c.tookVolume = active && c.takesVolume
+	return applied, active
 }
 
 func (c *Chain) reset() {

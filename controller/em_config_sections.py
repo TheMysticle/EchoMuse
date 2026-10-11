@@ -24,6 +24,7 @@ SECTIONS: dict[str, dict] = {
     "playback": {
         "label": "Playback",
         "keys": ["eqBands", "eqLoudness", "eqStockCurve", "duckDb",
+                 "responseLevel",
                  "limiterEnabled", "limiterThreshold", "limiterRelease",
                  "bassGuardEnabled", "bassGuardDb", "streamReply",
                  "volumeButtonSound"],
@@ -41,7 +42,7 @@ SECTIONS: dict[str, dict] = {
         "label": "Microphones",
         "keys": [
             "adcMicpga", "adcDigitalGain", "micGainDb",
-            "beamformingEnabled", "beamAngle",
+            "beamformingEnabled", "beamAngle", "wakeMic",
             "aecEnabled", "aecDelayMs", "aecTailMs", "aecRefSource", "nsAsr",
             "saveUtterances",
         ],
@@ -50,6 +51,7 @@ SECTIONS: dict[str, dict] = {
         "label": "Ring",
         "keys": [
             "ledScene", "ledListenColor", "ledThinkColor",
+            "remoteVolumeArc",
             "meterAttack", "meterDecay", "meterFloor",
             "meterGamma", "meterRef", "meterCurve",
         ],

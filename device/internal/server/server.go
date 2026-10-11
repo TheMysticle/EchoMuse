@@ -70,6 +70,11 @@ type Server struct {
 	// the controller persists every report into startupVolume, and a boot-
 	// default report would clobber the saved value (the reboot-reset bug).
 	volumeSeeded atomic.Bool
+
+	// remoteVolumeArc is the opt-in accessibility setting from config. It is
+	// atomic because config pushes and volume commands arrive on independent
+	// control callbacks. Physical buttons bypass it and always show the arc.
+	remoteVolumeArc atomic.Bool
 }
 
 func NewServer(buttonController buttons.Controller, microphone mic.Microphone, speaker speaker.Speaker) *Server {
@@ -175,11 +180,30 @@ func (s *Server) VolumeStepDown() bool {
 	return s.volume.StepDown()
 }
 
-// SetVolume sets volume to an explicit level (0–volumeMax) — called by controller
-// command. Remote changes don't paint the volume arc: nobody is at the
-// device, and the ring lighting up unprompted reads as a glitch.
+// SetVolume sets volume to an explicit level (0–volumeMax) — called by a live
+// remote source such as the controller, Home Assistant, or Sendspin. The
+// opt-in accessibility setting shows the existing cyan arc only when the
+// effective level changes to a non-zero value; mute and repeated state syncs
+// remain invisible.
 func (s *Server) SetVolume(level int) {
-	s.SetVolumeFrom(level, "controller", false)
+	level = clampVolumeLevel(level)
+	// HA represents mute as volume zero. Do not replace the mute indication
+	// with an empty cyan arc and a two-second black hold.
+	showRing := s.remoteVolumeArc.Load() && level != 0 && level != s.volume.Get()
+	s.SetVolumeFrom(level, "controller", showRing)
+}
+
+// SetRemoteVolumeArc applies the runtime config controlling feedback for live
+// remote volume changes. It deliberately does not affect physical buttons or
+// the silent boot-time SeedVolume path.
+//
+// It governs the CONTROLLER and Home Assistant only. Spotify has its own
+// switch (`spotifyVolumeRing`, default on) because the two are different
+// situations: a phone's slider is somebody standing in front of the Echo
+// changing the volume on purpose, where an HA automation is not. One setting
+// for both would have to pick which of those to get wrong.
+func (s *Server) SetRemoteVolumeArc(enabled bool) {
+	s.remoteVolumeArc.Store(enabled)
 }
 
 // SetVolumeFrom is SetVolume naming the writer, and optionally painting the
