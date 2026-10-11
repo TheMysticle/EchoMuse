@@ -43,3 +43,8 @@ SCOPES = [
 SCAN_INTERVAL_SECONDS = 10
 
 CONF_CLIENT_ID = "client_id"
+
+# Set once the Klar music label has been applied (see labels.py). Recorded on
+# the config entry so that REMOVING the label by hand sticks — without it,
+# every restart would put back a label the user had deliberately deleted.
+OPTION_LABELLED = "music_label_applied"

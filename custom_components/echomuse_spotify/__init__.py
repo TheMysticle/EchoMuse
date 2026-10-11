@@ -33,12 +33,18 @@ answer.
 
 from __future__ import annotations
 
+import logging
+
 from aiohttp import ClientError, ClientResponseError
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
-from homeassistant.core import HomeAssistant
+from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
-from homeassistant.helpers import config_entry_oauth2_flow
+from homeassistant.helpers import (
+    config_entry_oauth2_flow,
+    entity_registry as er,
+    label_registry as lr,
+)
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 try:  # HA >= 2025.7
@@ -57,8 +63,17 @@ except ImportError:  # pragma: no cover - older cores
 
 from .api import SpotifyApi, SpotifyAuthExpired, SpotifyError
 from .auth import register_implementation
-from .const import CONF_CLIENT_ID, DOMAIN
+from .const import CONF_CLIENT_ID, DOMAIN, OPTION_LABELLED
 from .coordinator import SpotifyCoordinator
+from .labels import (
+    CREATE_LABEL_NAME,
+    MUSIC_LABELS,
+    choose_music_label,
+    labels_after,
+    needs_label,
+)
+
+_LOGGER = logging.getLogger(__name__)
 
 PLATFORMS = [Platform.MEDIA_PLAYER]
 
@@ -110,8 +125,95 @@ async def async_setup_entry(hass: HomeAssistant, entry: EchoMuseSpotifyEntry) ->
 
     entry.runtime_data = coordinator
 
+    # Label every Connect player that is CREATED from now on (an Echo that was
+    # off at startup and shows up later), not just those present at setup.
+    @callback
+    def _on_registry_event(event: Event) -> None:
+        if event.data.get("action") != "create":
+            return
+        registry = er.async_get(hass)
+        ent = registry.async_get(event.data["entity_id"])
+        if (
+            ent is not None
+            and ent.config_entry_id == entry.entry_id
+            and ent.domain == "media_player"
+            and needs_label(ent.labels)
+        ):
+            _async_label_entities(hass, [ent])
+
+    entry.async_on_unload(
+        hass.bus.async_listen(er.EVENT_ENTITY_REGISTRY_UPDATED, _on_registry_event)
+    )
+
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    # AFTER the forward, which is what creates the entities this labels.
+    _async_apply_music_label(hass, entry)
     return True
+
+
+def _async_label_entities(hass: HomeAssistant, entities: list[er.RegistryEntry]) -> bool:
+    """Add the Klar-accepted label to `entities`. True when it was applied."""
+    registry = er.async_get(hass)
+    label_registry = lr.async_get(hass)
+    existing = {l.label_id: l.name for l in label_registry.async_list_labels()}
+    choice = choose_music_label(existing)
+    if choice.warning:
+        _LOGGER.warning("Klar music label: %s", choice.warning)
+
+    label_id = choice.label_id
+    if label_id is None:
+        try:
+            label_id = label_registry.async_create(CREATE_LABEL_NAME).label_id
+        except ValueError as err:
+            _LOGGER.warning(
+                "Klar music label: could not create '%s': %s", CREATE_LABEL_NAME, err
+            )
+            return False
+        if label_id not in MUSIC_LABELS:
+            _LOGGER.warning(
+                "Klar music label: created '%s' but HA gave it the id '%s', "
+                "which Klar does not accept; rename or remove the clashing "
+                "label and reload this integration",
+                CREATE_LABEL_NAME,
+                label_id,
+            )
+            return False
+        _LOGGER.info("Klar music label: created the '%s' label", CREATE_LABEL_NAME)
+
+    for entity in entities:
+        registry.async_update_entity(
+            entity.entity_id, labels=labels_after(entity.labels, label_id)
+        )
+    _LOGGER.debug("Klar music label: tagged %d player(s) with '%s'", len(entities), label_id)
+    return True
+
+
+def _async_apply_music_label(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Tag our players with a label Klar will accept. See labels.py.
+
+    Best effort by design: a failure here costs "play X in <area>" on Klar
+    and nothing else, so it is logged and setup continues.
+    """
+    if entry.options.get(OPTION_LABELLED):
+        return
+
+    registry = er.async_get(hass)
+    entities = er.async_entries_for_config_entry(registry, entry.entry_id)
+    if not entities:
+        # No entities yet: return WITHOUT recording the flag.
+        return
+
+    pending = [e for e in entities if needs_label(e.labels)]
+    if pending and not _async_label_entities(hass, pending):
+        return
+    _async_record_labelled(hass, entry)
+
+
+def _async_record_labelled(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Remember the label was applied, so a manual removal is respected."""
+    hass.config_entries.async_update_entry(
+        entry, options={**entry.options, OPTION_LABELLED: True}
+    )
 
 
 async def async_unload_entry(
