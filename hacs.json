@@ -1,0 +1,6 @@
+{
+  "name": "EchoMuse Spotify",
+  "content_in_root": false,
+  "render_readme": true,
+  "homeassistant": "2025.7.0"
+}

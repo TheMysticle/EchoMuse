@@ -1,0 +1,28 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Spotify app",
+        "description": "Create an app at developer.spotify.com/dashboard and tick Web API. Under Redirect URIs add exactly:\n\nhttps://my.home-assistant.io/redirect/oauth\n\nThat is the address Home Assistant uses while the My Home Assistant integration is enabled, which it is by default; it redirects back to this instance, so nothing has to be exposed to the internet. Then add your Spotify account under User Management (development mode allows 5), and paste the app's Client ID below. There is no client secret: this uses PKCE, so none is needed and none is stored.",
+        "data": {
+          "client_id": "Client ID"
+        }
+      },
+      "pick_implementation": {
+        "title": "Authenticate with Spotify"
+      }
+    },
+    "error": {
+      "invalid_client_id": "A Client ID is 32 letters and digits, copied from the app's Settings page."
+    },
+    "abort": {
+      "already_configured": "This Spotify account is already set up.",
+      "missing_configuration": "The Spotify app is not configured.",
+      "oauth_error": "Spotify returned an error during authentication.",
+      "oauth_failed": "Authentication with Spotify failed.",
+      "oauth_timeout": "Authentication with Spotify timed out.",
+      "oauth_unauthorized": "Spotify refused the authorisation. Check the Client ID, and that https://my.home-assistant.io/redirect/oauth is registered on the app under Redirect URIs.",
+      "reauth_successful": "Spotify was reconnected."
+    }
+  }
+}
