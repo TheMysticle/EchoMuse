@@ -128,7 +128,12 @@ func (vc *volumeController) SetApply(fn func(int)) {
 // presses pass true; remote sets (controller command / HA) and the boot-time
 // SeedVolume pass false so the ring doesn't light when nobody is at the
 // device.
-func (vc *volumeController) Set(level int, showRing bool) bool {
+// src names WHO asked, and it reaches the log line. The volume oscillated
+// between two levels and the log said only that it had changed — "Volume set
+// to 17/127" with no writer — so which of the five callers was driving it
+// had to be guessed and tested against the hardware instead of read off the
+// line. Anything with several writers and one shared message needs this.
+func (vc *volumeController) Set(level int, showRing bool, src string) bool {
 	if level < volumeMin {
 		level = volumeMin
 	}
@@ -179,7 +184,7 @@ func (vc *volumeController) Set(level int, showRing bool) bool {
 	// reason — ReportingMixer::set_volume reports only on a change, because
 	// spirc writes the volume on every state report.
 	if changed {
-		log.Printf("Volume set to %d/%d", level, volumeMax)
+		log.Printf("Volume set to %d/%d (%s)", level, volumeMax, src)
 		if cb != nil {
 			cb(level)
 		}
@@ -222,9 +227,9 @@ func (vc *volumeController) StepUp() bool {
 	level, steps := vc.level, vc.steps
 	vc.mu.Unlock()
 	if steps != nil {
-		return vc.Set(stepAbove(steps, level), true)
+		return vc.Set(stepAbove(steps, level), true, "button")
 	}
-	return vc.Set(clampToButtonBand(level+volumeStep), true)
+	return vc.Set(clampToButtonBand(level+volumeStep), true, "button")
 }
 
 // StepDown decreases volume by one step, within the button band.
@@ -233,9 +238,9 @@ func (vc *volumeController) StepDown() bool {
 	level, steps := vc.level, vc.steps
 	vc.mu.Unlock()
 	if steps != nil {
-		return vc.Set(stepBelow(steps, level), true)
+		return vc.Set(stepBelow(steps, level), true, "button")
 	}
-	return vc.Set(clampToButtonBand(level-volumeStep), true)
+	return vc.Set(clampToButtonBand(level-volumeStep), true, "button")
 }
 
 // stepAbove is the first step above level, or the top step. A level between

@@ -104,14 +104,14 @@ func TestSteppingSaturatesAtBothEnds(t *testing.T) {
 
 func TestStepReportsWhetherTheLevelChanged(t *testing.T) {
 	vc := newVolumeController(func() led.Controller { return nil })
-	vc.Set(volumeMax, false)
+	vc.Set(volumeMax, false, "test")
 	if vc.StepUp() {
 		t.Fatal("step up at the ceiling reported a change")
 	}
 	if !vc.StepDown() {
 		t.Fatal("step down from the ceiling did not report a change")
 	}
-	vc.Set(volumeButtonFloor, false)
+	vc.Set(volumeButtonFloor, false, "test")
 	if vc.StepDown() {
 		t.Fatal("step down at the floor reported a change")
 	}
@@ -146,7 +146,7 @@ func TestRadarVolumeStepsAreStocks(t *testing.T) {
 // steps past itself.
 func TestRadarButtonsWalkStocksSteps(t *testing.T) {
 	vc := &volumeController{ledCtrl: func() led.Controller { return nil }, steps: radarVolumeSteps}
-	vc.Set(0, false)
+	vc.Set(0, false, "test")
 	vc.StepUp()
 	if vc.Get() != 3 {
 		t.Fatalf("first press from silence: %d, want 3", vc.Get())
@@ -161,17 +161,17 @@ func TestRadarButtonsWalkStocksSteps(t *testing.T) {
 	if vc.Get() != 127 {
 		t.Fatalf("past the top: %d", vc.Get())
 	}
-	vc.Set(80, false) // between 77 and 81
+	vc.Set(80, false, "test") // between 77 and 81
 	vc.StepUp()
 	if vc.Get() != 81 {
 		t.Errorf("up from 80: %d, want 81", vc.Get())
 	}
-	vc.Set(80, false)
+	vc.Set(80, false, "test")
 	vc.StepDown()
 	if vc.Get() != 77 {
 		t.Errorf("down from 80: %d, want 77", vc.Get())
 	}
-	vc.Set(3, false)
+	vc.Set(3, false, "test")
 	vc.StepDown()
 	if vc.Get() != 3 {
 		t.Errorf("down from the bottom step: %d, want 3", vc.Get())
@@ -273,14 +273,14 @@ func TestANoOpSetNotifiesNobody(t *testing.T) {
 	vc.SetOnVolumeChange(func(int) { notified++ })
 	applied = 0 // SetApply applies once at wiring time, by design
 
-	if !vc.Set(60, false) {
+	if !vc.Set(60, false, "test") {
 		t.Fatal("the first Set to a new level reported no change")
 	}
 	if notified != 1 {
 		t.Fatalf("one real change notified %d times, want 1", notified)
 	}
 	for i := 0; i < 20; i++ {
-		if vc.Set(60, false) {
+		if vc.Set(60, false, "test") {
 			t.Fatal("an unchanged Set reported a change")
 		}
 	}
@@ -300,11 +300,11 @@ func TestAChangeAfterNoOpsStillNotifies(t *testing.T) {
 	vc := newVolumeController(func() led.Controller { return nil })
 	var levels []int
 	vc.SetOnVolumeChange(func(l int) { levels = append(levels, l) })
-	vc.Set(50, false)
-	vc.Set(50, false)
-	vc.Set(70, false)
-	vc.Set(70, false)
-	vc.Set(50, false)
+	vc.Set(50, false, "test")
+	vc.Set(50, false, "test")
+	vc.Set(70, false, "test")
+	vc.Set(70, false, "test")
+	vc.Set(50, false, "test")
 	want := []int{50, 70, 50}
 	if len(levels) != len(want) {
 		t.Fatalf("notified %v, want %v", levels, want)

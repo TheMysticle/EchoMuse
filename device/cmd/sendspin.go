@@ -44,10 +44,10 @@ func sendspinPlayer() *sendspin.Client {
 type deviceVolume interface {
 	VolumeLevel() int
 	SetVolume(level int)
-	// SetVolumeRing is SetVolume with the volume arc shown. Only Spotify
-	// uses it, under `spotifyVolumeRing`: a phone's slider is somebody
-	// changing the volume on purpose, where HA and the controller are not.
-	SetVolumeRing(level int)
+	// SetVolumeFrom names the writer in the log and optionally shows the
+	// volume arc. Both music producers use it: with five callers and one
+	// shared log line, a volume oscillation could not be attributed at all.
+	SetVolumeFrom(level int, src string, showRing bool)
 }
 
 const volumeMax = 127
@@ -141,7 +141,7 @@ func applySendspinConfig(spk *speaker.PcmSpeaker, cc *client.ControlClient, vol 
 		})
 		if err == nil {
 			// Before Start: a server can connect and command the volume at once.
-			c.OnVolume(func(pct int) { vol.SetVolume(pctToLevel(pct)) })
+			c.OnVolume(func(pct int) { vol.SetVolumeFrom(pctToLevel(pct), "sendspin", false) })
 			c.SetVolume(levelToPct(vol.VolumeLevel()))
 			// Open before Start advertises: Music Assistant dials when the
 			// record appears and may not retry a timeout. Logged, not

@@ -179,22 +179,24 @@ func (s *Server) VolumeStepDown() bool {
 // command. Remote changes don't paint the volume arc: nobody is at the
 // device, and the ring lighting up unprompted reads as a glitch.
 func (s *Server) SetVolume(level int) {
-	s.volumeSeeded.Store(true)
-	s.volume.Set(level, false)
+	s.SetVolumeFrom(level, "controller", false)
 }
 
-// SetVolumeRing is SetVolume with the cyan volume arc shown, for a remote
-// change the user is standing in front of — the Spotify app's slider on
-// their phone, under `spotifyVolumeRing`.
+// SetVolumeFrom is SetVolume naming the writer, and optionally painting the
+// cyan arc.
 //
-// Deliberately a separate method rather than a flag on SetVolume: every
-// other remote path (HA, the controller, SeedVolume) must stay silent, and
-// a parameter is something a new call site can get wrong by accident. The
-// ring stays "somebody is changing the volume ON PURPOSE, right now".
-func (s *Server) SetVolumeRing(level int) {
+// The arc is for a remote change the user is standing in front of — the
+// Spotify app's slider on their phone, under `spotifyVolumeRing`. Every
+// other remote path (HA, the controller, SeedVolume) stays silent: nobody is
+// at the device, and a ring lighting unprompted reads as a glitch.
+//
+// `src` reaches the log line, which is the half that was missing. See
+// volumeController.Set.
+func (s *Server) SetVolumeFrom(level int, src string, showRing bool) {
 	s.volumeSeeded.Store(true)
-	s.volume.Set(level, true)
+	s.volume.Set(level, showRing, src)
 }
+
 
 // SeedVolume restores the controller's stored startupVolume — the source of
 // truth for volume, kept current by the volume_state echo — on the first
@@ -207,7 +209,7 @@ func (s *Server) SeedVolume(level int) {
 		return
 	}
 	log.Printf("Seeding volume from controller startupVolume=%d", level)
-	s.volume.Set(level, false)
+	s.volume.Set(level, false, "seed")
 }
 
 // VolumeSeeded reports whether the device has an authoritative volume this

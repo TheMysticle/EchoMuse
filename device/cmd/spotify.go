@@ -238,11 +238,11 @@ func startSpotifyLocked(spk *speaker.PcmSpeaker, cc *client.ControlClient, vol d
 	// ring setting.
 	p.OnVolume(func(v uint16) {
 		level := pctToLevel(u16ToPct(v))
-		if r := config.Get().Snapshot().SpotifyVolumeRing; r == nil || *r {
-			vol.SetVolumeRing(level)
-			return
+		ring := true
+		if r := config.Get().Snapshot().SpotifyVolumeRing; r != nil {
+			ring = *r
 		}
-		vol.SetVolume(level)
+		vol.SetVolumeFrom(level, "spotify", ring)
 	})
 	p.OnChange(debounce(300*time.Millisecond, func() { cc.SendSpotifyStatus(p.Status()) }))
 	if ferr := firewall.Open(spotify.DefaultZeroconfPort); ferr != nil {
