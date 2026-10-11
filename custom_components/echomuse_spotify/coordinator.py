@@ -12,10 +12,11 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.util import dt as dt_util
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api import SpotifyApi, SpotifyAuthExpired, SpotifyError
@@ -56,6 +57,12 @@ class SpotifyCoordinator(DataUpdateCoordinator[AccountState]):
             config_entry=entry,
         )
         self.api = api
+        # When the last poll landed. `media_position_updated_at` needs it: HA
+        # extrapolates the progress bar from that instant, and without one
+        # the position never moves.
+        self.last_poll: datetime | None = None
+        # A value we set ourselves, shown until the poll confirms it.
+        self._optimistic_volume: dict[str, int] = {}
         # Devices are remembered once seen, so an entity is created for an
         # Echo that was online at setup and does not vanish from the registry
         # the moment it drops off. Entities for absent devices report
@@ -74,7 +81,15 @@ class SpotifyCoordinator(DataUpdateCoordinator[AccountState]):
         except SpotifyError as err:
             raise UpdateFailed(str(err)) from err
 
+        self.last_poll = dt_util.utcnow()
         present = {d["id"]: d for d in devices}
+        for device_id, pct in list(self._optimistic_volume.items()):
+            if (d := present.get(device_id)) is None:
+                continue
+            if d.get("volume_percent") == pct:
+                self._optimistic_volume.pop(device_id, None)  # Spotify agrees
+            else:
+                d["volume_percent"] = pct
         for device_id, d in present.items():
             self._seen[device_id] = d
         # Keep a remembered entry but mark it absent, so `available` is false
@@ -84,6 +99,12 @@ class SpotifyCoordinator(DataUpdateCoordinator[AccountState]):
             for device_id, d in self._seen.items()
         }
         return AccountState(devices=merged, playback=playback)
+
+    def note_volume(self, device_id: str, percent: int) -> None:
+        """Remember a volume we just set, until Spotify reports it back."""
+        self._optimistic_volume[device_id] = percent
+        if self.data and (d := self.data.devices.get(device_id)) is not None:
+            d["volume_percent"] = percent
 
     @property
     def device_ids(self) -> list[str]:

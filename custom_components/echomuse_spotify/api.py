@@ -129,6 +129,58 @@ class SpotifyApi:
         body = await self._request("GET", "/search", params=params)
         return body if isinstance(body, dict) else {}
 
+    async def playlists(self, limit: int = 50) -> list[dict]:
+        """The account's own playlists."""
+        body = await self._request(
+            "GET", "/me/playlists", params={"limit": str(limit)}
+        )
+        items = body.get("items") if isinstance(body, dict) else None
+        return [i for i in items or [] if isinstance(i, dict)]
+
+    async def saved_albums(self, limit: int = 50) -> list[dict]:
+        """Albums in the account's library. Wrapped one level deeper."""
+        body = await self._request(
+            "GET", "/me/albums", params={"limit": str(limit)}
+        )
+        items = body.get("items") if isinstance(body, dict) else None
+        out = []
+        for i in items or []:
+            album = i.get("album") if isinstance(i, dict) else None
+            if isinstance(album, dict):
+                out.append(album)
+        return out
+
+    async def saved_tracks(self, limit: int = 50) -> list[dict]:
+        """Liked Songs. Wrapped one level deeper, like saved albums."""
+        body = await self._request("GET", "/me/tracks", params={"limit": str(limit)})
+        items = body.get("items") if isinstance(body, dict) else None
+        out = []
+        for i in items or []:
+            track = i.get("track") if isinstance(i, dict) else None
+            if isinstance(track, dict) and track.get("uri"):
+                out.append(track)
+        return out
+
+    async def tracks_of(self, kind: str, spotify_id: str, limit: int = 50) -> list[dict]:
+        """
+        The tracks of a playlist or an album.
+
+        A playlist's items are wrapped in a `track` key and an album's are
+        not, and a playlist can contain episodes — which come back with a
+        null track. Both are flattened here so the caller sees tracks.
+        """
+        path = f"/{kind}s/{spotify_id}/tracks"
+        body = await self._request("GET", path, params={"limit": str(limit)})
+        items = body.get("items") if isinstance(body, dict) else None
+        out = []
+        for i in items or []:
+            if not isinstance(i, dict):
+                continue
+            track = i.get("track", i) if kind == "playlist" else i
+            if isinstance(track, dict) and track.get("uri"):
+                out.append(track)
+        return out
+
     # ── Playback ────────────────────────────────────────────────────────────
 
     async def play_uri(self, device_id: str, uri: str) -> None:

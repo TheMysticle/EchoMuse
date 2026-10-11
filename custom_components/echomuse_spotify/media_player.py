@@ -12,13 +12,20 @@ URI and nothing cleverer: it calls `media_player.search_media`, takes
 `media_content_id` and `media_content_type`. So whatever this entity puts in
 a search result is handed straight back to it to play, and the URI is the one
 thing both ends already agree on.
+
+The browse tree borrows Music Assistant's shape — a dispatch on library ids
+with one builder each — and deliberately not its depth. MA indexes a whole
+library across providers; this is one account's Spotify, so **every level is
+exactly one API call** and nothing is fetched merely to decide what to show.
 """
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 from homeassistant.components.media_player import (
+    BrowseError,
     BrowseMedia,
     MediaClass,
     MediaPlayerDeviceClass,
@@ -36,24 +43,20 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import EchoMuseSpotifyEntry
+from . import search as ranking
 from .const import DOMAIN
 from .coordinator import SpotifyCoordinator
-from . import search as ranking
 
 # SEARCH_MEDIA and PLAY_MEDIA must BOTH be present or the search-and-play
-# intent cannot match this entity; see the module docstring.
+# intent cannot match this entity; see the module docstring. BROWSE_MEDIA is
+# what gives the entity a media button in the UI at all.
 FEATURES = (
     MediaPlayerEntityFeature.SEARCH_MEDIA
     | MediaPlayerEntityFeature.PLAY_MEDIA
-    # BROWSE_MEDIA is what puts the entity's media button in the Home
-    # Assistant UI at all, and the browse ROOT is where the frontend finds
-    # `can_search` and offers a search box. Without it the entity could be
-    # searched only from Developer Tools, which is where this was left
-    # after the first pass — `search_media` worked and there was no way to
-    # reach it by hand.
     | MediaPlayerEntityFeature.BROWSE_MEDIA
     | MediaPlayerEntityFeature.PLAY
     | MediaPlayerEntityFeature.PAUSE
+    | MediaPlayerEntityFeature.STOP
     | MediaPlayerEntityFeature.NEXT_TRACK
     | MediaPlayerEntityFeature.PREVIOUS_TRACK
     | MediaPlayerEntityFeature.VOLUME_SET
@@ -78,6 +81,18 @@ _KIND_OF_CLASS = {
     MediaClass.ALBUM: "album",
     MediaClass.ARTIST: "artist",
     MediaClass.PLAYLIST: "playlist",
+}
+
+# Library ids, named as Music Assistant names them so the two browse trees
+# read the same way to anyone who has used both.
+LIBRARY_PLAYLISTS = "playlists"
+LIBRARY_ALBUMS = "albums"
+LIBRARY_TRACKS = "tracks"
+
+_LIBRARY: dict[str, tuple[str, MediaClass, str]] = {
+    LIBRARY_PLAYLISTS: ("Playlists", MediaClass.PLAYLIST, MediaType.PLAYLIST),
+    LIBRARY_ALBUMS: ("Albums", MediaClass.ALBUM, MediaType.ALBUM),
+    LIBRARY_TRACKS: ("Liked Songs", MediaClass.TRACK, MediaType.MUSIC),
 }
 
 
@@ -108,7 +123,6 @@ class SpotifyConnectPlayer(CoordinatorEntity[SpotifyCoordinator], MediaPlayerEnt
     _attr_name = None
     _attr_device_class = MediaPlayerDeviceClass.SPEAKER
     _attr_supported_features = FEATURES
-    _attr_media_content_type = MediaType.MUSIC
 
     def __init__(self, coordinator: SpotifyCoordinator, device_id: str) -> None:
         super().__init__(coordinator)
@@ -119,7 +133,9 @@ class SpotifyConnectPlayer(CoordinatorEntity[SpotifyCoordinator], MediaPlayerEnt
 
     @property
     def _device(self) -> dict:
-        return (self.coordinator.data.device(self._device_id) or {}) if self.coordinator.data else {}
+        if not self.coordinator.data:
+            return {}
+        return self.coordinator.data.device(self._device_id) or {}
 
     @property
     def device_info(self) -> DeviceInfo:
@@ -178,13 +194,20 @@ class SpotifyConnectPlayer(CoordinatorEntity[SpotifyCoordinator], MediaPlayerEnt
         return item if isinstance(item, dict) else {}
 
     @property
+    def media_content_type(self) -> str | None:
+        return MediaType.MUSIC if self._item() else None
+
+    @property
+    def media_content_id(self) -> str | None:
+        return self._item().get("uri")
+
+    @property
     def media_title(self) -> str | None:
         return self._item().get("name")
 
     @property
     def media_artist(self) -> str | None:
-        names = ranking.artist_names(self._item())
-        return ", ".join(names) or None
+        return ", ".join(ranking.artist_names(self._item())) or None
 
     @property
     def media_album_name(self) -> str | None:
@@ -204,12 +227,23 @@ class SpotifyConnectPlayer(CoordinatorEntity[SpotifyCoordinator], MediaPlayerEnt
         return ms // 1000 if isinstance(ms, int) else None
 
     @property
+    def media_position_updated_at(self) -> datetime | None:
+        """
+        When `media_position` was read.
+
+        Without this the progress bar does not move: HA extrapolates the
+        position from this timestamp between updates, so with it absent the
+        one position it was handed is all it ever shows. That is what "the
+        time does not sync" was — it genuinely did not. Music Assistant sets
+        the same pair, and for a POLLED player it is not optional.
+        """
+        if not self._active or self.media_position is None:
+            return None
+        return self.coordinator.last_poll
+
+    @property
     def media_image_url(self) -> str | None:
-        album = self._item().get("album")
-        images = album.get("images") if isinstance(album, dict) else None
-        if isinstance(images, list) and images and isinstance(images[0], dict):
-            return images[0].get("url")
-        return None
+        return _image_of(self._item())
 
     # ── Search ──────────────────────────────────────────────────────────────
 
@@ -217,10 +251,9 @@ class SpotifyConnectPlayer(CoordinatorEntity[SpotifyCoordinator], MediaPlayerEnt
         """
         Resolve a spoken name to things that can be played.
 
-        The ranking is `search.py`, a byte-identical copy of the controller's
-        `em_spotify_search.py`: deterministic, popularity never consulted,
-        variants demoted but never dropped. See its docstring for why each of
-        those matters more than it sounds.
+        The ranking is `search.py`: deterministic, popularity never
+        consulted, variants demoted but never dropped. See its docstring for
+        why each of those matters more than it sounds.
         """
         kinds = ranking.KINDS
         if query.media_filter_classes:
@@ -244,9 +277,9 @@ class SpotifyConnectPlayer(CoordinatorEntity[SpotifyCoordinator], MediaPlayerEnt
         ranked = ranking.rank(
             ranking.candidates(body, query.search_query, kinds=kinds), prefer=kinds
         )
-        return SearchMedia(result=[self._browse(c) for c in ranked])
+        return SearchMedia(result=[self._result(c) for c in ranked])
 
-    def _browse(self, cand: ranking.Candidate) -> BrowseMedia:
+    def _result(self, cand: ranking.Candidate) -> BrowseMedia:
         media_class, content_type = _CLASS.get(
             cand.kind, (MediaClass.MUSIC, MediaType.MUSIC)
         )
@@ -257,10 +290,7 @@ class SpotifyConnectPlayer(CoordinatorEntity[SpotifyCoordinator], MediaPlayerEnt
             media_content_type=content_type,
             title=f"{cand.name} — {subtitle}" if subtitle else cand.name,
             can_play=True,
-            # Nothing here can be drilled into: this integration resolves a
-            # name to something playable and stops. A browse tree is a
-            # different feature and claiming it would give an empty one.
-            can_expand=False,
+            can_expand=cand.kind in ("playlist", "album"),
         )
 
     # ── Browse ──────────────────────────────────────────────────────────────
@@ -271,54 +301,91 @@ class SpotifyConnectPlayer(CoordinatorEntity[SpotifyCoordinator], MediaPlayerEnt
         media_content_id: str | None = None,
     ) -> BrowseMedia:
         """
-        A root that can be SEARCHED, with nothing to drill into.
+        The account's own library, with a search box at every level.
 
-        This integration resolves a name to something playable; it does not
-        hold a catalogue. So the root advertises `can_search` — which is what
-        the frontend reads to offer a search box — and has no children,
-        rather than claiming a tree and presenting an empty one.
+        The first version returned a root with `can_search` and NO children,
+        on the grounds that this integration resolves a name rather than
+        holding a catalogue. On a real install that renders as **"No items"**,
+        which is worse than no browse button at all: it looks broken rather
+        than deliberately empty.
 
-        Listing the account's own playlists and saved albums here would need
-        `playlist-read-private` and `user-library-read`, and every existing
-        connection would have to be re-authorised to pick them up. Worth
-        doing deliberately rather than as a side effect of wanting a search
-        box.
+        One API call per level, and none merely to decide what to show — the
+        root is built from a constant. That is the difference from Music
+        Assistant, whose browser indexes a library across providers; this is
+        one account's Spotify and it should feel like three taps.
         """
-        return BrowseMedia(
-            media_class=MediaClass.DIRECTORY,
-            media_content_id="search",
-            media_content_type=MediaType.MUSIC,
-            title="Spotify",
-            can_play=False,
-            can_expand=True,
-            can_search=True,
-            children=[],
-            children_media_class=MediaClass.TRACK,
-        )
+        node = media_content_id or "library"
+
+        if node == "library":
+            return _folder(
+                "library",
+                "Spotify",
+                children=[
+                    _folder(key, title, klass=klass)
+                    for key, (title, klass, _ct) in _LIBRARY.items()
+                ],
+                child_class=MediaClass.DIRECTORY,
+            )
+
+        if node in _LIBRARY:
+            title, klass, content_type = _LIBRARY[node]
+            items = await self._library(node)
+            return _folder(
+                node,
+                title,
+                klass=klass,
+                children=[_node(i, klass, content_type) for i in items],
+                child_class=klass,
+            )
+
+        if node.startswith(("spotify:playlist:", "spotify:album:")):
+            _, kind, spotify_id = node.split(":", 2)
+            tracks = await self.coordinator.api.tracks_of(kind, spotify_id)
+            return _folder(
+                node,
+                "Tracks",
+                klass=MediaClass.DIRECTORY,
+                children=[
+                    _node(t, MediaClass.TRACK, MediaType.MUSIC) for t in tracks
+                ],
+                child_class=MediaClass.TRACK,
+                # The container itself stays playable, so "play this album"
+                # is one tap from its track list rather than a trip back up.
+                playable=True,
+            )
+
+        # BrowseError rather than a bare exception: HA renders it as a
+        # message in the browser instead of an unexplained failure.
+        raise BrowseError(f"Cannot browse {node}")
+
+    async def _library(self, node: str) -> list[dict]:
+        api = self.coordinator.api
+        if node == LIBRARY_PLAYLISTS:
+            return await api.playlists()
+        if node == LIBRARY_ALBUMS:
+            return await api.saved_albums()
+        return await api.saved_tracks()
 
     # ── Commands ────────────────────────────────────────────────────────────
 
     async def async_play_media(
-        self, media_type: str, media_id: str, **kwargs: Any
+        self, media_type: MediaType | str, media_id: str, **kwargs: Any
     ) -> None:
         """
         Play a Spotify URI on this device.
 
-        `media_id` is whatever a search result carried, which is the URI —
-        HA hands `result[0].media_content_id` straight back. A URL from the
-        Spotify app is accepted too, since pasting one into `play_media` is
-        the obvious thing to try.
+        `media_id` is whatever a search result or browse item carried, which
+        is the URI — HA hands the id straight back. A link from the Spotify
+        app is accepted too, since pasting one into `play_media` is the
+        obvious thing to try.
         """
-        uri = media_id.strip()
+        uri = (media_id or "").strip()
         if uri.startswith("http"):
-            # open.spotify.com/track/<id>?si=... — the share-link form.
             parts = [p for p in uri.split("?")[0].split("/") if p]
             if len(parts) >= 2:
                 uri = f"spotify:{parts[-2]}:{parts[-1]}"
         if not uri.startswith("spotify:"):
-            raise HomeAssistantError(
-                f"{media_id!r} is not a Spotify URI or link"
-            )
+            raise HomeAssistantError(f"{media_id!r} is not a Spotify URI or link")
         await self.coordinator.api.play_uri(self._device_id, uri)
         await self.coordinator.async_request_refresh()
 
@@ -336,6 +403,14 @@ class SpotifyConnectPlayer(CoordinatorEntity[SpotifyCoordinator], MediaPlayerEnt
         await self.coordinator.api.command("pause", self._device_id)
         await self.coordinator.async_request_refresh()
 
+    async def async_media_stop(self) -> None:
+        # Spotify has no stop. Pausing and winding to the start is what stop
+        # means to a Connect device and it leaves the queue intact — the same
+        # choice the on-device engine's command set made.
+        await self.coordinator.api.command("pause", self._device_id)
+        await self.coordinator.api.seek(self._device_id, 0)
+        await self.coordinator.async_request_refresh()
+
     async def async_media_next_track(self) -> None:
         await self.coordinator.api.command("next", self._device_id)
         await self.coordinator.async_request_refresh()
@@ -345,9 +420,69 @@ class SpotifyConnectPlayer(CoordinatorEntity[SpotifyCoordinator], MediaPlayerEnt
         await self.coordinator.async_request_refresh()
 
     async def async_set_volume_level(self, volume: float) -> None:
-        await self.coordinator.api.set_volume(self._device_id, round(volume * 100))
+        percent = round(volume * 100)
+        await self.coordinator.api.set_volume(self._device_id, percent)
+        # Shown at once rather than at the next poll. Spotify's device
+        # registry does not reliably reflect a change by the time an
+        # immediate re-read lands, so without this the slider snaps back to
+        # the old value and corrects a moment later. The poll still has the
+        # last word.
+        self.coordinator.note_volume(self._device_id, percent)
+        self.async_write_ha_state()
         await self.coordinator.async_request_refresh()
 
     async def async_media_seek(self, position: float) -> None:
         await self.coordinator.api.seek(self._device_id, int(position * 1000))
         await self.coordinator.async_request_refresh()
+
+
+# ── Browse helpers ──────────────────────────────────────────────────────────
+
+
+def _image_of(item: dict) -> str | None:
+    """The first artwork URL on an item, or on the album it belongs to."""
+    images = item.get("images")
+    if not images and isinstance(item.get("album"), dict):
+        images = item["album"].get("images")
+    if isinstance(images, list) and images and isinstance(images[0], dict):
+        return images[0].get("url")
+    return None
+
+
+def _folder(
+    node: str,
+    title: str,
+    *,
+    klass: MediaClass | str = MediaClass.DIRECTORY,
+    children: list[BrowseMedia] | None = None,
+    child_class: MediaClass | str | None = None,
+    playable: bool = False,
+) -> BrowseMedia:
+    return BrowseMedia(
+        media_class=klass,
+        media_content_id=node,
+        media_content_type=MediaType.MUSIC,
+        title=title,
+        can_play=playable,
+        can_expand=True,
+        # Every level offers search, so it is reachable without walking back
+        # to the root.
+        can_search=True,
+        children=children or [],
+        children_media_class=child_class,
+    )
+
+
+def _node(item: dict, klass: MediaClass, content_type: MediaType | str) -> BrowseMedia:
+    """One library item. A playlist or an album can be opened or played."""
+    subtitle = ", ".join(ranking.artist_names(item))
+    name = item.get("name") or "Unknown"
+    return BrowseMedia(
+        media_class=klass,
+        media_content_id=item["uri"],
+        media_content_type=content_type,
+        title=f"{name} — {subtitle}" if subtitle else name,
+        can_play=True,
+        can_expand=klass in (MediaClass.PLAYLIST, MediaClass.ALBUM),
+        thumbnail=_image_of(item),
+    )

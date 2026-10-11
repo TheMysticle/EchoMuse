@@ -24,12 +24,22 @@ SCOPES = [
     "user-read-private",
     "user-read-playback-state",
     "user-modify-playback-state",
+    # Browsing the account's own library. Read-only, and the reason they are
+    # here rather than omitted: a browse root with nothing in it renders as
+    # "No items", which is worse than no browse button at all.
+    "playlist-read-private",
+    "user-library-read",
 ]
 
-# Spotify's device registry is a cloud resource and the only way to learn
-# that an Echo has gone away, so it is polled. 30s is a compromise: fast
-# enough that a device appearing is noticed before somebody gives up, slow
-# enough to stay well inside the rate limit with several entities.
-SCAN_INTERVAL_SECONDS = 30
+# Spotify's device registry is a cloud resource with no push, so it is
+# polled. Two requests per tick, ONCE for every entity — the coordinator
+# fetches and they all read it — so this is 12 requests a minute whether
+# there is one Echo or six.
+#
+# 10s rather than 30s because the poll is the only thing that notices a
+# change made ELSEWHERE: the volume moved on the Echo's own buttons, or in
+# the Spotify app. At 30s that lagged visibly. Our own commands do not wait
+# for it — they are shown at once and the poll confirms.
+SCAN_INTERVAL_SECONDS = 10
 
 CONF_CLIENT_ID = "client_id"
