@@ -153,6 +153,7 @@ type PcmSpeaker struct {
 	// only this loop knows when the period it is building reaches the DAC.
 	src       atomic.Pointer[sourceBox]
 	srcStarve SourceStarve // periods the pull source had audio for and missed
+	alsaXrun  AlsaXrun     // periods on which the DAC had already run dry
 	srcBuf    []byte
 	srcLastNs atomic.Int64 // last period the source played
 	dacStep   dacStepLog   // pullSource's alone
@@ -205,6 +206,18 @@ func (p *PcmSpeaker) pullSource() []byte {
 	now := before.Add(read / 2)
 	d, ok := pcmDelay(string(b))
 	if !ok {
+		// An XRUN is not merely an unusable clock, it is the DAC having run
+		// dry — the click itself. pcmDelay folds it in with every other
+		// non-running state, so this used to return here and the starve
+		// counter below never saw it: a period lost to a hardware underrun
+		// looked exactly like a period nobody asked for. Reported on
+		// hardware as clicks with nothing in the log.
+		if pcmStateOf(string(b)) == "XRUN" {
+			if total, shout := p.alsaXrun.Note(now); shout {
+				log.Printf("[speaker] ALSA XRUN — the DAC ran dry, %d period(s) "+
+					"since boot; this is what a click sounds like", total)
+			}
+		}
 		return nil
 	}
 	playAt := now.Add(time.Duration(d) * time.Second / 48000)

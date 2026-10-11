@@ -91,3 +91,28 @@ func pcmDelay(status string) (frames int, ok bool) {
 	}
 	return frames, ok && running
 }
+
+// pcmStateOf is the substream's ALSA state — "RUNNING", "XRUN", "SETUP",
+// "PREPARED" — or "" when the status carries none.
+//
+// Split out from pcmDelay because the two answer different questions and
+// conflating them hid a fault. pcmDelay reports ok=false for any state but
+// RUNNING, which is right for scheduling: placing audio against a clock
+// that is not running is worse than declining. But "XRUN" is not merely an
+// unusable clock, it is the DAC having run dry — the audible click itself —
+// and it was being discarded as just another reason not to schedule.
+//
+// That is why the music-source starve counter could not see this: on an
+// XRUN, pcmDelay returns !ok and pullSource gives up BEFORE it ever calls
+// Fill, so a period lost to a hardware underrun looked identical to a
+// period nobody asked for. Clicks were reported on hardware with nothing in
+// the log (2026-10-11) for exactly this reason.
+func pcmStateOf(status string) string {
+	for _, line := range strings.Split(status, "\n") {
+		key, val, found := strings.Cut(line, ":")
+		if found && strings.TrimSpace(key) == "state" {
+			return strings.TrimSpace(val)
+		}
+	}
+	return ""
+}

@@ -103,3 +103,36 @@ func TestPcmDelayRefusesAnythingButARunningStream(t *testing.T) {
 		}
 	}
 }
+
+func TestPcmStateOfReadsTheStateAndNothingElse(t *testing.T) {
+	// The XRUN case is the one that matters: pcmDelay folds it in with
+	// every other non-running state, so the DAC running dry was
+	// indistinguishable from a stream that had not started. A click with
+	// nothing in the log is what that looks like from a listening seat.
+	cases := map[string]string{
+		"state: RUNNING\ndelay: 2048\n":  "RUNNING",
+		"state: XRUN\ndelay: 0\n":        "XRUN",
+		"state: SETUP\n":                 "SETUP",
+		"owner_pid: 123\ndelay: 10\n":    "",
+		"":                               "",
+		"state:XRUN":                     "XRUN",
+	}
+	for status, want := range cases {
+		if got := pcmStateOf(status); got != want {
+			t.Errorf("pcmStateOf(%q) = %q, want %q", status, got, want)
+		}
+	}
+}
+
+func TestAnXrunIsNotAUsableDelayButIsStillAnXrun(t *testing.T) {
+	// Both readings come off the same bytes and must not be collapsed:
+	// pcmDelay is right to refuse, and the refusal must not be the only
+	// thing recorded.
+	const xrun = "state: XRUN\ndelay: 0\navail: 4096\n"
+	if _, ok := pcmDelay(xrun); ok {
+		t.Error("pcmDelay accepted an XRUN as a usable clock")
+	}
+	if pcmStateOf(xrun) != "XRUN" {
+		t.Error("the XRUN was not reported as one")
+	}
+}

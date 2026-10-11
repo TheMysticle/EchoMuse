@@ -41,12 +41,53 @@ const StarveWindow = time.Second
 // fraction of the log budget.
 const StarveLogEvery = 10 * time.Second
 
-// SourceStarve counts periods the pull source had audio for and could not
-// fill.
-type SourceStarve struct {
+// tally is a counter with a rate-limited "say something now" decision.
+// Shared by the two things worth counting per period, so the limiting rule
+// exists once.
+type tally struct {
 	count   atomic.Uint64
 	lastLog atomic.Int64 // unix nanos of the last log line, 0 for never
 }
+
+func (t *tally) add(now time.Time) (uint64, bool) {
+	total := t.count.Add(1)
+	last := t.lastLog.Load()
+	if last != 0 && now.Sub(time.Unix(0, last)) < StarveLogEvery {
+		return total, false
+	}
+	// Compare-and-swap so two write loops cannot both decide to log. There
+	// is only one today, and a counter that quietly depends on that is how a
+	// second one arrives and doubles the log.
+	if !t.lastLog.CompareAndSwap(last, now.UnixNano()) {
+		return total, false
+	}
+	return total, true
+}
+
+func (t *tally) total() uint64 { return t.count.Load() }
+
+// SourceStarve counts periods the pull source had audio for and could not
+// fill.
+type SourceStarve struct {
+	tally
+}
+
+// AlsaXrun counts periods on which the substream was in XRUN — the DAC had
+// run dry before we got there.
+//
+// This is the click, not a symptom of it, and it was invisible: pcmDelay
+// refuses any state but RUNNING, so pullSource gave up before asking the
+// source for audio and the starve counter never saw it. Unlike a starve
+// there is no innocent case to exclude — an XRUN is always a fault.
+type AlsaXrun struct {
+	tally
+}
+
+// Note records an XRUN. Returns the running total and whether to log.
+func (x *AlsaXrun) Note(now time.Time) (uint64, bool) { return x.add(now) }
+
+// Total is every XRUN counted since boot.
+func (x *AlsaXrun) Total() uint64 { return x.total() }
 
 // Note records a period the source declined.
 //
@@ -55,21 +96,10 @@ type SourceStarve struct {
 // starve returns (total so far, false) and counts nothing.
 func (s *SourceStarve) Note(now time.Time, playedNs int64) (uint64, bool) {
 	if playedNs == 0 || now.Sub(time.Unix(0, playedNs)) > StarveWindow {
-		return s.count.Load(), false
+		return s.total(), false
 	}
-	total := s.count.Add(1)
-	last := s.lastLog.Load()
-	if last != 0 && now.Sub(time.Unix(0, last)) < StarveLogEvery {
-		return total, false
-	}
-	// Compare-and-swap so two write loops cannot both decide to log. There
-	// is only one today, and a counter that quietly depends on that is how a
-	// second one arrives and doubles the log.
-	if !s.lastLog.CompareAndSwap(last, now.UnixNano()) {
-		return total, false
-	}
-	return total, true
+	return s.add(now)
 }
 
 // Total is every starve counted since boot.
-func (s *SourceStarve) Total() uint64 { return s.count.Load() }
+func (s *SourceStarve) Total() uint64 { return s.total() }
