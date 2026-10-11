@@ -257,6 +257,22 @@ func (p *Player) Playing() bool {
 
 // Fill writes one period. A short read is zero-padded: a partial period
 // only happens at the end of a stream, where the tail is silence anyway.
+// NeedsClock is false: Fill ignores playAt entirely.
+//
+// Spotify audio is not placed in time against a server clock — it plays as
+// it arrives, paced by the ring's backpressure. Saying so lets the speaker
+// skip the DAC status read, which is a procfs read ON THE WRITE LOOP, once
+// per period, and measured on a Radar at 199us typically but 7.8ms, 8.5ms
+// and 14.7ms in its spikes (2026-10-11). The loop has 42.7ms to deliver a
+// period and the hardware buffer is 85ms, so that read is a large share of
+// a budget it buys this source nothing.
+//
+// It is also when the dropouts started. Before the pull sources existed,
+// music arrived on the channel-fed 0x04 plane and the write loop did no
+// procfs read at all — which is exactly the "it did not happen before
+// librespot" the operator reported.
+func (p *Player) NeedsClock() bool { return false }
+
 func (p *Player) Fill(out []byte, _ time.Time, _ time.Duration) bool {
 	// A WHOLE period or none. See ring.readPeriod: taking a partial one and
 	// zero-padding it put silence in the middle of the waveform — a click no

@@ -198,6 +198,24 @@ func (p *PcmSpeaker) pullSource() []byte {
 	if box == nil || !box.s.Active() {
 		return nil
 	}
+	// A source that ignores playAt is not worth a procfs read. os.ReadFile
+	// on the substream status makes the kernel sync hw_ptr from the DMA
+	// position, which is why Sendspin can place a period to under a
+	// millisecond — and it costs the WRITE LOOP 199us typically, 7.8-14.7ms
+	// in its spikes, every period, while music plays. Spotify discards the
+	// answer. Default is to read, so a source that says nothing keeps
+	// today's behaviour.
+	if nc, ok := box.s.(interface{ NeedsClock() bool }); ok && !nc.NeedsClock() {
+		if !box.s.Fill(p.srcBuf, time.Time{}, 0) {
+			if total, shout := p.srcStarve.Note(time.Now(), p.srcLastNs.Load()); shout {
+				log.Printf("[speaker] music source starved — %d period(s) since boot "+
+					"it had audio for and could not fill; a brief click is this", total)
+			}
+			return nil
+		}
+		p.srcLastNs.Store(time.Now().UnixNano())
+		return p.srcBuf
+	}
 	before := time.Now()
 	b, err := os.ReadFile(p.statusFile)
 	read := time.Since(before)
