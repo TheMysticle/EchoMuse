@@ -62,12 +62,30 @@ const (
 	// degrees clockwise from 12 o'clock).
 	//
 	// Stock anchors this on the MINUS button, not on 6 o'clock, and the two
-	// are not the same place. It is a constant because it is a physical fact
-	// about the board that can only be read off the hardware: set the volume
-	// to its lowest, see which LEDs pulse, and move this until the glyph sits
-	// under the minus button. Reported one LED clockwise of correct with the
-	// arc anchored at ringBottomLED, hence the -1.
-	ringVolumeStart = (ringBottomLED - 1 + numLEDs) % numLEDs
+	// are not the same place.
+	//
+	// Both this and ringVolumeSweep are PHYSICAL FACTS about the board that
+	// can only be read off the hardware, which is why they are constants
+	// with the method written down rather than something derived. Set the
+	// volume to its lowest and watch which LEDs pulse: this rotates the
+	// glyph, ringVolumeSweep decides which way the arc grows out of it.
+	//
+	// History, because it says which direction each step moves things: the
+	// glyph at ringBottomLED read one LED too far one way; -1 moved it the
+	// WRONG way (further the same way), so index DECREASING is that
+	// direction and +1 is the correction.
+	ringVolumeStart = (ringBottomLED + 1) % numLEDs
+
+	// ringVolumeSweep is which way the arc grows from the anchor: +1 for
+	// increasing LED index, -1 for decreasing.
+	//
+	// By the direction arc's geometry increasing index is clockwise (LED i
+	// at ringLEDOffset + 30i degrees clockwise from 12 o'clock) — but that
+	// offset was calibrated on biscuit, so on another board the ring may be
+	// wound or mounted the other way and this is the knob for it. The glyph
+	// always runs opposite, so the arc grows out of it rather than back over
+	// it.
+	ringVolumeSweep = 1
 
 	// minGlyphLEDs is how wide the bottom-of-scale glyph is. The anchor falls
 	// BETWEEN two LEDs when this is 2, which is what straddling the minus
@@ -368,26 +386,27 @@ func clampToButtonBand(level int) int {
 	return level
 }
 
-// ringOrder is the LED indices of the volume arc in fill order: from `start`
-// CLOCKWISE around the ring, which is increasing index.
+// ringOrder is the LED indices of the volume arc in fill order: from `start`,
+// stepping by `sweep` around the ring.
 //
 // Stock sweeps one way from its anchor rather than growing symmetrically
-// outward, and symmetric was tried first and is wrong.
-func ringOrder(n, start int) []int {
+// outward; symmetric was tried first and is wrong.
+func ringOrder(n, start, sweep int) []int {
 	out := make([]int, n)
 	for i := range out {
-		out[i] = (start + i) % n
+		out[i] = ((start+i*sweep)%n + n) % n
 	}
 	return out
 }
 
-// minGlyph is the bottom-of-scale indicator: the LEDs ENDING at the arc's
-// start, counter-clockwise, so a 2-wide glyph straddles the anchor between
-// them and the arc then grows clockwise out of it.
-func minGlyph(n, start, width int) []int {
+// minGlyph is the bottom-of-scale indicator: `width` LEDs ending at the
+// arc's start and running AGAINST the sweep, so a 2-wide glyph straddles the
+// anchor between two LEDs and the arc grows out of it rather than back over
+// it.
+func minGlyph(n, start, width, sweep int) []int {
 	out := make([]int, 0, width)
 	for i := 0; i < width && i < n; i++ {
-		out = append(out, ((start-i)%n+n)%n)
+		out = append(out, ((start-i*sweep)%n+n)%n)
 	}
 	return out
 }
@@ -415,9 +434,9 @@ func minGlyph(n, start, width int) []int {
 // is as quiet as it goes" and no fraction of a 12-LED ring can.
 func volumeArc(pct, n int, atMin bool) []int {
 	units := make([]int, n)
-	order := ringOrder(n, ringVolumeStart)
+	order := ringOrder(n, ringVolumeStart, ringVolumeSweep)
 	if atMin {
-		for _, i := range minGlyph(n, ringVolumeStart, minGlyphLEDs) {
+		for _, i := range minGlyph(n, ringVolumeStart, minGlyphLEDs, ringVolumeSweep) {
 			units[i] = 2
 		}
 		return units

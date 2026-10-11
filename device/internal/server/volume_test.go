@@ -235,11 +235,12 @@ func TestVolumeArcGrowsClockwiseFromTheAnchor(t *testing.T) {
 			t.Errorf("LED %d lit before the anchor filled: %v", i, a)
 		}
 	}
-	// Clockwise is increasing index, wrapping.
-	order := ringOrder(n, ringVolumeStart)
+	// One direction from the anchor, wrapping, never symmetric.
+	order := ringOrder(n, ringVolumeStart, ringVolumeSweep)
 	for i := range order {
-		if want := (ringVolumeStart + i) % n; order[i] != want {
-			t.Fatalf("fill order %v is not clockwise from %d", order, ringVolumeStart)
+		if want := ((ringVolumeStart+i*ringVolumeSweep)%n + n) % n; order[i] != want {
+			t.Fatalf("fill order %v does not sweep %+d from %d",
+				order, ringVolumeSweep, ringVolumeStart)
 		}
 	}
 	if len(order) != n {
@@ -276,7 +277,7 @@ func TestVolumeArcGrowsClockwiseFromTheAnchor(t *testing.T) {
 func TestTheBottomOfScaleGlyph(t *testing.T) {
 	const n = 12
 	a := volumeArc(3, n, true)
-	glyph := minGlyph(n, ringVolumeStart, minGlyphLEDs)
+	glyph := minGlyph(n, ringVolumeStart, minGlyphLEDs, ringVolumeSweep)
 	if len(glyph) != minGlyphLEDs {
 		t.Fatalf("glyph covers %d LEDs, want %d", len(glyph), minGlyphLEDs)
 	}
