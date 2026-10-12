@@ -42,7 +42,7 @@ SECTIONS: dict[str, dict] = {
         "label": "Microphones",
         "keys": [
             "adcMicpga", "adcDigitalGain", "micGainDb",
-            "beamformingEnabled", "beamAngle", "wakeMic", "wakeBeam", "wakeBeamAra", "wakeBeamTurns",
+            "beamformingEnabled", "beamAngle", "wakeMic", "wakeBeam", "wakeBeamAra", "wakeBeamTurns", "wakeEndpoint",
             "aecEnabled", "aecDelayMs", "aecTailMs", "aecRefSource", "nsAsr",
             "saveUtterances",
         ],

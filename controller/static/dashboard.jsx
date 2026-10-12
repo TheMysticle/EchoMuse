@@ -2466,6 +2466,7 @@ function Detail({ device, token, onClose, onApprove, isAdmin, globalConfig, onDe
                 wakeBeamCapable={!device.connected || !!device.wakeBeamCapable}
                 wakeBeamAraCapable={!device.connected || !!device.wakeBeamAraCapable}
                 wakeBeamTurnsCapable={!device.connected || !!device.wakeBeamTurnsCapable}
+                wakeEndpointCapable={!device.connected || !!device.wakeEndpointCapable}
                 sendspinCapable={!device.connected || !!device.sendspinCapable}
                 sendspinPanel={device.connected && device.sendspinCapable
                   ? <SendspinPairing deviceId={device.device_id} status={device.sendspin} isAdmin={isAdmin}/>
@@ -9373,7 +9374,7 @@ const STAGE_MONO = "'DM Mono',monospace";
 const CONFIG_SECTIONS = {
   "playback": ["eqBands", "eqLoudness", "eqStockCurve", "duckDb", "responseLevel", "limiterEnabled", "limiterThreshold", "limiterRelease", "bassGuardEnabled", "bassGuardDb", "streamReply", "volumeButtonSound"],
   "wakeword": ["owwModel", "owwThreshold", "owwSpeexNs", "bargeInEnabled", "bargeInThreshold", "wakeArbitrationMs", "owwOnDevice", "wakeSound", "wakeSoundLevel", "wakeClipCapture", "wakeClipMinScore"],
-  "microphones": ["adcMicpga", "adcDigitalGain", "micGainDb", "beamformingEnabled", "beamAngle", "wakeMic", "wakeBeam", "wakeBeamAra", "wakeBeamTurns", "aecEnabled", "aecDelayMs", "aecTailMs", "aecRefSource", "nsAsr", "saveUtterances"],
+  "microphones": ["adcMicpga", "adcDigitalGain", "micGainDb", "beamformingEnabled", "beamAngle", "wakeMic", "wakeBeam", "wakeBeamAra", "wakeBeamTurns", "wakeEndpoint", "aecEnabled", "aecDelayMs", "aecTailMs", "aecRefSource", "nsAsr", "saveUtterances"],
   "ring": ["ledScene", "ledListenColor", "ledThinkColor", "remoteVolumeArc", "meterAttack", "meterDecay", "meterFloor", "meterGamma", "meterRef", "meterCurve"],
   "advanced": ["agcEnabled", "vadThreshold", "vadSpeechMs", "vadSilenceMs", "buttonSingleTapEvent", "buttonMultiTapMs", "consolePassword", "consoleTimeoutMin", "controllerEndpoints"],
   "bluetooth": ["bleProxyEnabled", "bleProxyConnections"],
@@ -9544,6 +9545,7 @@ function DeviceConfigForm({ config, onChange, disabled, sections, onScopeChange,
                             wakeBeamCapable = true,
                             wakeBeamAraCapable = true,
                             wakeBeamTurnsCapable = true,
+                            wakeEndpointCapable = true,
                             sendspinCapable = true, sendspinPanel = null,
                             spotifyCapable = true, spotifyPanel = null,
                             bleConnectCapable = true, blePanel = null,
@@ -10137,6 +10139,15 @@ function DeviceConfigForm({ config, onChange, disabled, sections, onScopeChange,
             disabled={!wakeBeamTurnsCapable || !config.wakeBeam}
             value={config.wakeBeamTurns ?? false}
             onChange={v => set('wakeBeamTurns', v)}/>
+          {/* Experimental. Independent of the beam: it works from whichever mic
+              the wake word is heard on. */}
+          <Toggle label="End a command when you stop talking (experimental)"
+            sub={wakeEndpointCapable
+              ? 'with a TV on, Home Assistant hears it as speech and keeps listening for 15 seconds; this ends the command about a second after you stop. It can only end a command early, never hold one open'
+              : 'needs newer firmware on this Echo'}
+            disabled={!wakeEndpointCapable}
+            value={config.wakeEndpoint ?? false}
+            onChange={v => set('wakeEndpoint', v)}/>
         </StageAdvanced>
       </Stage>
 

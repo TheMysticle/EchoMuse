@@ -133,6 +133,14 @@ type Device struct {
 	// hears, so it is a setting to compare transcripts with, not to assume.
 	WakeBeamTurns bool
 
+	// WakeEndpoint lets the device end a wake-triggered command itself: when
+	// the talker was heard after the wake word and then nothing has risen above
+	// the room's floor for a second, it sends the end-of-speech marker a button
+	// turn sends. It exists for a room with a TV on, where the speech-to-text
+	// service hears the TV as speech and never calls the end. Off by default; it
+	// can only end a turn early, never hold one open.
+	WakeEndpoint bool
+
 	// AGC toggle — pointer typed so false is expressible over the wire.
 	// Defaults true; applies to bounded lockMic turn streams only (forced
 	// off on the always-on wake stream). RNNoise NS was removed 2026-07-12 —
@@ -263,6 +271,7 @@ func (d *Device) loadDefaults() {
 	d.WakeBeam = envBool("WAKE_BEAM", false)
 	d.WakeBeamAra = envBool("WAKE_BEAM_ARA", false)
 	d.WakeBeamTurns = envBool("WAKE_BEAM_TURNS", false)
+	d.WakeEndpoint = envBool("WAKE_ENDPOINT", false)
 	agcEnabled := envBool("AGC_ENABLED", true)
 	d.AgcEnabled = &agcEnabled
 	// true to match em_db.DEFAULT_DEVICE_CONFIG, which now defaults AEC on
@@ -375,6 +384,9 @@ func (d *Device) Apply(msg ConfigMessage) {
 	}
 	if msg.WakeBeamTurns != nil {
 		d.WakeBeamTurns = *msg.WakeBeamTurns
+	}
+	if msg.WakeEndpoint != nil {
+		d.WakeEndpoint = *msg.WakeEndpoint
 	}
 	if msg.AgcEnabled != nil {
 		d.AgcEnabled = msg.AgcEnabled
@@ -533,6 +545,7 @@ func (d *Device) Snapshot() ConfigMessage {
 	wakeBeam := d.WakeBeam
 	wakeBeamAra := d.WakeBeamAra
 	wakeBeamTurns := d.WakeBeamTurns
+	wakeEndpoint := d.WakeEndpoint
 	// C4 fix (2026-07-05 review): previously &d.BeamformingEnabled leaked a
 	// pointer into the live mutex-guarded struct — the caller (streamMic,
 	// every period) dereferences it after RUnlock, racing with Apply()
@@ -590,6 +603,7 @@ func (d *Device) Snapshot() ConfigMessage {
 		WakeBeam:            &wakeBeam,
 		WakeBeamAra:         &wakeBeamAra,
 		WakeBeamTurns:       &wakeBeamTurns,
+		WakeEndpoint:        &wakeEndpoint,
 		BeamformingEnabled:  &beamformingEnabled,
 		AgcEnabled:          &agcEnabled,
 		AecEnabled:          &aecEnabled,
@@ -666,6 +680,7 @@ type ConfigMessage struct {
 	WakeBeam            *bool    `json:"wakeBeam,omitempty"`
 	WakeBeamAra         *bool    `json:"wakeBeamAra,omitempty"`
 	WakeBeamTurns       *bool    `json:"wakeBeamTurns,omitempty"`
+	WakeEndpoint        *bool    `json:"wakeEndpoint,omitempty"`
 	AgcEnabled          *bool    `json:"agcEnabled,omitempty"`
 	AecEnabled          *bool    `json:"aecEnabled,omitempty"`
 	AecDelayMs          *int     `json:"aecDelayMs,omitempty"`

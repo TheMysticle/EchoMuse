@@ -1308,6 +1308,9 @@ func capabilities() []string {
 	// "wake_beam_turns": this firmware reads `wakeBeamTurns` and can listen to a
 	// voice turn through the wake beam instead of the single locked mic.
 	// Experimental, and it changes what speech-to-text hears.
+	// "wake_endpoint": this firmware reads `wakeEndpoint` and can end a
+	// wake-triggered command itself when the talker stops, which a TV in the room
+	// otherwise stops the speech-to-text service from noticing. Experimental.
 	// "wake_word_off": this firmware honours wakeWordEnabled=false (#286),
 	// so a crossing opens no session. Without it the controller declines
 	// HA's "No wake word" for a privately listening Echo, which would
@@ -1335,7 +1338,7 @@ func capabilities() []string {
 	caps := []string{"mic", "speaker", "leds", "led_anim", "buttons",
 		"oww_shadow", "oww_trigger", "button_hold", "audio_mix",
 		"aec_hw_ref", "oww_local_only", "output_chain", "wake_cue", "volume_cue", "remote_volume_arc",
-		"response_level", "wake_mic", "wake_beam", "wake_beam_ara", "wake_beam_turns", "pairing",
+		"response_level", "wake_mic", "wake_beam", "wake_beam_ara", "wake_beam_turns", "wake_endpoint", "pairing",
 		"wake_word_off", "sendspin", "ble_connect"}
 	if als.Present() {
 		caps = append(caps, "ambient_light")

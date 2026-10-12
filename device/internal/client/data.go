@@ -251,6 +251,12 @@ type DataClient struct {
 	// listenGate decides what of the wake stream may leave the device when
 	// listenState is ListenLocal. Always present; idle in the other states.
 	listenGate *listen.Gate
+	// endpoint ends a wake-triggered command when the talker stops, from the
+	// same SNR-over-a-floor estimate stock's front end uses (wakeEndpoint). It
+	// lives for the process, not the stream: its floor is the last few seconds
+	// of the room, and a stream restarting must not throw them away.
+	endpoint   *beamformer.Endpointer
+	endpointMu sync.Mutex
 	// wakeLevels holds the wake stream's recent frame levels, for the level
 	// sent on oww_wake (wakelevel.go).
 	wakeLevels  levelRing
@@ -317,6 +323,7 @@ func NewDataClient(deviceID string, microphone mic.Subscribable, spk speaker.Spe
 		proc:       processor.New(),
 		aec:        canceller,
 		listenGate: listen.New(0, 0, 0),
+		endpoint:   beamformer.NewEndpointer(),
 	}
 	d.newSpeechStream = d.sileroStream
 	d.listenState.Store(ListenStream)
@@ -1110,6 +1117,11 @@ func (d *DataClient) streamMic(conn *websocket.Conn, stopCh <-chan struct{}, loc
 		writeFrame(frame)
 	}
 
+	// The endpointer's view of the open session: which one it is following,
+	// whether the end has been sent, and a counter for the once-a-second log.
+	var epSession uint32
+	var epSent bool
+	var epTick int
 	// noSpeechTimer fires if speech is never detected within noSpeechTimeout
 	// of turn start. Stopped (and its channel drained) the instant active
 	// first becomes true — from that point on, end-of-turn is entirely
@@ -1220,6 +1232,7 @@ func (d *DataClient) streamMic(conn *websocket.Conn, stopCh <-chan struct{}, loc
 			d.beam.SetWakeBeam(snap.WakeBeam != nil && *snap.WakeBeam)
 			d.beam.SetWakeBeamAra(snap.WakeBeamAra != nil && *snap.WakeBeamAra)
 			d.beam.SetWakeBeamTurns(snap.WakeBeamTurns != nil && *snap.WakeBeamTurns)
+			epOn := snap.WakeEndpoint != nil && *snap.WakeEndpoint
 			mono, angle := d.beam.Process(raw, beamAngle, gainLin)
 			clipped := d.beam.ClippedSamples()
 
@@ -1393,6 +1406,11 @@ func (d *DataClient) streamMic(conn *websocket.Conn, stopCh <-chan struct{}, loc
 					buf = buf[vadOwwChunkBytes:]
 					at := time.Now()
 					d.wakeLevels.push(at, vadPeriodRMS(chunk), gainLin)
+					if epOn {
+						d.endpointMu.Lock()
+						d.endpoint.Push(chunk)
+						d.endpointMu.Unlock()
+					}
 					// Score the SAME bytes on the SAME 80ms boundaries the
 					// controller receives in stream mode, so a device/controller
 					// score difference can only be the engine, not the framing.
@@ -1410,6 +1428,9 @@ func (d *DataClient) streamMic(conn *websocket.Conn, stopCh <-chan struct{}, loc
 						for _, f := range out {
 							sendListenFrame(session, f)
 						}
+						d.endpointSession(epOn, len(out), session, &epSession, &epSent, &epTick, func() {
+							sendFrame([]byte{frameTypeVADEnd})
+						})
 					case ListenDegraded:
 						// Nothing leaves. The gate still tracks the floor.
 						d.listenGate.Push(chunk, at)
@@ -1495,5 +1516,42 @@ func (d *DataClient) streamMic(conn *websocket.Conn, stopCh <-chan struct{}, loc
 				preroll = append(preroll, mono)
 			}
 		}
+	}
+}
+
+// endpointSession follows one wake-triggered session for the endpointer, once
+// per 80ms chunk: frames is how many the gate just released (the backlog since
+// the wake word's frame plus this one, nonzero only while a session is open),
+// and send emits the end-of-speech marker. state is the stream's own: the
+// session being followed, whether its end was sent, and the log counter.
+func (d *DataClient) endpointSession(on bool, frames int, session uint32, cur *uint32, sent *bool, tick *int, send func()) {
+	d.endpointMu.Lock()
+	defer d.endpointMu.Unlock()
+	if !on || frames == 0 {
+		if *cur != 0 {
+			d.endpoint.EndSession()
+			*cur, *sent, *tick = 0, false, 0
+		}
+		return
+	}
+	if *cur != session {
+		// A session just opened. The wake word's frame was `frames` ago.
+		*cur, *sent, *tick = session, false, 0
+		d.endpoint.StartSession(frames * 80)
+		snr, floor, _ := d.endpoint.State()
+		log.Printf("[endpoint] session %d: following the talker (warm=%v, floor %.0f, snr %.1f)",
+			session, d.endpoint.Warm(), floor, snr)
+		return
+	}
+	*tick++
+	if *tick%12 == 0 { // about once a second
+		snr, floor, speech := d.endpoint.State()
+		log.Printf("[endpoint] session %d: snr %.1f floor %.0f speech=%v heard=%v", session, snr, floor, speech, d.endpoint.Heard())
+	}
+	if !*sent && d.endpoint.Ended() && d.endpoint.Warm() {
+		*sent = true
+		snr, floor, _ := d.endpoint.State()
+		log.Printf("[endpoint] session %d: the talker stopped (snr %.1f, floor %.0f); sending end of speech", session, snr, floor)
+		send()
 	}
 }
