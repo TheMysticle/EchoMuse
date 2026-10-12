@@ -340,6 +340,9 @@ type wakeBeam struct {
 	wbFloor [fbfBeams]float64
 	votes   [fbfBeams]int
 	wts     [fbfGroupSize]float32
+	// ownSD is the design we solved; sd is the weights in use, which are
+	// stock's own table when wakeBeamStock is on and the device has it.
+	ownSD *SDWeights
 	// group is the selection rule in use (GroupMean or GroupStock).
 	group int
 	// shelf and lowcut shape the output (fbfShelfDB, fbfLowCutHz); shapeOn
@@ -403,7 +406,7 @@ func fbfDesign() *SDWeights {
 }
 
 func newWakeBeam() *wakeBeam {
-	w := &wakeBeam{sd: fbfDesign(), cur: fbfNeutral, sel: fbfNeutral,
+	w := &wakeBeam{sd: fbfDesign(), ownSD: fbfDesign(), cur: fbfNeutral, sel: fbfNeutral,
 		group: GroupMode, shelf: highShelf(fbfShelfHz, fbfShelfDB), lowcut: butterworth2(fbfLowCutHz, true), shapeOn: OutputShaping, outGain: float32(math.Pow(10, fbfOutGainDB/20)), wts: [fbfGroupSize]float32{1.0 / 3, 1.0 / 3, 1.0 / 3}}
 	// The beams are formed in the canceller's spectral domain, so every path
 	// through it has the same delay: the stage's own, which is there whether or
@@ -940,7 +943,12 @@ func (b *Beamformer) SetWakeBeamAra(on bool) { b.araWant = on }
 // share of the score) and its canceller control (a beam's SNR gates the step,
 // any beam over the line stops them all). Off, it is the faster rule the path
 // started with. Call from the goroutine that calls Process.
-func (b *Beamformer) SetWakeBeamStock(on bool) { b.stockWant = on }
+func (b *Beamformer) SetWakeBeamStock(on bool) {
+	b.stockWant = on
+	if on {
+		startStockTable()
+	}
+}
 
 // SetPlaying says whether the Echo's own speaker is audible. Stock resets its
 // canceller (and the beamformer's state with it) whenever that changes, because
@@ -1035,6 +1043,19 @@ func (b *Beamformer) WakeBeam(mics [][]byte) []byte {
 		log.Printf("[beam] stock's merger and canceller control: %v", b.stockWant)
 	}
 	b.fbf.ara.SetGate(gate)
+	// With stock's rules the beams are stock's own table when the device has
+	// it and it was read; the canceller starts over because what it learnt was
+	// for different beams.
+	use := b.fbf.ownSD
+	if t := stockTableResult.Load(); b.stockWant && t != nil {
+		use = t
+	}
+	if b.fbf.sd != use {
+		b.fbf.sd = use
+		b.fbf.ara.Reset()
+		b.fbf.votes = [fbfBeams]int{}
+		log.Printf("[beam] beams now %s", map[bool]string{true: "stock's own table", false: "our design"}[use != b.fbf.ownSD])
+	}
 	out, clipped := b.fbf.process(mics, 1, mode)
 	b.pathTo = b.fbf.outIndex()
 	b.clippedSamples += clipped
