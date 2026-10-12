@@ -45,6 +45,9 @@ type WakeBeamInfo struct {
 	// Az is the engaged beam's look direction. Chans are the mics it sums.
 	Az    float64
 	Chans []int
+	// Turn is whether this was a locked turn heard through the beam
+	// (wakeBeamTurns), in which case To is the beam held for it.
+	Turn bool
 	// Cal is whether mic calibration other than unity was applied.
 	Cal bool
 	// Ara is whether the interference canceller was on; AraCut is how far it
@@ -64,7 +67,7 @@ func (i WakeBeamInfo) String() string {
 		return fmt.Sprintf("beam=off in=ch%d", i.In)
 	case !i.Ready:
 		return fmt.Sprintf("beam=designing in=ch%d", i.In)
-	case i.Locked:
+	case i.Locked && !i.Turn:
 		return fmt.Sprintf("beam=bypassed(turn holds the mic) in=ch%d", i.In)
 	case i.To == pathNA:
 		return fmt.Sprintf("beam=idle in=ch%d", i.In)
@@ -82,6 +85,9 @@ func (i WakeBeamInfo) String() string {
 	state := name(i.To)
 	if i.From != i.To && i.From != pathNA {
 		state = name(i.From) + "->" + state
+	}
+	if i.Turn {
+		state = "turn:" + state
 	}
 	ara := "off"
 	if i.Ara {
@@ -155,6 +161,7 @@ func (b *Beamformer) NoteWakePath(now time.Time, in int) {
 		Setting: b.fbfWant,
 		Ready:   b.fbf != nil,
 		Locked:  b.lockedChannel >= 0,
+		Turn:    b.lockedChannel >= 0 && b.turnWant,
 		In:      in,
 		From:    b.pathFrom,
 		To:      b.pathTo,

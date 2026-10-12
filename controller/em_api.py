@@ -7317,6 +7317,7 @@ def _merge_device(row, boot: dict | None = None) -> dict:
         "wakeMicCapable": getattr(live, "wake_mic_capable", False) if live else False,
         "wakeBeamCapable": getattr(live, "wake_beam_capable", False) if live else False,
         "wakeBeamAraCapable": getattr(live, "wake_beam_ara_capable", False) if live else False,
+        "wakeBeamTurnsCapable": getattr(live, "wake_beam_turns_capable", False) if live else False,
         "remoteVolumeArcCapable": getattr(live, "remote_volume_arc_capable", False) if live else False,
         "responseLevelCapable": getattr(live, "response_level_capable", False) if live else False,
         # Sendspin player (#89): whether the firmware has one, and its status

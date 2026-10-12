@@ -2465,6 +2465,7 @@ function Detail({ device, token, onClose, onApprove, isAdmin, globalConfig, onDe
                 wakeMicCapable={!device.connected || !!device.wakeMicCapable}
                 wakeBeamCapable={!device.connected || !!device.wakeBeamCapable}
                 wakeBeamAraCapable={!device.connected || !!device.wakeBeamAraCapable}
+                wakeBeamTurnsCapable={!device.connected || !!device.wakeBeamTurnsCapable}
                 sendspinCapable={!device.connected || !!device.sendspinCapable}
                 sendspinPanel={device.connected && device.sendspinCapable
                   ? <SendspinPairing deviceId={device.device_id} status={device.sendspin} isAdmin={isAdmin}/>
@@ -9372,7 +9373,7 @@ const STAGE_MONO = "'DM Mono',monospace";
 const CONFIG_SECTIONS = {
   "playback": ["eqBands", "eqLoudness", "eqStockCurve", "duckDb", "responseLevel", "limiterEnabled", "limiterThreshold", "limiterRelease", "bassGuardEnabled", "bassGuardDb", "streamReply", "volumeButtonSound"],
   "wakeword": ["owwModel", "owwThreshold", "owwSpeexNs", "bargeInEnabled", "bargeInThreshold", "wakeArbitrationMs", "owwOnDevice", "wakeSound", "wakeSoundLevel", "wakeClipCapture", "wakeClipMinScore"],
-  "microphones": ["adcMicpga", "adcDigitalGain", "micGainDb", "beamformingEnabled", "beamAngle", "wakeMic", "wakeBeam", "wakeBeamAra", "aecEnabled", "aecDelayMs", "aecTailMs", "aecRefSource", "nsAsr", "saveUtterances"],
+  "microphones": ["adcMicpga", "adcDigitalGain", "micGainDb", "beamformingEnabled", "beamAngle", "wakeMic", "wakeBeam", "wakeBeamAra", "wakeBeamTurns", "aecEnabled", "aecDelayMs", "aecTailMs", "aecRefSource", "nsAsr", "saveUtterances"],
   "ring": ["ledScene", "ledListenColor", "ledThinkColor", "remoteVolumeArc", "meterAttack", "meterDecay", "meterFloor", "meterGamma", "meterRef", "meterCurve"],
   "advanced": ["agcEnabled", "vadThreshold", "vadSpeechMs", "vadSilenceMs", "buttonSingleTapEvent", "buttonMultiTapMs", "consolePassword", "consoleTimeoutMin", "controllerEndpoints"],
   "bluetooth": ["bleProxyEnabled", "bleProxyConnections"],
@@ -9542,6 +9543,7 @@ function DeviceConfigForm({ config, onChange, disabled, sections, onScopeChange,
                             wakeMicCapable = true,
                             wakeBeamCapable = true,
                             wakeBeamAraCapable = true,
+                            wakeBeamTurnsCapable = true,
                             sendspinCapable = true, sendspinPanel = null,
                             spotifyCapable = true, spotifyPanel = null,
                             bleConnectCapable = true, blePanel = null,
@@ -10124,6 +10126,17 @@ function DeviceConfigForm({ config, onChange, disabled, sections, onScopeChange,
             disabled={!wakeBeamAraCapable || !config.wakeBeam}
             value={config.wakeBeamAra ?? false}
             onChange={v => set('wakeBeamAra', v)}/>
+          {/* Experimental, changes what speech-to-text hears, and follows the
+              beam, so it says which reason it is off. */}
+          <Toggle label="Beam for what you say after the wake word (experimental)"
+            sub={!wakeBeamTurnsCapable
+              ? 'needs newer firmware on this Echo'
+              : !config.wakeBeam
+                ? 'turn on the wake word beam first'
+                : 'the command or question is heard through the beam (and the canceller, if on) instead of one mic. Untested against transcripts: turn on "Save utterances" and compare'}
+            disabled={!wakeBeamTurnsCapable || !config.wakeBeam}
+            value={config.wakeBeamTurns ?? false}
+            onChange={v => set('wakeBeamTurns', v)}/>
         </StageAdvanced>
       </Stage>
 

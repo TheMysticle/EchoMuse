@@ -50,6 +50,7 @@ func main() {
 	az := flag.String("azimuths", "", "look directions for -sd, degrees, comma separated (default: even spacing)")
 	flag.Float64Var(&beamformer.SDRingLowHz, "ring.low", beamformer.SDRingLowHz, "taper the interference ring to zero below this frequency, Hz")
 	flag.Float64Var(&beamformer.SDSectorDeg, "sector", beamformer.SDSectorDeg, "half-width of the look sector the ring leaves alone, degrees")
+	colorOn := flag.Bool("color", false, "how much a talker's spectrum is coloured by the beams, by how far off-axis they are")
 	araOn := flag.Bool("ara", false, "measure the interference canceller after the beams (use with -sd)")
 	araFlags()
 	flag.Parse()
@@ -68,6 +69,10 @@ func main() {
 	}
 	pos := micPositions(*mics)
 	beams := newDesignSet(pos, *nBeams, *taps, 100, 5000)
+	if *colorOn {
+		colorReport(beams)
+		return
+	}
 	if *araOn {
 		araReport(rand.New(rand.NewSource(*seed)), pos, beams, *inr, *dnr, *snr)
 		return
@@ -316,3 +321,59 @@ func angDiff(a, b float64) float64 {
 // flagFloat registers a float flag bound to a package variable, defaulting to
 // its current value.
 func flagFloat(p *float64, name, usage string) { flag.Float64Var(p, name, *p, usage) }
+
+// colorReport measures what a recogniser would hear of a talker's spectrum. A
+// beam passes its look direction at exactly unity, but a talker is never exactly
+// there, and off the look direction the response is not flat: it tilts and
+// ripples with frequency. For each offset from a beam's look direction this
+// prints the response over 190-4000Hz (the bins that carry speech): its mean
+// level, the standard deviation of its shape in dB (how coloured), and its
+// spread. A single mic is 0 for all of them. The offset a talker actually sees
+// is the angle to the nearest beam, which the last rows give for these beams.
+func colorReport(d *designSet) {
+	fmt.Printf("\ncolouring of a talker's spectrum by the beams, 190-4000Hz, mean over the %d beams\n", d.n())
+	fmt.Printf("%12s %12s %14s %18s\n", "off look dir", "mean level", "shape std dev", "lowest..highest")
+	for _, off := range []float64{0, 5, 10, 15, 20, 25, 30, 45} {
+		var lvl, sd, lo, hi float64
+		cnt := 0
+		for b := 0; b < d.n(); b++ {
+			for _, sign := range []float64{1, -1} {
+				var v []float64
+				for k := 3; k <= 64; k++ {
+					f := float64(k) * sampleRate / 256
+					v = append(v, 20*math.Log10(math.Max(absC(d.resp(b, f, d.az(b)+sign*off, 0)), 1e-6)))
+				}
+				var m float64
+				mn, mx := math.Inf(1), math.Inf(-1)
+				for _, x := range v {
+					m += x
+					mn, mx = math.Min(mn, x), math.Max(mx, x)
+				}
+				m /= float64(len(v))
+				var ss float64
+				for _, x := range v {
+					ss += (x - m) * (x - m)
+				}
+				lvl += m
+				sd += math.Sqrt(ss / float64(len(v)))
+				lo += mn - m
+				hi += mx - m
+				cnt++
+			}
+		}
+		c := float64(cnt)
+		fmt.Printf("%11.0f° %10.1fdB %12.1fdB %9.1f..%+.1fdB\n", off, lvl/c, sd/c, lo/c, hi/c)
+	}
+	// The offset a talker actually has: the angle to the nearest beam, for a
+	// talker at every degree.
+	var worst, sum float64
+	for az := 0.0; az < 360; az++ {
+		best := math.Inf(1)
+		for b := 0; b < d.n(); b++ {
+			best = math.Min(best, angDiff(az, d.az(b)))
+		}
+		worst = math.Max(worst, best)
+		sum += best
+	}
+	fmt.Printf("a talker is at most %.0f° (mean %.1f°) from the nearest beam's look direction\n", worst, sum/360)
+}

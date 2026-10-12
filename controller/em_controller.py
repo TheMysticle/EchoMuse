@@ -1137,6 +1137,11 @@ class Device:
         return "wake_beam" in (self.capabilities or [])
 
     @property
+    def wake_beam_turns_capable(self) -> bool:
+        """Whether firmware can hear a voice turn through the wake beam."""
+        return "wake_beam_turns" in (self.capabilities or [])
+
+    @property
     def wake_beam_ara_capable(self) -> bool:
         """Whether firmware can add an interference canceller after the beams."""
         return "wake_beam_ara" in (self.capabilities or [])

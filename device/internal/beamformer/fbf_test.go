@@ -629,3 +629,173 @@ func TestABeamAndTheCentreMicLineUp(t *testing.T) {
 		}
 	}
 }
+
+// lockForTurn puts b in the state a wake leaves it in: locked to a perimeter
+// mic that looked towards az.
+func lockForTurn(b *Beamformer, az float64) {
+	b.lockedChannel, b.lockAz, b.lockAzOK = 3, az, true
+}
+
+// With the setting off a locked turn is the single mic it always was, and the
+// beam is not what the pipeline reads. This is the default, and the one thing
+// the new setting may not change.
+func TestTurnsAreBypassedByDefault(t *testing.T) {
+	b := New()
+	enableWakeBeam(b)
+	lockForTurn(b, 55)
+	if b.WakeBeamUsable() {
+		t.Fatal("a locked turn read the wake beam with wakeBeamTurns off")
+	}
+	b.WakeBeam(s16(zeros(NumMics, 2560)))
+	if b.WakeBeamIndex() != -1 || b.fbf.inTurn {
+		t.Error("a bypassed turn must park on the centre mic and not enter turn mode")
+	}
+}
+
+// With it on, the turn starts on the beam nearest the mic the lock picked when
+// none is engaged, keeps it for every period of the turn, and leaves the
+// statistics alone.
+func TestTurnHoldsTheBeamForTheWholeTurn(t *testing.T) {
+	rng := rand.New(rand.NewSource(11))
+	src := denseTones(rng, 200, 3500, 100)
+	b := New()
+	enableWakeBeam(b)
+	b.SetWakeBeamTurns(true)
+	lockForTurn(b, 55) // beam 6 looks at 55 degrees
+	want := nearestBeam(55)
+	var blocks int
+	for k := 0; k < 8; k++ {
+		x := zeros(NumMics, 2560)
+		render(x, src, 120+30*float64(k), k*2560, always) // a source that moves about
+		b.WakeBeam(s16(x))
+		if k == 0 {
+			blocks = b.fbf.blocks
+		}
+		if got := b.WakeBeamIndex(); got != want {
+			t.Fatalf("period %d: beam %d, want %d held for the turn", k, got, want)
+		}
+		if b.fbf.blocks != blocks {
+			t.Fatalf("period %d: the statistics moved during a turn", k)
+		}
+	}
+	if !b.WakeBeamUsable() {
+		t.Error("the turn's audio is not the beam's")
+	}
+
+	// An already engaged beam is kept, whatever the lock pointed at.
+	b2 := New()
+	enableWakeBeam(b2)
+	b2.SetWakeBeamTurns(true)
+	b2.fbf.cur = 1
+	lockForTurn(b2, 55)
+	b2.WakeBeam(s16(zeros(NumMics, 2560)))
+	if b2.WakeBeamIndex() != 1 {
+		t.Errorf("an engaged beam 1 became %d at the lock", b2.WakeBeamIndex())
+	}
+
+	// And after the turn the beam stays until the selection's own release.
+	b.lockedChannel, b.lockAzOK = -1, false
+	b.WakeBeam(s16(zeros(NumMics, 2560)))
+	if b.fbf.inTurn || b.WakeBeamIndex() != want {
+		t.Errorf("after the turn: inTurn=%v beam %d, want the beam kept (%d)", b.fbf.inTurn, b.WakeBeamIndex(), want)
+	}
+}
+
+// What a turn hears must be better than the mic it replaces, or the setting is
+// pointless: a talker at the held beam's look direction with an interferer on
+// the far side, through the turn path, against the centre mic.
+func TestTurnAudioBeatsTheCentreMic(t *testing.T) {
+	rng := rand.New(rand.NewSource(12))
+	var fs []float64
+	for f := 1600.0; f <= 3800; f += 200 {
+		fs = append(fs, f)
+	}
+	talker := tones(rng, 1600, 3800, 200, 200)
+	interf := tones(rng, 1650, 3750, 200, 200)
+	const n = 16000
+	beam := nearestBeam(55)
+	az := newWakeBeam().sd.Azimuths[beam]
+	run := func(src []tone, from float64) (turn, centre []float64) {
+		b := New()
+		enableWakeBeam(b)
+		b.SetWakeBeamTurns(true)
+		lockForTurn(b, az)
+		x := zeros(NumMics, n)
+		render(x, src, from, 0, always)
+		in := s16(x)
+		o := samples(b.WakeBeam(in))
+		return o[3000:], samples(in[centreCh])[3000:]
+	}
+	tb, tc := run(talker, az)
+	ib, ic := run(interf, az+180)
+	gain := 10 * math.Log10((powerAt(tb, fs)/powerAt(ib, fs))/(powerAt(tc, fs)/powerAt(ic, fs)))
+	t.Logf("turn audio %.1fdB better than the centre mic against an interferer opposite", gain)
+	if gain < 6 {
+		t.Errorf("the turn path gained only %.1fdB over the centre mic", gain)
+	}
+}
+
+// The 80Hz high-pass is stock's: -3dB at 80Hz, -0.7 at 125, flat from the
+// bottom of the wake word's band, and it removes rumble.
+func TestTurnHighPassMatchesStocks(t *testing.T) {
+	gain := func(f float64) float64 {
+		w := 2 * math.Pi * f / sampleRate
+		z := cmplx.Exp(complex(0, -w))
+		z2 := z * z
+		num := complex(float64(fbfHP[0]), 0) + complex(float64(fbfHP[1]), 0)*z + complex(float64(fbfHP[2]), 0)*z2
+		den := 1 + complex(float64(fbfHP[3]), 0)*z + complex(float64(fbfHP[4]), 0)*z2
+		return 20 * math.Log10(cmplx.Abs(num/den))
+	}
+	for _, c := range []struct{ f, want, tol float64 }{{80, -3.0, 0.3}, {125, -0.7, 0.3}, {250, 0, 0.1}, {1000, 0, 0.01}} {
+		if g := gain(c.f); math.Abs(g-c.want) > c.tol {
+			t.Errorf("high-pass at %.0fHz: %.2fdB, want %.1f +/-%.1f", c.f, g, c.want, c.tol)
+		}
+	}
+	if g := gain(20); g > -20 {
+		t.Errorf("20Hz rumble only %.1fdB down", g)
+	}
+}
+
+// The high-pass is heard in a turn and only in a turn: the wake path's audio is
+// what was measured and is left alone.
+func TestHighPassIsOnlyHeardInATurn(t *testing.T) {
+	low := func(turn bool) float64 {
+		b := New()
+		enableWakeBeam(b)
+		if turn {
+			b.SetWakeBeamTurns(true)
+			lockForTurn(b, 55)
+		}
+		b.fbf.cur, b.fbf.holdLeft, b.fbf.lowFor = fbfNeutral, 1<<30, 0
+		x := zeros(NumMics, 2560*6)
+		for ch := range x {
+			for i := range x[ch] {
+				x[ch][i] = 4000 * math.Sin(2*math.Pi*30*float64(i)/sampleRate) // 30Hz rumble
+			}
+		}
+		in := s16(x)
+		var out []float64
+		for k := 0; k < 6; k++ {
+			batch := make([][]byte, len(in))
+			for ch := range in {
+				batch[ch] = in[ch][k*2560*2 : (k+1)*2560*2]
+			}
+			if turn {
+				b.fbf.cur = fbfNeutral // the held beam would be a different output; this isolates the filter
+			}
+			out = append(out, samples(b.WakeBeam(batch))...)
+		}
+		return power32(out[2560*3:])
+	}
+	if turn, listen := low(true), low(false); turn > listen/10 {
+		t.Errorf("rumble through a turn %.0f vs listening %.0f: the high-pass is not applied in the turn", turn, listen)
+	}
+}
+
+func power32(x []float64) float64 {
+	var p float64
+	for _, v := range x {
+		p += v * v
+	}
+	return p / float64(len(x))
+}

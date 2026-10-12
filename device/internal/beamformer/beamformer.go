@@ -175,6 +175,9 @@ type Beamformer struct {
 	// state. All nil/false while wakeBeam is off, which is the default.
 	fbfWant    bool
 	araWant    bool
+	turnWant   bool
+	lockAz     float64 // where the last Lock() pointed, degrees; valid while locked
+	lockAzOK   bool
 	fbfPending chan *wakeBeam
 	fbf        *wakeBeam
 
@@ -264,6 +267,7 @@ func (b *Beamformer) Lock(enabled bool) {
 	}
 
 	b.lockedChannel = directionToChannel[best]
+	b.lockAz, b.lockAzOK = candidateAngles[best], true
 }
 
 // onsetRatio returns energySmooth[di] / energyBaseline[di].
@@ -339,6 +343,7 @@ func (b *Beamformer) Unlock() {
 		log.Printf("[beam] unlocked from ch%d", b.lockedChannel)
 	}
 	b.lockedChannel = -1
+	b.lockAzOK = false
 }
 
 // Process returns mono S16_LE audio and the estimated source angle.

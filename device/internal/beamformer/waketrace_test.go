@@ -76,6 +76,20 @@ func TestWakeBeamInfoSaysWhatTheCancellerIsDoing(t *testing.T) {
 	}
 }
 
+// A turn heard through the beam says so, and names the beam held for it, rather
+// than claiming the beam was bypassed.
+func TestWakeBeamInfoSaysATurnUsedTheBeam(t *testing.T) {
+	info := WakeBeamInfo{Known: true, Setting: true, Ready: true, Locked: true, Turn: true, From: 6, To: 6, Az: 55, Chans: []int{0, 1, 3, 4}}
+	s := info.String()
+	if !strings.Contains(s, "turn:6(55 deg)") || strings.Contains(s, "bypassed") {
+		t.Error(s)
+	}
+	info.Turn = false
+	if s := info.String(); !strings.Contains(s, "bypassed") {
+		t.Error(s)
+	}
+}
+
 func TestWakeBeamInfoReportsCalibrationAsApplied(t *testing.T) {
 	old := micCalDir
 	t.Cleanup(func() { micCalDir = old })

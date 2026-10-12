@@ -188,6 +188,64 @@ What was checked, and what moved the result:
   filters took 2.8 and 3.6ms. Extrapolated to the A53, about 4-7% of one core.
   Not measured on a device.
 
+## Turn audio: what stock does, and the setting that follows it
+
+```bash
+go run ./tools/bf_design -sd -mics amazon4 -color        # how the beams colour a talker's spectrum
+```
+
+**How stock routes its audio.** Read from `AFE.cfg`, `asp.cfg`, the Pryon model
+configs and the strings of `libasp`/`libWakeWordManager`, not decompiled:
+
+- One pipeline, "ASR", takes the 9-channel capture (7 mics and the playback
+  references) to **one 16kHz mono channel**. In its own order: a mic channel map
+  that selects **4 of the 7 mics, `[0,1,3,4]`**, an 80Hz high-pass on the mics and
+  the references, the filter bank, echo cancellation (2 reference channels, 160ms
+  tail), fixed beamformer (8 beams), adaptive interference cancellation (ARA),
+  the beam-group merger, a voice-activity detector, and an output boost of
+  +8.3dB.
+- The wake model takes that channel: the Pryon scorer config maps its input to
+  `channel_type: "beamformed"`, and the AFE reports the wake word's level and SNR
+  "on ASR stream". The decoder is created over a multichannel format, so the
+  stream is a multichannel frame whose first channel is the ASR output and whose
+  others (the post-echo-cancellation mics and the references) the AFE can append
+  ("sendOut + AEC out + AEC refs"), which is also why `AFE.cfg` delays the echo
+  cancelled mics to line up with it "before uploading to cloud".
+- So the command is not heard through a separately chosen mic: there is one
+  recognition channel, beamformed and cancelled, and the wake word is one use of
+  it. What the firmware does not state is whether the cloud-bound audio is that
+  channel alone or the whole frame; the mapping of the wake model to the
+  beamformed channel is explicit, the cloud routing is an inference.
+
+**What ours does.** By default a wake locks the mic loop to the single
+perimeter mic with the most onset energy, which then feeds speech-to-text. With
+`wakeBeamTurns` on, a locked turn is heard through the beam instead, held on the
+one engaged at the wake (or, if none was, the beam nearest the mic the lock
+picked) for the whole turn, with the canceller if that is on and an 80Hz high-pass
+like stock's, which runs in a turn only so the wake path stays what was measured.
+It is the same output the wake word hears.
+
+**What this can and cannot say about transcripts.** It cannot say anything about
+accuracy: that needs real speech through a recogniser, which this tool does not
+have. It can say how much the beams change a talker's spectrum, which is what a
+recogniser is sensitive to. A beam passes its look direction at exactly unity; off
+it the response tilts and ripples. Over 190-4000Hz, mean over the eight beams:
+
+| talker off the look direction | mean level | shape (std dev) | lowest..highest |
+|---|---|---|---|
+| 0° | 0.0 dB | 0.0 dB | 0.0..0.0 |
+| 10° | -0.3 | 0.5 | -0.8..+0.7 |
+| 15° | -0.6 | 0.7 | -1.4..+1.0 |
+| 20° | -1.0 | 1.0 | -2.0..+1.4 |
+| 30° | -2.4 | 1.8 | -3.9..+2.4 |
+
+A talker is at most 31° from the nearest beam and 12° on average, so for most
+positions the coloration is under a dB and for the worst about 2dB with a 2.4dB
+level loss. That is small beside the coloration of a room or a mic. To judge it on
+speech, turn on "Save utterances" (the audio the controller sends on to
+speech-to-text is kept per turn) and compare the same sentence with the setting
+off and on.
+
 ## What this does and does not show
 
 - **Aperture is not what limits a sum below 1.5kHz; the design is.** On the same

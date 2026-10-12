@@ -296,6 +296,10 @@ DEFAULT_DEVICE_CONFIG = {
     # wakeBeamAra: an adaptive interference canceller after the wake beams.
     # Experimental, OFF, and only does anything with wakeBeam on.
     "wakeBeamAra":      False,
+    # wakeBeamTurns: hear a voice turn through the wake beam (held on the one
+    # chosen at the wake) instead of the single mic the lock picked. Changes
+    # what speech-to-text hears. Experimental, OFF, and only with wakeBeam on.
+    "wakeBeamTurns":    False,
     "eqBands":          [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
     "eqLoudness":       False,
     # Radar's own stock FIR curve (em_eq._OverlapSaveFIR), layered under the

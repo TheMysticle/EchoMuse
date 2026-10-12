@@ -74,6 +74,15 @@ const (
 
 	// fbfNeutral is the output index of the centre mic, delayed to match.
 	fbfNeutral = fbfBeams
+
+	// What the wake path is doing with a period. Listening is the normal wake
+	// path; bypassed is a locked turn that does not use the beam (the
+	// default), when the selection is parked and the statistics frozen; turn is
+	// a locked turn that does (wakeBeamTurns), when the beam chosen at the wake
+	// is held for the turn.
+	modeListen = 0
+	modeBypass = 1
+	modeTurn   = 2
 )
 
 // MicPosition returns ALSA channel ch's position in metres: x to the right,
@@ -266,6 +275,17 @@ type wakeBeam struct {
 	beamChans [fbfBeams][]int
 	cal       bool
 
+	// Turn mode: the beam chosen when the turn began, and where the wake came
+	// from (set by Lock), so a turn with nothing engaged can start on the beam
+	// nearest the mic the lock picked.
+	inTurn   bool
+	lockAz   float64
+	lockAzOK bool
+	// hp is the 80Hz high-pass stock puts on its mics before anything else
+	// (AFE.cfg "HPF 80Hz @ 16K"), a 2nd-order Butterworth. It runs on the output
+	// all the time so its state is continuous, and its result is used in a turn.
+	hpz1, hpz2 float32
+
 	// lastLog and suppressed rate-limit the beam-to-beam switch lines.
 	lastLog    time.Time
 	suppressed int
@@ -335,11 +355,54 @@ func newWakeBeam() *wakeBeam {
 	return w
 }
 
+// fbfHP is stock's 80Hz input high-pass as direct-form biquad coefficients
+// {b0, b1, b2, a1, a2}: a 2nd-order Butterworth at 16kHz, -3dB at 80Hz and
+// -0.7dB at 125Hz.
+var fbfHP = func() [5]float32 {
+	w0 := 2 * math.Pi * 80 / sampleRate
+	alpha := math.Sin(w0) / (2 * math.Sqrt2 / 2)
+	c := math.Cos(w0)
+	a0 := 1 + alpha
+	return [5]float32{
+		float32((1 + c) / 2 / a0), float32(-(1 + c) / a0), float32((1 + c) / 2 / a0),
+		float32(-2 * c / a0), float32((1 - alpha) / a0),
+	}
+}()
+
+// enterOrLeaveTurn handles the edges of a turn that uses the beam. Entering, a
+// beam already engaged by the wake is kept (it was chosen on the SNR of the
+// wake itself); with none engaged the turn starts on the beam nearest the mic
+// the lock picked, since the centre mic is no better than the mic the beam
+// replaces. Leaving, the beam stays and the selection's own release takes it
+// back to the centre mic after a quiet second.
+func (w *wakeBeam) enterOrLeaveTurn(mode int) {
+	switch {
+	case mode == modeTurn && !w.inTurn:
+		w.inTurn = true
+		if w.cur == fbfNeutral && w.lockAzOK {
+			best, bd := 0, 1e9
+			for b, az := range w.sd.Azimuths {
+				if d := math.Abs(angleDiff(az, w.lockAz)); d < bd {
+					best, bd = b, d
+				}
+			}
+			w.cur = best
+		}
+		w.holdLeft, w.lowFor = 1<<30, 0
+		log.Printf("[beam] turn on %s", w.name(w.cur))
+	case mode != modeTurn && w.inTurn:
+		w.inTurn = false
+		w.holdLeft = fbfHoldBlocks
+		log.Printf("[beam] turn over, back on %s", w.name(w.cur))
+	}
+}
+
 // process runs one period of NumMics S16 buffers through every beam, picks the
 // output per block and returns it as S16. locked freezes the statistics and
 // parks the selection on the centre mic: a turn's own voice must not move the
 // baseline, and the path should start the next listen from neutral.
-func (w *wakeBeam) process(mics [][]byte, gain float64, locked bool) (out []byte, clipped uint64) {
+func (w *wakeBeam) process(mics [][]byte, gain float64, mode int) (out []byte, clipped uint64) {
+	locked := mode != modeListen
 	n := len(mics[0]) / 2
 	for _, ch := range w.chans {
 		if cap(w.ext[ch]) < w.maxDelay+n {
@@ -391,11 +454,17 @@ func (w *wakeBeam) process(mics [][]byte, gain float64, locked bool) (out []byte
 	// the one in use when this call began: anything that moves cur between
 	// calls (a lock, a forced beam) is faded too.
 	prevSel := w.sel
+	w.enterOrLeaveTurn(mode)
 	for s := 0; s < n; s += fbfBlock {
 		e := min(s+fbfBlock, n)
-		if locked {
+		switch mode {
+		case modeBypass:
 			w.cur, w.holdLeft, w.lowFor = fbfNeutral, 0, 0
-		} else {
+		case modeTurn:
+			// The beam chosen for the turn is held: the statistics stay frozen,
+			// as they do for a bypassed turn, because the talker's own voice
+			// must not move the baseline.
+		default:
 			w.step(s, e)
 		}
 		for i := s; i < e; i++ {
@@ -403,6 +472,13 @@ func (w *wakeBeam) process(mics [][]byte, gain float64, locked bool) (out []byte
 			if w.cur != prevSel && i-s < fbfFade {
 				f := float32(i-s+1) / fbfFade
 				v = v*f + w.out[prevSel][i]*(1-f)
+			}
+			// 80Hz high-pass, always running, heard only in a turn.
+			y := fbfHP[0]*v + w.hpz1
+			w.hpz1 = fbfHP[1]*v - fbfHP[3]*y + w.hpz2
+			w.hpz2 = fbfHP[2]*v - fbfHP[4]*y
+			if mode == modeTurn {
+				v = y
 			}
 			v *= g
 			var q int32
@@ -547,6 +623,17 @@ func (b *Beamformer) SetWakeBeam(on bool) {
 // calls Process.
 func (b *Beamformer) SetWakeBeamAra(on bool) { b.araWant = on }
 
+// SetWakeBeamTurns makes a locked turn listen through the beam (held on the one
+// chosen at the wake) instead of the single mic the lock picked. Off by
+// default, and it does nothing unless the wake beam is running. Call from the
+// goroutine that calls Process.
+func (b *Beamformer) SetWakeBeamTurns(on bool) {
+	if on != b.turnWant {
+		b.turnWant = on
+		log.Printf("[beam] beam for turns %s", map[bool]string{true: "on", false: "off"}[on])
+	}
+}
+
 // fbfReady moves a finished design in from the background, once.
 func (b *Beamformer) fbfReady() bool {
 	if b.fbf != nil {
@@ -593,15 +680,26 @@ func (b *Beamformer) WakeBeam(mics [][]byte) []byte {
 	}
 	// The mics arrive with the mic gain already applied, so the sum is at unity.
 	b.pathFrom = b.fbf.outIndex()
-	out, clipped := b.fbf.process(mics, 1, b.lockedChannel >= 0)
+	mode := modeListen
+	if b.lockedChannel >= 0 {
+		mode = modeBypass
+		if b.turnWant {
+			mode = modeTurn
+		}
+	}
+	b.fbf.lockAz, b.fbf.lockAzOK = b.lockAz, b.lockAzOK
+	out, clipped := b.fbf.process(mics, 1, mode)
 	b.pathTo = b.fbf.outIndex()
 	b.clippedSamples += clipped
 	return out
 }
 
 // WakeBeamUsable reports whether WakeBeam's output is what the pipeline should
-// read now: the path is running and no turn has the mic locked.
-func (b *Beamformer) WakeBeamUsable() bool { return b.fbf != nil && b.lockedChannel < 0 }
+// read now: the path is running and either no turn has the mic locked, or one
+// does and the setting for turns is on.
+func (b *Beamformer) WakeBeamUsable() bool {
+	return b.fbf != nil && (b.lockedChannel < 0 || b.turnWant)
+}
 
 // WakeBeamIndex is the beam in use, or -1 for the centre mic. For logs and
 // tests.

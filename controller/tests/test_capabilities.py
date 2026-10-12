@@ -117,6 +117,16 @@ def test_wake_beam_ara_capability_is_surfaced_to_the_dashboard():
     assert "!wakeBeamAraCapable || !config.wakeBeam" in jsx
 
 
+def test_wake_beam_turns_capability_is_surfaced_to_the_dashboard():
+    """Older firmware ignores `wakeBeamTurns`, so the control must not be offered
+    there as a switch that does nothing, and it follows the beam it needs."""
+    assert "wake_beam_turns" in device_capabilities(), "firmware no longer announces wake_beam_turns"
+    assert "wake_beam_turns_capable" in CONTROLLER.read_text()
+    assert "wakeBeamTurnsCapable" in API.read_text()
+    jsx = (ROOT / "controller" / "static" / "dashboard.jsx").read_text()
+    assert "!wakeBeamTurnsCapable || !config.wakeBeam" in jsx
+
+
 def test_volume_cue_capability_is_surfaced_to_the_dashboard():
     """Old firmware must not be offered a switch it cannot honour."""
     caps = device_capabilities()
