@@ -47,6 +47,12 @@ type WakeBeamInfo struct {
 	Chans []int
 	// Cal is whether mic calibration other than unity was applied.
 	Cal bool
+	// Ara is whether the interference canceller was on; AraCut is how far it
+	// had cut the engaged beam in the speech band (dB, smoothed) and
+	// AraAdapting whether that beam's filters were learning.
+	Ara         bool
+	AraCut      float64
+	AraAdapting bool
 }
 
 // String is the fragment the wake line carries.
@@ -77,17 +83,28 @@ func (i WakeBeamInfo) String() string {
 	if i.From != i.To && i.From != pathNA {
 		state = name(i.From) + "->" + state
 	}
+	ara := "off"
+	if i.Ara {
+		ara = "on(not in path)"
+		if i.To >= 0 {
+			learn := "frozen"
+			if i.AraAdapting {
+				learn = "learning"
+			}
+			ara = fmt.Sprintf("on[cut %.1fdB %s]", i.AraCut, learn)
+		}
+	}
 	if i.To < 0 {
 		// The centre mic is the whole output: the superdirective weighting is
 		// not in the path at all.
-		return fmt.Sprintf("beam=%s in=ch%d sd=out cal=%s", state, centreCh, cal)
+		return fmt.Sprintf("beam=%s in=ch%d sd=out cal=%s ara=%s", state, centreCh, cal, ara)
 	}
 	chans := make([]string, len(i.Chans))
 	for k, ch := range i.Chans {
 		chans[k] = fmt.Sprintf("ch%d", ch)
 	}
-	return fmt.Sprintf("beam=%s(%.0f deg) in=%s sd=in[ring %.1fx +/-%.0f deg, floor %+.1fdB] cal=%s",
-		state, i.Az, strings.Join(chans, ","), SDRingWeight, SDSectorDeg, SDFloorOffsetDB, cal)
+	return fmt.Sprintf("beam=%s(%.0f deg) in=%s sd=in[ring %.1fx +/-%.0f deg, floor %+.1fdB] cal=%s ara=%s",
+		state, i.Az, strings.Join(chans, ","), SDRingWeight, SDSectorDeg, SDFloorOffsetDB, cal, ara)
 }
 
 type traceEntry struct {
@@ -144,9 +161,12 @@ func (b *Beamformer) NoteWakePath(now time.Time, in int) {
 	}
 	if b.fbf != nil {
 		info.Cal = b.fbf.cal
+		info.Ara = b.fbf.araOn
 		if info.To >= 0 {
 			info.Az = b.fbf.beams[info.To].AzimuthDeg
 			info.Chans = b.fbf.beamChans[info.To]
+			info.AraCut = b.fbf.ara.CutDB(info.To)
+			info.AraAdapting = b.fbf.ara.Adapting(info.To)
 		}
 	}
 	b.pathFrom, b.pathTo = pathNA, pathNA

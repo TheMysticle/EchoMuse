@@ -15,6 +15,10 @@ package beamformer
 // there by being superdirective, which is what this follows. It is an
 // experiment to A/B on a device, which is why it is a setting and not a
 // replacement.
+//
+// An adaptive interference canceller (ara.go) sits between the beams and the
+// selection, off unless `wakeBeamAra` is set: the beams are ranked, and the
+// output heard, after it.
 
 import (
 	"fmt"
@@ -234,8 +238,16 @@ type wakeBeam struct {
 	hist     [NumMics][]float32
 	ext      [NumMics][]float32
 	maxDelay int
-	// out[k] is output k's signal for the period: beams 0-7 and the neutral.
+	// raw[b] is beam b as the filters produce it; out[k] is output k's signal
+	// for the period after the canceller: beams 0-7 and the neutral. The
+	// selection and the output both read out, so beams are ranked and heard
+	// after cancelling, as in stock.
+	raw [fbfBeams][]float32
 	out [fbfBeams + 1][]float32
+	ara *ARA
+	// araOn is the wakeBeamAra setting; the stage runs either way, so the
+	// timing does not move when it changes.
+	araOn bool
 
 	// Per-output HF energy, fast and slow, and the carry for the band-diff.
 	fast, slow [fbfBeams + 1]float64
@@ -281,7 +293,10 @@ func fbfDesign() []Beam {
 
 func newWakeBeam() *wakeBeam {
 	w := &wakeBeam{beams: fbfDesign(), cur: fbfNeutral}
-	w.off = int(w.beams[0].Bulk)
+	// The neutral output must line up with the beams: their latency, and the
+	// canceller's, which is there whether or not it is cancelling.
+	w.off = int(w.beams[0].Bulk) + ARADelay
+	w.ara = NewARA(fbfBeams)
 	w.chans = append([]int(nil), fbfChannels...)
 	hasCentre := false
 	for _, ch := range w.chans {
@@ -360,8 +375,14 @@ func (w *wakeBeam) process(mics [][]byte, gain float64, locked bool) (out []byte
 		}
 		w.out[k] = w.out[k][:n]
 	}
+	for b := range w.raw {
+		if cap(w.raw[b]) < n {
+			w.raw[b] = make([]float32, n)
+		}
+		w.raw[b] = w.raw[b][:n]
+	}
 	for b := 0; b < fbfBeams; b++ {
-		y := w.out[b]
+		y := w.raw[b]
 		clear(y)
 		for _, t := range w.taps[b] {
 			// The reslice to len(y) lets the compiler drop the bounds check
@@ -373,6 +394,8 @@ func (w *wakeBeam) process(mics [][]byte, gain float64, locked bool) (out []byte
 			}
 		}
 	}
+	w.ara.SetEnabled(w.araOn)
+	w.ara.Process(w.raw[:], w.out[:fbfBeams])
 	copy(w.out[fbfNeutral], w.ext[centreCh][w.maxDelay-w.off:])
 
 	out = make([]byte, n*2)
@@ -527,6 +550,12 @@ func (b *Beamformer) SetWakeBeam(on bool) {
 	go func() { ch <- newWakeBeam() }()
 }
 
+// SetWakeBeamAra turns the adaptive interference canceller after the beams on
+// or off. It does nothing unless the wake beam itself is running, and the
+// filters it has learnt are kept while it is off. Call from the goroutine that
+// calls Process.
+func (b *Beamformer) SetWakeBeamAra(on bool) { b.araWant = on }
+
 // fbfReady moves a finished design in from the background, once.
 func (b *Beamformer) fbfReady() bool {
 	if b.fbf != nil {
@@ -566,6 +595,10 @@ func (b *Beamformer) WakeBeam(mics [][]byte) []byte {
 		if len(m) != len(mics[0]) {
 			return nil
 		}
+	}
+	if b.fbf.araOn != b.araWant {
+		b.fbf.araOn = b.araWant
+		log.Printf("[beam] interference canceller (ARA) %s", map[bool]string{true: "on", false: "off"}[b.araWant])
 	}
 	// The mics arrive with the mic gain already applied, so the sum is at unity.
 	b.pathFrom = b.fbf.outIndex()

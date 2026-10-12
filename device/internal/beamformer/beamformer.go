@@ -174,6 +174,7 @@ type Beamformer struct {
 	// fbfPending the design being made in the background and fbf the running
 	// state. All nil/false while wakeBeam is off, which is the default.
 	fbfWant    bool
+	araWant    bool
 	fbfPending chan *wakeBeam
 	fbf        *wakeBeam
 

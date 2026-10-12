@@ -46,6 +46,8 @@ func main() {
 	flag.Float64Var(&sdWNG, "wng", sdWNG, "shift of the white-noise-gain floor profile for -sd, dB (0 = stock's measured profile)")
 	flag.Float64Var(&beamformer.SDRingWeight, "ring", beamformer.SDRingWeight, "directional-interference ring power re diffuse for -sd (0 = diffuse only)")
 	flag.Float64Var(&beamformer.SDSectorDeg, "sector", beamformer.SDSectorDeg, "half-width of the look sector the ring leaves alone, degrees")
+	araOn := flag.Bool("ara", false, "measure the interference canceller after the beams (use with -sd)")
+	araFlags()
 	flag.Parse()
 
 	if *amazon != "" {
@@ -57,6 +59,10 @@ func main() {
 	}
 	pos := micPositions(*mics)
 	beams := Design(pos, *nBeams, *taps, 100, 5000)
+	if *araOn {
+		araReport(rand.New(rand.NewSource(*seed)), pos, beams, *inr, *dnr, *snr)
+		return
+	}
 	fmt.Printf("array: %d mics (%s), 36mm radius; %d beams, %d-tap interpolators, longest beam filter %d samples, latency %.2f samples (%.2fms)\n",
 		len(pos), *mics,
 		len(beams), *taps, len(beams[0].H[0]), beams[0].Bulk, beams[0].Bulk/sampleRate*1000)
@@ -307,3 +313,7 @@ func angDiff(a, b float64) float64 {
 	}
 	return d
 }
+
+// flagFloat registers a float flag bound to a package variable, defaulting to
+// its current value.
+func flagFloat(p *float64, name, usage string) { flag.Float64Var(p, name, *p, usage) }

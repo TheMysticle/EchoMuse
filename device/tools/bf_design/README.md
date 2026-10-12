@@ -115,6 +115,68 @@ What the measurement says about stock:
   reading consistent with the names and the measurements is an MVDR design with
   a directional-interference term.
 
+## The interference canceller (ARA)
+
+```bash
+go run ./tools/bf_design -sd -mics amazon4 -ara -reverb      # a room: direct path plus four reflections
+go run ./tools/bf_design -sd -mics amazon4 -ara -ara.offsets 0,45,90,180
+```
+
+After the beams, each beam's interference is predicted from the two beams 135
+degrees round the ring (stock's table: beam i uses i+3 and i+5) and subtracted,
+per 62.5Hz band, with a complex filter over six 8ms frames. The code is
+`internal/beamformer/ara.go` and this tool measures that code. The canceller
+adapts, so signal and noise cannot be separated by linearity: each scene is
+run with and without the talker and the talker's power is the difference,
+exact while the filters are frozen during the talk. A steady interferer is on
+for 9s so the filters can learn, then the talker joins; 8 talker azimuths between
+beams, the best beam for each, wideband 100-4000Hz, interferer 6dB above the
+talker at a mic, diffuse noise 6dB below.
+
+| scene | single mic | beams, no ARA | beams + ARA | ARA gain | talker through it |
+|---|---|---|---|---|---|
+| free field, +90° | -6.4 dB | -1.2 | +9.9 | +11.1 | -1.1 dB |
+| free field, +180° | -6.3 | +0.3 | +10.4 | +10.0 | -1.1 |
+| room, +90° | -8.6 | -4.2 | +8.2 | +12.3 | -1.2 |
+| room, +180° | -8.6 | -3.1 | +8.5 | +11.6 | -1.1 |
+| room, interferer AT the talker | -8.6 | -6.9 | -1.0 | +5.9 | -2.1 |
+| room, interferer 0dB re talker, +90° | -3.0 | +1.4 | +9.4 | +8.0 | -1.3 |
+| room, interferer 0dB re talker, +180° | -3.0 | +2.4 | +9.6 | +7.3 | -1.2 |
+| room, interferer -6dB re talker, +90° | +1.6 | +5.9 | +9.4 | +3.4 | -2.1 |
+| room, interferer -6dB re talker, +180° | +1.6 | +6.6 | +8.9 | +2.3 | -2.7 |
+| no interferer (-40dB) | +6.0 | +10.0 | +11.4 | +1.4 | -1.5 |
+
+("room" is a direct path and four coherent reflections, 2-21ms, -4 to -10dB, from
+other directions.) The gain grows with the interferer, which is what it is for.
+It does not hurt when there is no interferer or when the interferer is where the
+talker is: the beams cannot separate those by direction, and the reflections,
+which come from elsewhere, are still cancelled.
+
+What was checked, and what moved the result:
+
+- **The adaptation gate.** Letting the filters learn whenever the references
+  are louder than the target beam is the obvious rule, and it is wrong in the
+  common case: a TV louder than the talker leaves the references louder while the
+  talker speaks, so the filters kept learning during speech and cost the talker
+  4.1dB in a clean tone scene. The filters are now also held when their own
+  residual jumps (energy the references cannot predict, which is the talker),
+  which takes that to -0.5dB and improved the room scenes by 0.3-0.4dB. A
+  residual that stays high for 3.2s is taken as the room having changed, and
+  learnt again.
+- **Step size.** 0.5 gave 30% extra noise on unrelated beams (NLMS
+  misadjustment). 0.2 while young and 0.05 after leaves 3% (-15dB) and the same
+  cancellation; steady steps from 0.02 to 0.1 are within 0.4dB, adaptation
+  ratios 0.25 to 1 within 0.1dB, and seeds within 0.05dB.
+- **The suppression floor** (the output is never below this fraction of the
+  beam): 0.2 (-14dB) was limiting; 0.1 (-20dB) gains about 1dB and costs the talker
+  nothing; below 0.1 gains nothing.
+- **Learning time.** From a cold start the cut is 7dB after one second and
+  15dB after two (a single clean source; a room will be slower). Have the
+  interferer on for several seconds before speaking.
+- **Cost.** About 1.0ms per 160ms batch for the canceller, and the spectral stage
+  it needs about 0.5ms, on a desktop core; the whole wake path was 1.2-1.9ms.
+  Extrapolated to the A53, 5-15% of one core. Not measured on a device.
+
 ## What this does and does not show
 
 - **Aperture is not what limits a sum below 1.5kHz; the design is.** On the same

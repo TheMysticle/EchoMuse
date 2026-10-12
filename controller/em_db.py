@@ -293,6 +293,9 @@ DEFAULT_DEVICE_CONFIG = {
     # wakeBeam: listen for the wake word through a superdirective beam over
     # all seven mics instead of one. Experimental, so OFF; turns unaffected.
     "wakeBeam":         False,
+    # wakeBeamAra: an adaptive interference canceller after the wake beams.
+    # Experimental, OFF, and only does anything with wakeBeam on.
+    "wakeBeamAra":      False,
     "eqBands":          [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
     "eqLoudness":       False,
     # Radar's own stock FIR curve (em_eq._OverlapSaveFIR), layered under the

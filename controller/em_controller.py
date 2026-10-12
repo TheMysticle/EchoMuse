@@ -1137,6 +1137,11 @@ class Device:
         return "wake_beam" in (self.capabilities or [])
 
     @property
+    def wake_beam_ara_capable(self) -> bool:
+        """Whether firmware can add an interference canceller after the beams."""
+        return "wake_beam_ara" in (self.capabilities or [])
+
+    @property
     def volume_cue_capable(self) -> bool:
         """Whether physical volume changes can play an idle preview tone."""
         return "volume_cue" in (self.capabilities or [])

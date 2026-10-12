@@ -55,6 +55,27 @@ func TestWakeBeamInfoSaysWhatThePathDid(t *testing.T) {
 	has(b.WakeBeamAt(t0.Add(640*time.Millisecond)), "bypassed", "in=ch3")
 }
 
+// The canceller's state rides the same fragment: off, on but not in the path,
+// and on in the path with how far it has cut and whether it is learning.
+func TestWakeBeamInfoSaysWhatTheCancellerIsDoing(t *testing.T) {
+	info := WakeBeamInfo{Known: true, Setting: true, Ready: true, From: 2, To: 2, Az: 90, Chans: []int{0, 1, 3, 4}}
+	if s := info.String(); !strings.Contains(s, "ara=off") {
+		t.Error(s)
+	}
+	info.Ara, info.AraCut, info.AraAdapting = true, 7.25, true
+	if s := info.String(); !strings.Contains(s, "ara=on[cut 7.2dB learning]") && !strings.Contains(s, "ara=on[cut 7.3dB learning]") {
+		t.Error(s)
+	}
+	info.AraAdapting = false
+	if s := info.String(); !strings.Contains(s, "frozen") {
+		t.Error(s)
+	}
+	info.From, info.To = -1, -1
+	if s := info.String(); !strings.Contains(s, "ara=on(not in path)") {
+		t.Error(s)
+	}
+}
+
 func TestWakeBeamInfoReportsCalibrationAsApplied(t *testing.T) {
 	old := micCalDir
 	t.Cleanup(func() { micCalDir = old })
