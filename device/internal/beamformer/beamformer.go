@@ -177,6 +177,7 @@ type Beamformer struct {
 	araWant    bool
 	turnWant   bool
 	stockWant  bool    // wakeBeamStock
+	playing    bool    // the speaker was audible at the last SetPlaying
 	lockAz     float64 // where the last Lock() pointed, degrees; valid while locked
 	lockAzOK   bool
 	fbfPending chan *wakeBeam

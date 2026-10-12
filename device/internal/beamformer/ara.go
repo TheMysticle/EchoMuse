@@ -272,6 +272,28 @@ func (a *ARA) SetEnabled(on bool) { a.on = on }
 // ARAGateBoth).
 func (a *ARA) SetGate(mode int) { a.gmode = mode }
 
+// Reset forgets what the canceller has learnt, as stock's does whenever the
+// playback mode changes (none, the internal speaker, line-out, Bluetooth;
+// libasp's setter at 0xcdbd8): the filters, the histories they learn from and
+// every estimate and counter, so the floors start again from their initial
+// period. The audio in flight is kept, so the output does not break.
+func (a *ARA) Reset() {
+	a.h = [araBins][8][araTaps]complex64{}
+	for b := range a.w {
+		a.w[b] = [araRefs][araBins][araTaps]complex64{}
+	}
+	a.pxS, a.prS = [8]float64{}, [8]float64{}
+	a.hold, a.frozen, a.trained = [8]int{}, [8]int{}, [8]int{}
+	a.adapting = [8]bool{}
+	a.cut = [8]float64{}
+	a.gsnr, a.gframes = [8]beamSNR{}, [8]int{}
+	for b := range a.resS {
+		a.resS[b], a.resLast[b] = 1, 1
+		a.gate[b], a.gsm[b] = 1, 1
+	}
+	a.freezeAll = false
+}
+
 // Enabled reports whether cancelling is on.
 func (a *ARA) Enabled() bool { return a.on }
 

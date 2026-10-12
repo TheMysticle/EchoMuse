@@ -195,6 +195,9 @@ func main() {
 	ctx := context.Background()
 
 	dataClient := client.NewDataClient(deviceID, microphone, pcmSpeaker, canceller)
+	// The wake beam resets its canceller when the speaker starts or stops, as
+	// stock's does (wakeBeamStock).
+	dataClient.SetPlayingFunc(speakerPlaying(pcmSpeaker))
 	canceller.SetStatePath(aec.DefaultStatePath) // saved echo path: loaded on the hardware reference
 	applyAecConfig(canceller, dataClient)        // arm from env defaults before any config push
 

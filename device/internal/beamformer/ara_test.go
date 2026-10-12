@@ -319,3 +319,83 @@ func TestStockGateFreezesEveryBeamWhenOneIsAboveTheFloor(t *testing.T) {
 		}
 	}
 }
+
+// Stock forgets everything it has learnt when the playback mode changes. After
+// a Reset the filters are empty and the estimators are back at their start, and
+// the audio in flight is untouched.
+func TestResetForgetsWhatWasLearnt(t *testing.T) {
+	a := NewARA(8)
+	a.SetEnabled(true)
+	rng := rand.New(rand.NewSource(2))
+	in := make([][]float32, 8)
+	out := make([][]float32, 8)
+	for b := range in {
+		in[b] = make([]float32, 1280)
+		out[b] = make([]float32, 1280)
+	}
+	for k := 0; k < 80; k++ {
+		for b := range in {
+			for i := range in[b] {
+				in[b][i] = float32(300*math.Sin(float64(i+k*1280)*0.21+float64(b)*0.4)) + float32(rng.NormFloat64()*20)
+			}
+		}
+		a.Process(in, out)
+	}
+	var learnt float32
+	for _, w := range a.w[0][0] {
+		for _, c := range w {
+			learnt += real(c)*real(c) + imag(c)*imag(c)
+		}
+	}
+	if learnt == 0 {
+		t.Fatal("nothing was learnt to forget: the test scene teaches the filters nothing")
+	}
+	a.Reset()
+	for b := range a.w {
+		for r := range a.w[b] {
+			for _, w := range a.w[b][r] {
+				for _, c := range w {
+					if c != 0 {
+						t.Fatalf("beam %d ref %d kept a weight after Reset", b, r)
+					}
+				}
+			}
+		}
+	}
+	if a.gframes[0] != 0 || a.gate[0] != 1 || a.trained[0] != 0 || a.freezeAll {
+		t.Error("estimators and counters were not restarted")
+	}
+	// It carries on: no panic, finite output.
+	a.Process(in, out)
+	for _, v := range out[0] {
+		if v != v {
+			t.Fatal("NaN after Reset")
+		}
+	}
+}
+
+// With wakeBeamStock on, the speaker starting or stopping resets the canceller;
+// with it off the state is only recorded.
+func TestPlaybackChangesResetTheCancellerOnlyInStockMode(t *testing.T) {
+	b := New()
+	enableWakeBeam(b)
+	b.fbf.ara.trained[0] = 5
+	b.SetPlaying(true)
+	if b.fbf.ara.trained[0] != 5 {
+		t.Error("reset without wakeBeamStock")
+	}
+	b.SetWakeBeamStock(true)
+	b.SetPlaying(false)
+	if b.fbf.ara.trained[0] != 0 {
+		t.Error("the speaker stopping did not reset the canceller in stock mode")
+	}
+	b.fbf.ara.trained[0] = 7
+	b.SetPlaying(false) // no change
+	if b.fbf.ara.trained[0] != 7 {
+		t.Error("reset without a change")
+	}
+	b.SetPlaying(true)
+	if b.fbf.ara.trained[0] != 0 {
+		t.Error("the speaker starting did not reset the canceller in stock mode")
+	}
+}

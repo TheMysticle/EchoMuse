@@ -880,6 +880,24 @@ func (b *Beamformer) SetWakeBeamAra(on bool) { b.araWant = on }
 // started with. Call from the goroutine that calls Process.
 func (b *Beamformer) SetWakeBeamStock(on bool) { b.stockWant = on }
 
+// SetPlaying says whether the Echo's own speaker is audible. Stock resets its
+// canceller (and the beamformer's state with it) whenever that changes, because
+// what the mics hear to be cancelled is a different thing with the speaker on
+// and off, and what was learnt for one is wrong for the other. With
+// wakeBeamStock on, so does this; otherwise it only records the state. Call from
+// the goroutine that calls Process.
+func (b *Beamformer) SetPlaying(on bool) {
+	if on == b.playing {
+		return
+	}
+	b.playing = on
+	if b.stockWant && b.fbf != nil {
+		b.fbf.ara.Reset()
+		b.fbf.votes = [fbfBeams]int{}
+		log.Printf("[beam] speaker %s: canceller state reset, as stock's does", map[bool]string{true: "on", false: "off"}[on])
+	}
+}
+
 // SetWakeBeamTurns makes a locked turn listen through the beam (held on the one
 // chosen at the wake) instead of the single mic the lock picked. Off by
 // default, and it does nothing unless the wake beam is running. Call from the

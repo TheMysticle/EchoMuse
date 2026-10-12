@@ -257,6 +257,9 @@ type DataClient struct {
 	// of the room, and a stream restarting must not throw them away.
 	endpoint   *beamformer.Endpointer
 	endpointMu sync.Mutex
+	// playing says whether the speaker is audible (voice or music, with the
+	// scorer's hold); set once at wiring time. Nil reads as not playing.
+	playing func() bool
 	// wakeLevels holds the wake stream's recent frame levels, for the level
 	// sent on oww_wake (wakelevel.go).
 	wakeLevels  levelRing
@@ -1233,6 +1236,7 @@ func (d *DataClient) streamMic(conn *websocket.Conn, stopCh <-chan struct{}, loc
 			d.beam.SetWakeBeamAra(snap.WakeBeamAra != nil && *snap.WakeBeamAra)
 			d.beam.SetWakeBeamTurns(snap.WakeBeamTurns != nil && *snap.WakeBeamTurns)
 			d.beam.SetWakeBeamStock(snap.WakeBeamStock != nil && *snap.WakeBeamStock)
+			d.beam.SetPlaying(d.playing != nil && d.playing())
 			epOn := snap.WakeEndpoint != nil && *snap.WakeEndpoint
 			mono, angle := d.beam.Process(raw, beamAngle, gainLin)
 			clipped := d.beam.ClippedSamples()
@@ -1519,6 +1523,10 @@ func (d *DataClient) streamMic(conn *websocket.Conn, stopCh <-chan struct{}, loc
 		}
 	}
 }
+
+// SetPlayingFunc says how to tell whether the speaker is audible. Call once,
+// before the mic stream starts.
+func (d *DataClient) SetPlayingFunc(f func() bool) { d.playing = f }
 
 // endpointSession follows one wake-triggered session for the endpointer, once
 // per 80ms chunk: frames is how many the gate just released (the backlog since
