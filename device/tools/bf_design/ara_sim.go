@@ -44,6 +44,7 @@ func araFlags() {
 	flagFloat(&beamformer.ARARatio, "ara.ratio", "adapt while references exceed this multiple of the target beam")
 	flagFloat(&beamformer.ARALeak, "ara.leak", "ARA weight leakage per adapting frame")
 	flagFloat(&beamformer.ARAMinGain, "ara.floor", "ARA per-bin suppression floor (amplitude)")
+	flag.IntVar(&beamformer.ARAGate, "ara.gate", beamformer.ARAGateOurs, "what lets ARA learn: 0 ours, 1 stock's SNR gate, 2 both")
 }
 
 // araRunStream runs one mic scene through the beams and the canceller and

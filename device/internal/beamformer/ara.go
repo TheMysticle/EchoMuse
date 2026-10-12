@@ -83,10 +83,49 @@ var (
 	// the new normal, so a moved interferer is learnt again (3.2s at 8ms).
 	ARAUnexplained = 0.35
 	ARARelearn     = 400
+	// ARAGate chooses what decides whether a beam's filters learn. ARAGateOurs
+	// is the original control (the references louder than the target, held off
+	// after it dominated, frozen on energy the filters cannot explain).
+	// ARAGateStock is stock's, decoded from libasp: a beam's own output SNR
+	// (speech-band power over a minimum-statistics floor) scales the step by a
+	// logistic gate (about 1 below SNR 3, half at 10, 5% at 20), and when ANY
+	// beam is over the half-way point nothing learns. ARAGateBoth needs both to
+	// agree. Default is ours until the other has been measured against it.
+	ARAGate = ARAGateOurs
 	// ARAMinGain limits the suppression per bin: the output is never below
 	// this fraction of the target beam's own magnitude (0.1 is -20dB).
 	ARAMinGain = 0.1
 )
+
+const (
+	ARAGateOurs = iota
+	ARAGateStock
+	ARAGateBoth
+)
+
+// araGateTable is stock's step-size gate as a function of the index it looks
+// the SNR up by (128 x min(1, 256/(0.3*snr+1)) entries): a logistic centred at
+// 61.4 with scale 8.5, fitted to the 128 values in libasp to within 5e-4. Fitted
+// rather than copied: it is a smooth curve, and a formula is all that is needed.
+var araGateTable = func() (t [128]float64) {
+	for i := range t {
+		t[i] = 1 / (1 + math.Exp(-(float64(i)-61.43)/8.524))
+	}
+	return
+}()
+
+// araGate is the gate for a smoothed SNR: stock's index is 128 * 2 /
+// (0.3*snr + 1) (its constants 1.0, 2.0 and 0.3), clamped to the table.
+func araGate(snr float64) float64 {
+	idx := int(256 / (0.3*snr + 1))
+	if idx > 127 {
+		idx = 127
+	}
+	if idx < 0 {
+		idx = 0
+	}
+	return araGateTable[idx]
+}
 
 // araRefs returns target beam b's two reference beams of n on a ring: the two
 // 135 degrees away, as in stock's table.
@@ -185,6 +224,13 @@ type ARA struct {
 	frozen   [8]int     // frames held for unexplained energy
 	trained  [8]int
 	cut      [8]float64 // smoothed band suppression, dB
+
+	// Stock's adaptation gate: each beam's output SNR (see ARAGate).
+	gsnr      [8]beamSNR
+	gsm       [8]float64 // the SNR smoothed 0.75/0.25 as stock does
+	gframes   [8]int
+	gate      [8]float64 // the gate from the last frame
+	freezeAll bool       // some beam's gate was under one half
 }
 
 // NewARA returns a canceller for n beams, off: until enabled it passes the
@@ -208,6 +254,7 @@ func NewARA(n int) *ARA {
 	}
 	for b := range a.resS {
 		a.resS[b], a.resLast[b] = 1, 1
+		a.gate[b], a.gsm[b] = 1, 1
 	}
 	a.cur = make([][araBins]complex64, n)
 	a.w = make([][araRefs][araBins][araTaps]complex64, n)
@@ -364,7 +411,15 @@ func (a *ARA) frame() {
 		}
 	}
 
-	// Cancelling.
+	// Cancelling. Stock freezes every beam's learning as soon as one beam's
+	// gate is under a half (not an average: the talker is in one beam), judged on
+	// the previous frame's SNRs.
+	a.freezeAll = false
+	for b := 0; b < n; b++ {
+		if a.gate[b] < 0.5 {
+			a.freezeAll = true
+		}
+	}
 	for b := 0; b < n; b++ {
 		a.cancel(b)
 	}
@@ -442,11 +497,24 @@ func (a *ARA) cancel(b int) {
 	} else if a.hold[b] > 0 {
 		a.hold[b]--
 	}
-	adapt := interferenceDominates && !unexplained && a.hold[b] == 0
+	ours := interferenceDominates && !unexplained && a.hold[b] == 0
+	stock := !a.freezeAll
+	var adapt bool
+	switch ARAGate {
+	case ARAGateStock:
+		adapt = stock
+	case ARAGateBoth:
+		adapt = ours && stock
+	default:
+		adapt = ours
+	}
 	a.adapting[b] = adapt
 	mu := float32(ARAMuSteady)
 	if a.trained[b] < ARATrainFrames {
 		mu = float32(ARAMu)
+	}
+	if ARAGate != ARAGateOurs {
+		mu *= float32(a.gate[b])
 	}
 	if adapt {
 		a.trained[b]++
@@ -500,6 +568,14 @@ func (a *ARA) cancel(b int) {
 			pOut += float64(pe2)
 		}
 	}
+	// Stock's SNR of the beam's own output, for next frame's gate.
+	a.gframes[b]++
+	if s := a.gsnr[b].addPower(pOut, a.gframes[b]); a.gframes[b] <= 1 {
+		a.gsm[b] = s
+	} else {
+		a.gsm[b] = 0.75*a.gsm[b] + 0.25*s
+	}
+	a.gate[b] = araGate(a.gsm[b])
 	if pIn > 1 && pOut > 0 {
 		a.cut[b] = 0.95*a.cut[b] + 0.05*10*math.Log10(pIn/pOut)
 		a.resLast[b] = pOut / pIn

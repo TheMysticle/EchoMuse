@@ -621,7 +621,12 @@ func (e *beamSNR) add(x []float32, n int) float64 {
 		y := e.lp.run(e.hp.run(float64(v)))
 		p += y * y
 	}
-	p /= float64(len(x))
+	return e.addPower(p/float64(len(x)), n)
+}
+
+// addPower is add for a caller that already has the block's speech-band power
+// (the canceller has it from its own spectrum).
+func (e *beamSNR) addPower(p float64, n int) float64 {
 	if n <= 1 {
 		e.fast, e.slow = p, p
 	} else {

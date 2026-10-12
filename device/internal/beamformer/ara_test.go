@@ -264,3 +264,60 @@ func BenchmarkARABatch(b *testing.B) {
 		a.Process(in, out)
 	}
 }
+
+// Stock's gate, from libasp: full step while a beam's output is near its floor,
+// half at an SNR of about 10, nearly nothing at 20. The curve is fitted to the
+// firmware's 128 entries, so these are its measured values.
+func TestStockGateCurve(t *testing.T) {
+	for _, c := range []struct{ snr, want, tol float64 }{
+		{1, 1.0, 0.01}, {3.4, 0.999, 0.01}, {5, 0.992, 0.01}, {7, 0.918, 0.01},
+		{10, 0.575, 0.01}, {10.3, 0.517, 0.01}, {15, 0.141, 0.01}, {20, 0.048, 0.01}, {50, 0.005, 0.005},
+	} {
+		if g := araGate(c.snr); math.Abs(g-c.want) > c.tol {
+			t.Errorf("gate(snr %.1f) = %.3f, stock's table gives %.3f", c.snr, g, c.want)
+		}
+	}
+	// Monotonic: more SNR never opens it.
+	prev := 2.0
+	for snr := 0.0; snr < 100; snr += 0.25 {
+		g := araGate(snr)
+		if g > prev+1e-12 {
+			t.Fatalf("gate rose at snr %.2f", snr)
+		}
+		prev = g
+	}
+}
+
+// One beam over the half-way point stops every beam learning, not only itself:
+// the talker is in one beam and leaks into the others' references.
+func TestStockGateFreezesEveryBeamWhenOneIsAboveTheFloor(t *testing.T) {
+	old := ARAGate
+	ARAGate = ARAGateStock
+	defer func() { ARAGate = old }()
+	a := NewARA(8)
+	a.SetEnabled(true)
+	for b := range a.gate {
+		a.gate[b] = 1
+	}
+	a.gate[3] = 0.1 // beam 3's output SNR is high
+	in := make([][]float32, 8)
+	for b := range in {
+		in[b] = make([]float32, araHop) // one hop: one frame, judged on the gates set above
+		for i := range in[b] {
+			in[b][i] = float32(100 * math.Sin(float64(i)*0.3+float64(b)))
+		}
+	}
+	out := make([][]float32, 8)
+	for b := range out {
+		out[b] = make([]float32, araHop)
+	}
+	a.Process(in, out)
+	if !a.freezeAll {
+		t.Fatal("no freeze with one beam's gate at 0.1")
+	}
+	for b := 0; b < 8; b++ {
+		if a.Adapting(b) {
+			t.Errorf("beam %d learnt while another was over the line", b)
+		}
+	}
+}
