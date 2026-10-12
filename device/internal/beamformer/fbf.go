@@ -390,6 +390,11 @@ func fbfDesign() *SDWeights {
 		for i, ch := range fbfChannels {
 			pos[i] = MicPosition(ch)
 		}
+		if d, ok := embeddedDesign(pos, fbfBeams); ok {
+			fbfDesignBeams = d
+			log.Printf("[beam] %d superdirective beams over mics %v loaded from the embedded design in %v", fbfBeams, fbfChannels, time.Since(start).Round(time.Microsecond))
+			return
+		}
 		fbfDesignBeams = DesignSuperdirective(pos, fbfBeams, SDFloorOffsetDB)
 		log.Printf("[beam] designed %d superdirective beams over mics %v in %v (diffuse field + interference ring %.1fx outside +/-%.0f deg, white-noise-gain floor %+.1fdB on stock's profile; fixed at design time, not a runtime mode)",
 			fbfBeams, fbfChannels, time.Since(start).Round(time.Millisecond), SDRingWeight, SDSectorDeg, SDFloorOffsetDB)
