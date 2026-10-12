@@ -39,6 +39,10 @@ import (
 	"time"
 )
 
+// OutputShaping turns the shelf and low-cut on for new paths. A variable so
+// tools/bf_design can replay a capture as the firmware was before they existed.
+var OutputShaping = true
+
 // Group selection modes, GroupMode.
 const (
 	// GroupMean is the first reading of stock's config: a group's score is its
@@ -395,7 +399,7 @@ func fbfDesign() *SDWeights {
 
 func newWakeBeam() *wakeBeam {
 	w := &wakeBeam{sd: fbfDesign(), cur: fbfNeutral, sel: fbfNeutral,
-		group: GroupMode, shelf: highShelf(fbfShelfHz, fbfShelfDB), lowcut: butterworth2(fbfLowCutHz, true), shapeOn: true, outGain: float32(math.Pow(10, fbfOutGainDB/20)), wts: [fbfGroupSize]float32{1.0 / 3, 1.0 / 3, 1.0 / 3}}
+		group: GroupMode, shelf: highShelf(fbfShelfHz, fbfShelfDB), lowcut: butterworth2(fbfLowCutHz, true), shapeOn: OutputShaping, outGain: float32(math.Pow(10, fbfOutGainDB/20)), wts: [fbfGroupSize]float32{1.0 / 3, 1.0 / 3, 1.0 / 3}}
 	// The beams are formed in the canceller's spectral domain, so every path
 	// through it has the same delay: the stage's own, which is there whether or
 	// not it is cancelling. The neutral output (the centre mic) is delayed to

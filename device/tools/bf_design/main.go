@@ -55,6 +55,7 @@ func main() {
 	epClip := flag.String("ep.clip", "", "run the endpointer on a recorded session (comma separated WAV paths); the TV-only part of the recording, repeated to -ep.history seconds, stands in for the room before the wake")
 	rawPath := flag.String("raw", "", "a raw 9-channel S24_3LE capture (the firmware's capture.req, or capture_mics): report each mic and each wake-path mode by band")
 	rawFrom := flag.Float64("raw.from", 0, "start of the window in the capture, seconds")
+	flag.Float64Var(&rawHotDB, "raw.hot", 8, "dB over the median for a 250ms block to count as speech in -raw")
 	rawTo := flag.Float64("raw.to", 0, "end of the window, seconds (0 = the end)")
 	epHist := flag.Float64("ep.history", 11, "seconds of the recording's tail used as the room before the wake word")
 	selTonal := flag.Bool("sel.tonal", false, "with -sel: measure in one run, talker and TV as interleaved tone combs (use for the canceller)")
