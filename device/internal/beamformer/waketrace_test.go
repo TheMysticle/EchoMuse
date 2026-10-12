@@ -43,11 +43,11 @@ func TestWakeBeamInfoSaysWhatThePathDid(t *testing.T) {
 	run(b, t0.Add(320*time.Millisecond))
 	has(b.WakeBeamAt(t0.Add(320*time.Millisecond)), "beam=centre", "in=ch6", "sd=out")
 
-	// A beam engaged: which beam, which mics, the weighting in, the design.
+	// A group engaged: its middle beam's direction, which mics, the weighting in, the design.
 	b.fbf.cur, b.fbf.holdLeft = 2, 1<<30
 	run(b, t0.Add(480*time.Millisecond))
 	has(b.WakeBeamAt(t0.Add(480*time.Millisecond)),
-		"beam=2(235 deg)", "in=ch0,ch1,ch3,ch4", "sd=in[ring 3.0x +/-35 deg, floor +0.0dB]")
+		"beam=g2(205 deg)", "in=ch0,ch1,ch3,ch4", "sd=in[ring 3.0x +/-35 deg, floor +0.0dB]")
 
 	// A turn holding the mic bypasses it, and the line must not claim otherwise.
 	b.lockedChannel = 3
@@ -81,7 +81,7 @@ func TestWakeBeamInfoSaysWhatTheCancellerIsDoing(t *testing.T) {
 func TestWakeBeamInfoSaysATurnUsedTheBeam(t *testing.T) {
 	info := WakeBeamInfo{Known: true, Setting: true, Ready: true, Locked: true, Turn: true, From: 6, To: 6, Az: 55, Chans: []int{0, 1, 3, 4}}
 	s := info.String()
-	if !strings.Contains(s, "turn:6(55 deg)") || strings.Contains(s, "bypassed") {
+	if !strings.Contains(s, "turn:g6(55 deg)") || strings.Contains(s, "bypassed") {
 		t.Error(s)
 	}
 	info.Turn = false
@@ -116,11 +116,11 @@ func TestWakeBeamInfoReportsCalibrationAsApplied(t *testing.T) {
 // side of the change.
 func TestWakeBeamInfoShowsAChangeWithinABatch(t *testing.T) {
 	info := WakeBeamInfo{Known: true, Setting: true, Ready: true, From: -1, To: 3, Az: 135, Chans: []int{0, 1, 3, 4}}
-	if s := info.String(); !strings.Contains(s, "beam=centre->3(135 deg)") {
+	if s := info.String(); !strings.Contains(s, "beam=centre->g3(135 deg)") {
 		t.Error(s)
 	}
 	info.From, info.To = 3, -1
-	if s := info.String(); !strings.Contains(s, "beam=3->centre") || !strings.Contains(s, "sd=out") {
+	if s := info.String(); !strings.Contains(s, "beam=g3->centre") || !strings.Contains(s, "sd=out") {
 		t.Error(s)
 	}
 }

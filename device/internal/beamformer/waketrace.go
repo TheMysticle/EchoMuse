@@ -40,9 +40,11 @@ type WakeBeamInfo struct {
 	// not in the path.
 	In int
 	// From and To are the output at the start and end of the batch: -1 is the
-	// centre mic, 0-7 a beam, pathNA none.
+	// centre mic, 0-7 a group of three adjacent beams (group g is beams g, g+1
+	// and g+2 round the ring), pathNA none.
 	From, To int
-	// Az is the engaged beam's look direction. Chans are the mics it sums.
+	// Az is the look direction of the engaged group's middle beam. Chans are the
+	// mics it sums.
 	Az    float64
 	Chans []int
 	// Turn is whether this was a locked turn heard through the beam
@@ -80,7 +82,7 @@ func (i WakeBeamInfo) String() string {
 		if k < 0 {
 			return "centre"
 		}
-		return fmt.Sprintf("%d", k)
+		return fmt.Sprintf("g%d", k)
 	}
 	state := name(i.To)
 	if i.From != i.To && i.From != pathNA {
@@ -170,10 +172,13 @@ func (b *Beamformer) NoteWakePath(now time.Time, in int) {
 		info.Cal = b.fbf.cal
 		info.Ara = b.fbf.araOn
 		if info.To >= 0 {
-			info.Az = b.fbf.sd.Azimuths[info.To]
-			info.Chans = b.fbf.beamChans[info.To]
-			info.AraCut = b.fbf.ara.CutDB(info.To)
-			info.AraAdapting = b.fbf.ara.Adapting(info.To)
+			// The group's middle beam stands for it: where it looks, and how far
+			// the canceller has cut it.
+			mid := groupBeams(info.To)[fbfGroupSize/2]
+			info.Az = b.fbf.sd.Azimuths[mid]
+			info.Chans = b.fbf.beamChans[mid]
+			info.AraCut = b.fbf.ara.CutDB(mid)
+			info.AraAdapting = b.fbf.ara.Adapting(mid)
 		}
 	}
 	b.pathFrom, b.pathTo = pathNA, pathNA

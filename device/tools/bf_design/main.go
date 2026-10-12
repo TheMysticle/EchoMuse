@@ -50,6 +50,8 @@ func main() {
 	az := flag.String("azimuths", "", "look directions for -sd, degrees, comma separated (default: even spacing)")
 	flag.Float64Var(&beamformer.SDRingLowHz, "ring.low", beamformer.SDRingLowHz, "taper the interference ring to zero below this frequency, Hz")
 	flag.Float64Var(&beamformer.SDSectorDeg, "sector", beamformer.SDSectorDeg, "half-width of the look sector the ring leaves alone, degrees")
+	selOn := flag.Bool("sel", false, "drive the real wake path through a living-room scene with a quiet distant talker")
+	selFlags()
 	colorOn := flag.Bool("color", false, "how much a talker's spectrum is coloured by the beams, by how far off-axis they are")
 	araOn := flag.Bool("ara", false, "measure the interference canceller after the beams (use with -sd)")
 	araFlags()
@@ -69,6 +71,10 @@ func main() {
 	}
 	pos := micPositions(*mics)
 	beams := newDesignSet(pos, *nBeams, *taps, 100, 5000)
+	if *selOn {
+		selReport(rand.New(rand.NewSource(*seed)))
+		return
+	}
 	if *colorOn {
 		colorReport(beams)
 		return

@@ -51,12 +51,18 @@ func s16(x [][]float64) [][]byte {
 
 func always(int) float64 { return 1 }
 
+// groupAround is the group whose middle beam is b.
+func groupAround(b int) int { return (b + fbfBeams - 1) % fbfBeams }
+
 // enableWakeBeam turns the path on and waits for the background design, which
 // is the only difference from SetWakeBeam the tests need to hide.
 func enableWakeBeam(b *Beamformer) {
 	b.SetWakeBeam(true)
 	b.fbf = <-b.fbfPending
 	b.fbfPending = nil
+	// Unity, so a level read off the path is the signal's; the gain has its own
+	// test.
+	b.fbf.outGain = 1
 }
 
 func samples(b []byte) []float64 {
@@ -185,10 +191,10 @@ func TestNeutralIsTheDelayedCentreMic(t *testing.T) {
 	}
 }
 
-// A steady interferer sets the baseline; a talker then starts from 45° (beam
-// 1). The path must find that beam quickly, hold it for the talk, and return
-// to the centre mic once it is over.
-func TestEngagesOnTheTalkerAndReleases(t *testing.T) {
+// A steady interferer is on from the start; a talker then starts from 45°. The
+// path must be on a group from the end of the warm-up, move to a good one for
+// the talker within half a second, and keep to groups that are good for him.
+func TestGroupFollowsTheTalker(t *testing.T) {
 	b := New()
 	enableWakeBeam(b)
 	rng := rand.New(rand.NewSource(2))
@@ -196,17 +202,22 @@ func TestEngagesOnTheTalkerAndReleases(t *testing.T) {
 	talker := tones(rng, 250, 3700, 83, 220)
 
 	const period = 2560 // the real 160ms batch
-	talkStart, talkEnd := 6*16000, 8*16000
+	talkStart, talkEnd := 6*16000, 9*16000
 	gate := func(t int) float64 {
 		if t >= talkStart && t < talkEnd {
 			return 1
 		}
 		return 0
 	}
-	engagedAt, releasedAt := -1, -1
-	var held int
-	chosen := map[int]int{}
-	for t0 := 0; t0 < 12*16000; t0 += period {
+	snr := beamSNRs(t, talker, 45, interf, 225)
+	best := math.Inf(-1)
+	for _, v := range snr {
+		best = math.Max(best, v)
+	}
+	good := func(g int) bool { return g >= 0 && best-snr[g] <= 3 }
+
+	var idxs []int
+	for t0 := 0; t0 < 10*16000; t0 += period {
 		x := make([][]float64, NumMics)
 		for ch := range x {
 			x[ch] = make([]float64, period)
@@ -219,44 +230,29 @@ func TestEngagesOnTheTalkerAndReleases(t *testing.T) {
 			}
 		}
 		b.WakeBeam(s16(x))
-		idx := b.WakeBeamIndex()
-		if idx >= 0 && engagedAt < 0 && t0 >= talkStart {
-			engagedAt = t0 + period
-			held = idx
-		}
-		if idx < 0 && engagedAt >= 0 && releasedAt < 0 {
-			releasedAt = t0 + period
-		}
-		if idx >= 0 && t0 >= talkStart && t0 < talkEnd {
-			chosen[idx]++
-		}
+		idxs = append(idxs, b.WakeBeamIndex())
 	}
-	if engagedAt < 0 {
-		t.Fatal("never engaged a beam")
+	if idx := idxs[(fbfWarmBlocks*fbfBlock)/period+3]; idx < 0 {
+		t.Errorf("still on the centre mic after the warm-up")
 	}
-	// Wide superdirective beams are not "the nearest to the talker": the one
-	// worth having is the one with the best SNR, which also depends on where
-	// the interferer is. So score what was chosen against every beam forced
-	// in turn, on the same two sources.
-	snr := beamSNRs(t, talker, 45, interf, 225)
-	best := math.Inf(-1)
-	for _, v := range snr {
-		best = math.Max(best, v)
-	}
-	for idx, n := range chosen {
-		if best-snr[idx] > 3 {
-			t.Errorf("beam %d chosen for %d periods has SNR %.1fdB, %.1fdB under the best (%v)", idx, n, snr[idx], best-snr[idx], snr)
+	settled := false
+	for k, idx := range idxs {
+		t0 := k * period
+		if t0 < talkStart {
+			continue
+		}
+		if !settled && good(idx) {
+			settled = true
+			if d := t0 + period - talkStart; d > 16000/2 {
+				t.Errorf("took %dms to reach a good group", d*1000/16000)
+			}
+		}
+		if settled && t0 < talkEnd && !good(idx) {
+			t.Errorf("at %dms the path left the good groups for %d (SNRs %v)", (t0-talkStart)*1000/16000, idx, snr)
 		}
 	}
-	_ = held
-	if d := engagedAt - talkStart; d > 16000/2 {
-		t.Errorf("took %dms to engage", d*1000/16000)
-	}
-	if releasedAt < 0 {
-		t.Fatal("never released to the centre mic")
-	}
-	if d := releasedAt - talkEnd; d > 3*16000 {
-		t.Errorf("took %dms to release", d*1000/16000)
+	if !settled {
+		t.Errorf("never reached a good group (SNRs %v, chose %v)", snr, idxs[talkStart/period:])
 	}
 }
 
@@ -526,7 +522,7 @@ func TestARAImprovesTheWakePathAgainstASteadyInterferer(t *testing.T) {
 			// The beam facing the talker, held there: the selection's own
 			// release would send a steady scene back to the centre mic after a
 			// second, and then this would measure the centre mic.
-			b.fbf.cur, b.fbf.holdLeft, b.fbf.lowFor = nearestBeam(45), 1<<30, 0
+			b.fbf.cur, b.fbf.holdLeft = groupAround(nearestBeam(45)), 1<<30
 			out := samples(b.WakeBeam(batch))
 			if k*period >= 16000*10 { // well into the talk
 				for _, v := range out {
@@ -606,7 +602,7 @@ func TestABeamAndTheCentreMicLineUp(t *testing.T) {
 			b.SetWakeBeamAra(ara)
 			var out []float64
 			for k := 0; k < 12; k++ {
-				b.fbf.cur, b.fbf.holdLeft, b.fbf.lowFor = cur, 1<<30, 0
+				b.fbf.cur, b.fbf.holdLeft = cur, 1<<30
 				x := zeros(NumMics, 2560)
 				render(x, src, look, k*2560, always)
 				out = append(out, samples(b.WakeBeam(s16(x)))...)
@@ -662,7 +658,7 @@ func TestTurnHoldsTheBeamForTheWholeTurn(t *testing.T) {
 	enableWakeBeam(b)
 	b.SetWakeBeamTurns(true)
 	lockForTurn(b, 55) // beam 6 looks at 55 degrees
-	want := nearestBeam(55)
+	want := groupAround(nearestBeam(55))
 	var blocks int
 	for k := 0; k < 8; k++ {
 		x := zeros(NumMics, 2560)
@@ -766,7 +762,7 @@ func TestHighPassIsOnlyHeardInATurn(t *testing.T) {
 			b.SetWakeBeamTurns(true)
 			lockForTurn(b, 55)
 		}
-		b.fbf.cur, b.fbf.holdLeft, b.fbf.lowFor = fbfNeutral, 1<<30, 0
+		b.fbf.cur, b.fbf.holdLeft = fbfNeutral, 1<<30
 		x := zeros(NumMics, 2560*6)
 		for ch := range x {
 			for i := range x[ch] {

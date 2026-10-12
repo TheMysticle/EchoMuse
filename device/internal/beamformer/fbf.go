@@ -3,10 +3,15 @@ package beamformer
 // Superdirective wake beam (`wakeBeam`, off by default).
 //
 // The default wake path reads one microphone (see Process). With wakeBeam on,
-// the unlocked path instead listens through one of eight fixed beams over four
-// mics (fbfChannels), chosen by an onset ratio of speech-band energy and
-// falling back to the centre mic when nothing stands out. Locked turns are
-// untouched.
+// the unlocked path instead listens through eight fixed beams over four mics
+// (fbfChannels), merged the way stock's GroupBeamMergerV2 does it: every beam
+// is cancelled and given an SNR (speech-band power over a minimum-statistics
+// noise floor), the eight overlapping groups of three adjacent beams are scored
+// by their beams' mean SNR, the best group holds the output (1.26x margin, 96ms
+// hold), and the output is the mean of its three beams plus stock's 8.3dB
+// output gain. The centre mic carries the path for the first seconds, while the
+// noise floors settle. Locked turns are untouched unless wakeBeamTurns says
+// otherwise.
 //
 // The beams are superdirective (superdirective.go): plain delay-and-sum at a
 // 72mm aperture gains almost nothing below 1.5kHz (tools/bf_design measures
@@ -21,7 +26,7 @@ package beamformer
 // cancels interference from each (`wakeBeamAra`), and returns the beams as
 // samples, 256 samples (16ms) later. That delay is there whether or not it
 // cancels, and the centre-mic fallback is delayed to match. The beams are
-// ranked, and the output heard, after cancelling.
+// scored, and the output heard, after cancelling.
 //
 // The delay-and-sum code below (DesignBeams) is the baseline tools/bf_design
 // measures the superdirective design against; the firmware does not run it.
@@ -39,34 +44,49 @@ const (
 	fbfBeams = 8
 	// fbfBlock is the selection granularity: 8ms, the AFE's own frame.
 	fbfBlock = 128
-	// fbfHPCoef sets the high-pass corner: (1-a)*fs/2pi, about 200Hz.
-	fbfHPCoef = 0.92
 	// fbfSettleBlocks is how long the statistics ignore the output while the
 	// filters fill: 128ms against a 2ms filter, so a wide margin.
 	fbfSettleBlocks = 16
-	// fbfWarmBlocks is how long selection stays on the centre mic after the
-	// stream starts, so the slow baseline has something to be a baseline of
-	// (3s, as the perimeter selector's warm-up).
+	// fbfWarmBlocks is how long the path stays on the centre mic after the
+	// stream starts, so the noise estimates have something to be estimates of
+	// (3s).
 	fbfWarmBlocks = 375
-	// fbfHoldBlocks is the minimum time on a beam before another may take
-	// over: 96ms, the stock group merger's hold.
+	// fbfGroupSize is how many adjacent beams the output averages: stock's
+	// GroupBeamMergerV2 "3beamsGroup", eight overlapping groups [0 1 2] ..
+	// [7 0 1] over beams that stock numbers round the ring.
+	fbfGroupSize = 3
+	// fbfHoldBlocks is the minimum time on a group before another may take over:
+	// 96ms, stock's "Num Frames To Hold Beam Group".
 	fbfHoldBlocks = 12
-	// fbfReleaseBlocks is how long the chosen beam may sit under
-	// fbfReleaseRatio before the path goes back to the centre mic (1s).
-	fbfReleaseBlocks = 125
-	// fbfEngageRatio is the onset ratio (fast/slow energy) a beam needs
-	// before it replaces the centre mic, and fbfSwitchMargin how much better
-	// than the current beam another must be to take over.
-	fbfEngageRatio  = 2.0
-	fbfReleaseRatio = 1.3
-	fbfSwitchMargin = 1.25
-	// fbfFade is the crossfade, in samples, when the output changes beam.
+	// fbfGroupMargin is how much better another group's SNR must be than the
+	// current group's before it takes over: stock's "Beam Group Margin".
+	fbfGroupMargin = 1.26
+	// fbfFade is the crossfade, in samples, when the output changes group.
 	fbfFade = 32
 
-	// Smoothing, rescaled from the perimeter selector's per-32ms constants
-	// (0.9 and 0.995) to per-block: ~300ms fast, ~10s slow.
-	fbfFastAlpha = 0.9738
-	fbfSlowAlpha = 0.99875
+	// The per-beam SNR estimate is stock's ARA_V2 one: speech-band power
+	// (400-2500Hz, its "Start/Stop freq Err") smoothed fast and slow with its
+	// alphas, over a noise floor that is the slow power's average for the first
+	// fbfNoiseInitBlocks (625, its "Initial Noise Est Frames") and the minimum
+	// over a buffer of it after that. The buffer is fbfNoiseSlots slots of
+	// fbfNoiseSlotBlocks blocks, about 4s ("T frames GBM SNR switch" is 512
+	// frames).
+	fbfBandLoHz        = 400.0
+	fbfBandHiHz        = 2500.0
+	fbfPowFast         = 0.75
+	fbfPowSlow         = 0.987
+	fbfNoiseInitBlocks = 625
+	fbfNoiseSlots      = 64
+	fbfNoiseSlotBlocks = 8
+	// fbfPowFloor keeps the ratio finite on digital silence (stock's "Minimum
+	// ARA Power Buffer Threshold" is 1.0).
+	fbfPowFloor = 1.0
+
+	// fbfOutGainDB is stock's "ASR Output Gain": a group average gives some of
+	// the talker back (the neighbours' beams see him off axis), and this puts it
+	// back. Applied to every output of the wake path so the level never steps
+	// when the selection moves.
+	fbfOutGainDB = 8.3
 
 	// perimeterRadiusM is the perimeter mics' distance from the centre.
 	perimeterRadiusM = 0.036
@@ -259,16 +279,16 @@ type wakeBeam struct {
 	// timing does not move when it changes.
 	araOn bool
 
-	// Per-output HF energy, fast and slow, and the carry for the band-diff.
-	fast, slow [fbfBeams + 1]float64
-	prev2      [fbfBeams + 1][2]float32
-	blocks     int // blocks seen, for the warm-up
+	// snr is each beam's speech-band power and noise floor (see beamSNR).
+	snr    [fbfBeams]beamSNR
+	blocks int // blocks seen, for the warm-up
 
-	cur      int // output in use, fbfNeutral or a beam
+	cur      int // output in use: fbfNeutral, or a group (0-7, see groupBeams)
 	sel      int // the output the last emitted block used, to fade from
 	holdLeft int // blocks before cur may change
-	lowFor   int // consecutive blocks cur has sat under fbfReleaseRatio
 	switches uint64
+	// outGain is fbfOutGainDB as a factor.
+	outGain float32
 
 	// beamChans[b] is the channels beam b actually sums: those with a nonzero
 	// filter. cal is whether any mic's calibration is other than unity.
@@ -314,7 +334,8 @@ func fbfDesign() *SDWeights {
 }
 
 func newWakeBeam() *wakeBeam {
-	w := &wakeBeam{sd: fbfDesign(), cur: fbfNeutral, sel: fbfNeutral}
+	w := &wakeBeam{sd: fbfDesign(), cur: fbfNeutral, sel: fbfNeutral,
+		outGain: float32(math.Pow(10, fbfOutGainDB/20))}
 	// The beams are formed in the canceller's spectral domain, so every path
 	// through it has the same delay: the stage's own, which is there whether or
 	// not it is cancelling. The neutral output (the centre mic) is delayed to
@@ -386,9 +407,10 @@ func (w *wakeBeam) enterOrLeaveTurn(mode int) {
 					best, bd = b, d
 				}
 			}
-			w.cur = best
+			// The group whose middle beam looks that way.
+			w.cur = (best + fbfBeams - 1) % fbfBeams
 		}
-		w.holdLeft, w.lowFor = 1<<30, 0
+		w.holdLeft = 1 << 30
 		log.Printf("[beam] turn on %s", w.name(w.cur))
 	case mode != modeTurn && w.inTurn:
 		w.inTurn = false
@@ -449,7 +471,7 @@ func (w *wakeBeam) process(mics [][]byte, gain float64, mode int) (out []byte, c
 	copy(w.out[fbfNeutral], w.ext[centreCh][w.maxDelay-w.off:])
 
 	out = make([]byte, n*2)
-	g := float32(gain)
+	g := float32(gain) * w.outGain
 	// Fade from the output the previous block used, which is not necessarily
 	// the one in use when this call began: anything that moves cur between
 	// calls (a lock, a forced beam) is faded too.
@@ -459,7 +481,7 @@ func (w *wakeBeam) process(mics [][]byte, gain float64, mode int) (out []byte, c
 		e := min(s+fbfBlock, n)
 		switch mode {
 		case modeBypass:
-			w.cur, w.holdLeft, w.lowFor = fbfNeutral, 0, 0
+			w.cur, w.holdLeft = fbfNeutral, 0
 		case modeTurn:
 			// The beam chosen for the turn is held: the statistics stay frozen,
 			// as they do for a bypassed turn, because the talker's own voice
@@ -468,10 +490,10 @@ func (w *wakeBeam) process(mics [][]byte, gain float64, mode int) (out []byte, c
 			w.step(s, e)
 		}
 		for i := s; i < e; i++ {
-			v := w.out[w.cur][i]
+			v := w.sample(w.cur, i)
 			if w.cur != prevSel && i-s < fbfFade {
 				f := float32(i-s+1) / fbfFade
-				v = v*f + w.out[prevSel][i]*(1-f)
+				v = v*f + w.sample(prevSel, i)*(1-f)
 			}
 			// 80Hz high-pass, always running, heard only in a turn.
 			y := fbfHP[0]*v + w.hpz1
@@ -481,15 +503,10 @@ func (w *wakeBeam) process(mics [][]byte, gain float64, mode int) (out []byte, c
 				v = y
 			}
 			v *= g
-			var q int32
-			switch {
-			case v >= 32767:
-				q, clipped = 32767, clipped+1
-			case v <= -32768:
-				q, clipped = -32768, clipped+1
-			default:
-				q = int32(math.Round(float64(v)))
+			if v >= 32767 || v <= -32768 {
+				clipped++
 			}
+			q := int32(math.Round(float64(softKnee(v))))
 			out[i*2], out[i*2+1] = byte(uint16(q)), byte(uint16(q)>>8)
 		}
 		prevSel = w.cur
@@ -498,39 +515,141 @@ func (w *wakeBeam) process(mics [][]byte, gain float64, mode int) (out []byte, c
 	return out, clipped
 }
 
+// fbfKnee is where the output starts to round off: the 8.3dB output gain puts a
+// raised voice over full scale, and a hard rail there is a distortion the wake
+// model never heard in training. Below the knee the path is exactly linear.
+const fbfKnee = 24576
+
+// softKnee is the identity up to fbfKnee and a tanh approach to full scale
+// after it, continuous in value and slope at the knee.
+func softKnee(v float32) float32 {
+	a := v
+	if a < 0 {
+		a = -a
+	}
+	if a <= fbfKnee {
+		return v
+	}
+	room := float32(32767 - fbfKnee)
+	y := fbfKnee + room*float32(math.Tanh(float64((a-fbfKnee)/room)))
+	if v < 0 {
+		return -y
+	}
+	return y
+}
+
+// groupBeams are the beams group g averages: g and the next fbfGroupSize-1
+// round the ring, stock's [0 1 2], [1 2 3] .. [7 0 1].
+func groupBeams(g int) [fbfGroupSize]int {
+	var b [fbfGroupSize]int
+	for k := range b {
+		b[k] = (g + k) % fbfBeams
+	}
+	return b
+}
+
+// sample is output k's value at i: the centre mic, or the mean of a group's
+// beams (stock's group merger weights each of its beams 1/fbfGroupSize).
+func (w *wakeBeam) sample(k, i int) float32 {
+	if k == fbfNeutral {
+		return w.out[fbfNeutral][i]
+	}
+	var v float32
+	for _, b := range groupBeams(k) {
+		v += w.out[b][i]
+	}
+	return v / fbfGroupSize
+}
+
+// beamSNR is one beam's SNR estimate, as stock's ARA_V2 keeps it: the power in
+// the speech band smoothed fast and slow, and a noise floor taken from the slow
+// one.
+type beamSNR struct {
+	hp, lp     biquad
+	fast, slow float64
+	// ring holds the slow power sampled every fbfNoiseSlotBlocks blocks; its
+	// minimum is the floor once the initial estimate period is over.
+	ring  [fbfNoiseSlots]float64
+	nRing int
+	floor float64
+}
+
+// biquad is a direct-form-I filter, coefficients b0 b1 b2 a1 a2.
+type biquad struct {
+	c      [5]float64
+	x1, x2 float64
+	y1, y2 float64
+}
+
+func (q *biquad) run(x float64) float64 {
+	y := q.c[0]*x + q.c[1]*q.x1 + q.c[2]*q.x2 - q.c[3]*q.y1 - q.c[4]*q.y2
+	q.x1, q.x2, q.y2, q.y1 = x, q.x1, q.y1, y
+	return y
+}
+
+// butterworth2 is a 2nd-order Butterworth, high-pass or low-pass, at hz.
+func butterworth2(hz float64, high bool) biquad {
+	w0 := 2 * math.Pi * hz / sampleRate
+	alpha := math.Sin(w0) / math.Sqrt2
+	c := math.Cos(w0)
+	a0 := 1 + alpha
+	var b0, b1, b2 float64
+	if high {
+		b0, b1, b2 = (1+c)/2, -(1 + c), (1+c)/2
+	} else {
+		b0, b1, b2 = (1-c)/2, 1-c, (1-c)/2
+	}
+	return biquad{c: [5]float64{b0 / a0, b1 / a0, b2 / a0, -2 * c / a0, (1 - alpha) / a0}}
+}
+
+func newBeamSNR() beamSNR {
+	return beamSNR{hp: butterworth2(fbfBandLoHz, true), lp: butterworth2(fbfBandHiHz, false)}
+}
+
+// add folds one block of the beam's output in and returns its SNR: fast power
+// over the noise floor. n is the block count since the statistics started.
+func (e *beamSNR) add(x []float32, n int) float64 {
+	var p float64
+	for _, v := range x {
+		y := e.lp.run(e.hp.run(float64(v)))
+		p += y * y
+	}
+	p /= float64(len(x))
+	if n <= 1 {
+		e.fast, e.slow = p, p
+	} else {
+		e.fast = fbfPowFast*e.fast + (1-fbfPowFast)*p
+		e.slow = fbfPowSlow*e.slow + (1-fbfPowSlow)*p
+	}
+	if n%fbfNoiseSlotBlocks == 0 {
+		e.ring[e.nRing%fbfNoiseSlots] = e.slow
+		e.nRing++
+	}
+	switch {
+	case n < fbfNoiseInitBlocks || e.nRing < fbfNoiseSlots:
+		e.floor = e.slow
+	default:
+		e.floor = e.ring[0]
+		for _, r := range e.ring[1:] {
+			e.floor = math.Min(e.floor, r)
+		}
+	}
+	return e.fast / math.Max(e.floor, fbfPowFloor)
+}
+
 // step folds block [s,e) into the statistics and moves the selection.
 func (w *wakeBeam) step(s, e int) {
-	var ratio [fbfBeams + 1]float64
-	for k := range w.out {
-		// Energy above ~200Hz: a one-pole high-pass, y = x - x1 + a*y1. The
-		// perimeter selector uses a stride-2 difference, which weights 4kHz
-		// about 8dB over 1kHz; that suits choosing between omni mics and ranks
-		// these beams badly, since their patterns differ most at low and mid
-		// frequency and the wake word's log-mel features weigh every band alike.
-		var en float64
-		x := w.out[k]
-		x1, y1 := w.prev2[k][0], w.prev2[k][1]
-		for i := s; i < e; i++ {
-			yv := x[i] - x1 + fbfHPCoef*y1
-			en += float64(yv) * float64(yv)
-			x1, y1 = x[i], yv
+	var snr [fbfBeams]float64
+	for b := range snr {
+		if w.snr[b].lp.c[0] == 0 {
+			w.snr[b] = newBeamSNR()
 		}
-		w.prev2[k] = [2]float32{x1, y1}
-		en /= float64(e - s)
 		if w.blocks < fbfSettleBlocks {
-			// The filters are still filling from silence: what comes out is
-			// their step response, not the room, and with coefficients this
-			// large it is loud enough to hold the slow baseline up for
-			// seconds and flatten every ratio.
-			w.fast[k], w.slow[k] = en, en
+			// The filters are still filling from silence: what comes out is their
+			// step response, not the room.
 			continue
 		}
-		// Until the slow constant has had time to mean anything, the baseline
-		// is the plain average of what has been heard.
-		aSlow := math.Min(fbfSlowAlpha, 1-1/float64(w.blocks-fbfSettleBlocks+1))
-		w.fast[k] = fbfFastAlpha*w.fast[k] + (1-fbfFastAlpha)*en
-		w.slow[k] = aSlow*w.slow[k] + (1-aSlow)*en
-		ratio[k] = w.fast[k] / math.Max(w.slow[k], 1e-3)
+		snr[b] = w.snr[b].add(w.out[b][s:e], w.blocks-fbfSettleBlocks+1)
 	}
 	w.blocks++
 	if w.blocks < fbfWarmBlocks {
@@ -539,51 +658,49 @@ func (w *wakeBeam) step(s, e int) {
 	if w.holdLeft > 0 {
 		w.holdLeft--
 	}
+	// A group's score is the mean SNR of its beams. That is a reading of stock's
+	// config, not of its code: the formula was not found in libasp, so nothing
+	// pins it and the max or the product would pass the tests as well.
+	var score [fbfBeams]float64
 	best := 0
-	for b := 1; b < fbfBeams; b++ {
-		if ratio[b] > ratio[best] {
-			best = b
+	for g := range score {
+		for _, b := range groupBeams(g) {
+			score[g] += snr[b] / fbfGroupSize
+		}
+		if score[g] > score[best] {
+			best = g
 		}
 	}
 	switch {
 	case w.cur == fbfNeutral:
-		if ratio[best] > fbfEngageRatio && ratio[best] > fbfSwitchMargin*ratio[fbfNeutral] {
-			w.pick(best, ratio[best])
-		}
-	default:
-		if ratio[w.cur] < fbfReleaseRatio {
-			w.lowFor++
-		} else {
-			w.lowFor = 0
-		}
-		switch {
-		case w.lowFor >= fbfReleaseBlocks:
-			w.pick(fbfNeutral, ratio[w.cur])
-		case w.holdLeft == 0 && best != w.cur && ratio[best] > fbfSwitchMargin*ratio[w.cur]:
-			w.pick(best, ratio[best])
-		}
+		w.pick(best, score[best])
+	case w.holdLeft == 0 && best != w.cur && score[best] > fbfGroupMargin*score[w.cur]:
+		w.pick(best, score[best]/math.Max(score[w.cur], 1e-9))
 	}
 }
 
-func (w *wakeBeam) pick(k int, ratio float64) {
+func (w *wakeBeam) pick(k int, score float64) {
 	from := w.cur
-	w.cur, w.holdLeft, w.lowFor = k, fbfHoldBlocks, 0
+	w.cur, w.holdLeft = k, fbfHoldBlocks
 	w.switches++
-	w.logSwitch(from, k, ratio)
+	w.logSwitch(from, k, score)
 }
 
 func (w *wakeBeam) name(k int) string {
 	if k == fbfNeutral {
 		return fmt.Sprintf("centre (ch%d)", centreCh)
 	}
-	return fmt.Sprintf("beam %d (%.0f deg)", k, w.sd.Azimuths[k])
+	b := groupBeams(k)
+	return fmt.Sprintf("group %d (beams %d-%d-%d, %.0f-%.0f deg)", k, b[0], b[1], b[2],
+		w.sd.Azimuths[b[0]], w.sd.Azimuths[b[2]])
 }
 
-// logSwitch says what the selection did and why (ratio is the onset ratio that
-// decided it). Going to or from the centre mic is always logged; a switch from
-// one beam to another is limited to four a second, and the next line says how
-// many it skipped, so a noisy room cannot flood a RAM-backed log.
-func (w *wakeBeam) logSwitch(from, to int, ratio float64) {
+// logSwitch says what the selection did and why (score is the SNR ratio of the
+// new group over the old one, or the new group's SNR when leaving the centre
+// mic). Going to or from the centre mic is always logged; a switch from one
+// group to another is limited to four a second, and the next line says how many
+// it skipped, so a noisy room cannot flood a RAM-backed log.
+func (w *wakeBeam) logSwitch(from, to int, score float64) {
 	now := time.Now()
 	if from != fbfNeutral && to != fbfNeutral && now.Sub(w.lastLog) < 250*time.Millisecond {
 		w.suppressed++
@@ -592,10 +709,10 @@ func (w *wakeBeam) logSwitch(from, to int, ratio float64) {
 	w.lastLog = now
 	note := ""
 	if w.suppressed > 0 {
-		note = fmt.Sprintf(" (+%d beam switches not logged)", w.suppressed)
+		note = fmt.Sprintf(" (+%d group switches not logged)", w.suppressed)
 		w.suppressed = 0
 	}
-	log.Printf("[beam] %s -> %s onset ratio %.1f%s", w.name(from), w.name(to), ratio, note)
+	log.Printf("[beam] %s -> %s snr score %.2f%s", w.name(from), w.name(to), score, note)
 }
 
 // SetWakeBeam turns the superdirective wake path on or off. Call from the
@@ -701,7 +818,23 @@ func (b *Beamformer) WakeBeamUsable() bool {
 	return b.fbf != nil && (b.lockedChannel < 0 || b.turnWant)
 }
 
-// WakeBeamIndex is the beam in use, or -1 for the centre mic. For logs and
+// PinWakeGroup holds the wake path on group g (see groupBeams) until it is
+// called with a negative g. It is for tools/bf_design, which has to run the
+// same scene twice, with and without a talker, and subtract: the selection is
+// nonlinear, so the two runs must be on the same group at every moment or the
+// difference is not the talker. The firmware never calls it.
+func (b *Beamformer) PinWakeGroup(g int) {
+	if b.fbf == nil {
+		return
+	}
+	if g < 0 {
+		b.fbf.holdLeft = 0
+		return
+	}
+	b.fbf.cur, b.fbf.holdLeft = g%fbfBeams, 1<<30
+}
+
+// WakeBeamIndex is the group in use (see groupBeams), or -1 for the centre mic. For logs and
 // tests.
 func (b *Beamformer) WakeBeamIndex() int {
 	if b.fbf == nil || b.fbf.cur == fbfNeutral {
