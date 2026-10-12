@@ -1,17 +1,30 @@
 package beamformer
 
-// Superdirective beams: minimum-variance weights against a diffuse noise field,
-// fitted to short real FIRs.
+// Superdirective beams: minimum-variance weights against a noise field, one
+// complex weight per microphone per 62.5Hz bin.
 //
 // Delay-and-sum at a 72mm aperture has almost nothing to cancel below 1.5kHz
 // because a diffuse field is nearly the same at every mic there (coherence
 // 0.84-0.99). A minimum-variance design uses exactly that coherence: it picks
 // weights that pass the look direction undistorted and minimise the power of
-// an isotropic noise field, which at low frequency means differencing the mics.
-// The price is white-noise gain: a differencing sum amplifies each mic's own
-// noise and any gain or phase mismatch between mics. So the loading is chosen
-// per frequency as the smallest that keeps the white-noise gain at or above a
-// floor (SDMinWNGdB), and the mics are level-matched (calibration.go) first.
+// the noise field, which at low frequency means differencing the mics. The
+// price is white-noise gain: a differencing sum amplifies each mic's own noise
+// and any gain or phase mismatch between mics. So the loading is chosen per
+// frequency as the smallest that keeps the white-noise gain above a floor
+// (sdFloorDB), and the mics are level-matched (miccal.go) first.
+//
+// The weights are applied to the mics' short-time spectra (ara.go), in the same
+// 256-point, 62.5Hz-bin domain Radar's stock beamformer works in, so they ARE
+// the design: nothing is fitted to a time-domain filter, the look direction is
+// passed at exactly unity, and the resolution is not limited by a filter
+// length. A first version fitted 32 and then 64-tap FIRs; at 32 the directivity
+// at 250Hz was 2.8dB against stock's 4.5, at 64 it matched and the cost
+// doubled, and the cost of the weights is 16 times less.
+//
+// The noise model is a diffuse field plus a ring of directional interferers
+// outside the look sector (SDRingWeight, SDSectorDeg), and the beams look in
+// stock's arrangement for these four mics (SDAzimuths). Each choice was set by
+// measuring against stock's own beams, with tools/bf_design -amazon.
 //
 // The maths is textbook (Cox, Zeskind and Owen 1987; Bitzer and Simmer 2001)
 // and the geometry is ours; nothing is taken from any vendor's table.
@@ -21,38 +34,86 @@ import (
 	"math/cmplx"
 )
 
-const (
+// Tunables, variables so tools/bf_design can sweep them.
+var (
 	// SDFloorOffsetDB shifts sdFloorDB's profile. 0 follows stock's measured
-	// white-noise gain; the design was checked in tools/bf_design with all
-	// all seven mics and with the four stock uses.
+	// white-noise gain, which this design reproduces to within about 1dB per
+	// beam at 250Hz, 500Hz, 1kHz and 2kHz.
 	SDFloorOffsetDB = 0.0
-	// SDTaps is each mic's FIR length: 2ms, the latency stock's design quotes.
-	SDTaps = 32
-	// sdFitHi is the top of the band the FIRs are fitted over. Speech and the
-	// wake word's features end well below it, and asking a short filter to
-	// follow the weights up to Nyquist spends taps on a band nobody scores.
-	sdFitHi = 5200.0
-	// sdRefine is how many times the fit is corrected for its own look-gain
-	// error.
-	sdRefine = 3
-	// sdHighWeight is the fit weight above sdFitHi.
-	sdHighWeight = 0.15
-	sdRingStep   = 10.0
+	// SDRingWeight is the power of the directional-interference ring relative to
+	// the diffuse field (0 = diffuse only), and SDSectorDeg the half-width of the
+	// look sector it leaves alone. Against an interferer opposite the talker the
+	// ring takes the 500-1500Hz band from +1.9 to +4.0dB and 1.5-4kHz from -4.2 to
+	// -1.5dB (before ARA), for about 1dB of directivity at 1-3kHz. Past a weight
+	// of 3 the gain flattens.
+	SDRingWeight = 3.0
+	SDSectorDeg  = 35.0
+	// SDRingLowHz tapers the ring's weight linearly to zero below this
+	// frequency (0 = no taper). It made no difference to the 250Hz directivity,
+	// so it stays off.
+	SDRingLowHz = 0.0
+	// SDAzimuths, when its length is the number of beams, replaces the even
+	// spacing with these look directions (degrees, clockwise from 12 o'clock).
+	// The default is stock's arrangement for these four mics: its eight beams
+	// sit in four pairs about 22 degrees apart, peaking near 316/292, 236/215,
+	// 136/112 and 56/35, not on a 45 degree grid (tools/bf_design -amazon). In
+	// stock's index order, so the ARA reference table (beam i uses i+3 and i+5)
+	// means the same thing. They are the design angles that make a beam of this
+	// design peak where stock's does: a beam's peak sits a few degrees off its
+	// look direction.
+	SDAzimuths = []float64{322, 289, 235, 205, 142, 110, 55, 25}
 )
 
-// SDRingWeight is the power of the directional-interference ring relative to
-// the diffuse field (0 = diffuse only), and SDSectorDeg the half-width of the
-// look sector it leaves alone. Variables so tools/bf_design can sweep them.
-//
-// 3 and 50 are from the tools/bf_design sweep on the four stock mics. Against
-// an interferer opposite the talker, with the ring off and on: the 500-1500Hz
-// band +1.9 -> +4.0dB and 1.5-4kHz -4.2 -> -1.5dB, for about 1dB of
-// directivity at 1-3kHz and no change to an interferer at 90° (which a diffuse
-// model already handles). Past a weight of 3 the gain flattens.
-var (
-	SDRingWeight = 3.0
-	SDSectorDeg  = 50.0
-)
+const sdRingStep = 10.0
+
+// SDWeights is a set of beams: per-bin complex weights over the microphones.
+type SDWeights struct {
+	// Azimuths are the look directions, degrees clockwise from 12 o'clock.
+	Azimuths []float64
+	// Mics is the number of microphones summed.
+	Mics int
+	// W[b][m][k] is microphone m's weight in beam b at bin k, so that the beam's
+	// spectrum is the sum over m of W[b][m][k] times the mic's. Bins 0 and
+	// araBins-1 (DC and Nyquist) are zero.
+	W [][][araBins]complex64
+
+	pos [][2]float64
+}
+
+// Beams is the number of beams.
+func (s *SDWeights) Beams() int { return len(s.W) }
+
+// Response is beam b's complex gain for a plane wave of frequency f from
+// (azDeg, elDeg), using the weights of the bin nearest f. It is exact at the
+// bin centres (multiples of 62.5Hz) and an approximation between them.
+func (s *SDWeights) Response(b int, f, azDeg, elDeg float64) complex128 {
+	// f * araFFT / sampleRate, not f / (sampleRate / araFFT): both are untyped
+	// integer constants, so the bracket is 62 and not 62.5.
+	k := int(math.Round(f * araFFT / sampleRate))
+	if k < 1 || k > araBins-2 {
+		return 0
+	}
+	u := unitVec(azDeg, elDeg)
+	var y complex128
+	for m, p := range s.pos {
+		adv := (u[0]*p[0] + u[1]*p[1]) / speedOfSound
+		w := s.W[b][m][k]
+		y += complex(float64(real(w)), float64(imag(w))) * cmplx.Exp(complex(0, 2*math.Pi*f*adv))
+	}
+	return y
+}
+
+// NoisePower is beam b's gain for noise independent between mics at bin k: the
+// sum of the squared weights. The white-noise gain is its reciprocal over the
+// look-direction power, which is 1.
+func (s *SDWeights) NoisePower(b, k int) float64 {
+	var p float64
+	for m := range s.pos {
+		w := s.W[b][m][k]
+		p += float64(real(w))*float64(real(w)) + float64(imag(w))*float64(imag(w))
+	}
+	return p
+}
 
 // sdFloorDB is the white-noise-gain floor at f, in dB. It is a profile and not
 // one number because the cost and the benefit both change with frequency:
@@ -79,15 +140,6 @@ func sdFloorDB(f, offsetDB float64) float64 {
 	return 0
 }
 
-// sdGrid is the design frequency grid, in Hz.
-func sdGrid() []float64 {
-	var g []float64
-	for f := 62.5; f < sampleRate/2-1; f += 62.5 {
-		g = append(g, f)
-	}
-	return g
-}
-
 // diffuseCoherence is the isotropic-field coherence between two mics d apart
 // at f: sin(kd)/kd.
 func diffuseCoherence(d, f float64) float64 {
@@ -99,7 +151,7 @@ func diffuseCoherence(d, f float64) float64 {
 }
 
 // mvdrWeights returns the weights w (so that output = sum conj(w_m) x_m) for
-// steering vector d and diffuse coherence matrix gamma, loaded to the smallest
+// steering vector d and noise covariance gamma, loaded to the smallest
 // diagonal that keeps 1/(w^H w) at or above minWNG (linear). Distortionless:
 // w^H d = 1.
 func mvdrWeights(gamma [][]complex128, d []complex128, minWNG float64) []complex128 {
@@ -177,65 +229,23 @@ func gaussJordanC(a [][]complex128) []complex128 {
 	return x
 }
 
-// fitFIR returns the real FIR of length taps whose response is the
-// least-squares fit to target(f) e^{-j w delay} on the grid. Real h makes the
-// objective sum |sum_k h_k e^{-jwk} - T|^2 reduce to A h = b with
-// A_kl = sum cos(w(k-l)), b_k = sum Re(T e^{jwk}).
-func fitFIR(taps int, delay float64, grid, weight []float64, target []complex128) []float64 {
-	a := make([][]float64, taps)
-	for i := range a {
-		a[i] = make([]float64, taps+1)
+func sdAzimuth(b, nBeams int) float64 {
+	if len(SDAzimuths) == nBeams {
+		return SDAzimuths[b]
 	}
-	for g, f := range grid {
-		w := 2 * math.Pi * f / sampleRate
-		t := target[g] * cmplx.Exp(complex(0, -w*delay))
-		wt := weight[g]
-		for k := 0; k < taps; k++ {
-			for l := 0; l < taps; l++ {
-				a[k][l] += wt * math.Cos(w*float64(k-l))
-			}
-			a[k][taps] += wt * real(t*cmplx.Exp(complex(0, w*float64(k))))
-		}
-	}
-	for k := 0; k < taps; k++ {
-		a[k][k] += 1e-9 * float64(len(grid))
-	}
-	return gaussJordan(a)
+	return 360 * float64(b) / float64(nBeams)
 }
 
-// DesignSuperdirective derives nBeams beams, evenly spaced from 0°, for mics at
-// pos. Each is a per-mic real FIR of SDTaps taps delayed by SDTaps/2 samples
-// (the bulk latency, shared by every beam, so a mic at the origin stands in for
-// a beam with no direction by a delay of exactly that many samples).
-func DesignSuperdirective(pos [][2]float64, nBeams int, floorOffsetDB float64) []Beam {
-	return designSD(pos, nBeams, floorOffsetDB, SDTaps, sdFitHi)
-}
-
-func designSD(pos [][2]float64, nBeams int, floorOffsetDB float64, taps int, fitHi float64) []Beam {
-	grid := sdGrid()
-	// Every frequency up to Nyquist is fitted, because a short FIR left free
-	// anywhere does not stay near zero there: with the band above fitHi
-	// dropped the filters gained 66dB at 5.5-8kHz. Above fitHi the bins count
-	// for less, so the fit spends its taps on the band the wake word scores.
-	weight := make([]float64, len(grid))
-	for g, f := range grid {
-		weight[g] = 1
-		if f > fitHi {
-			weight[g] = sdHighWeight
-		}
-	}
+// DesignSuperdirective derives nBeams beams for mics at pos: at each of the
+// filter bank's bins, minimum-variance weights against the diffuse field plus
+// the interference ring, loaded to the white-noise-gain floor.
+func DesignSuperdirective(pos [][2]float64, nBeams int, floorOffsetDB float64) *SDWeights {
 	n := len(pos)
-	diffuse := make([][][]float64, len(grid))
-	for g, f := range grid {
-		diffuse[g] = make([][]float64, n)
-		for i := range diffuse[g] {
-			diffuse[g][i] = make([]float64, n)
-			for j := range diffuse[g][i] {
-				diffuse[g][i][j] = diffuseCoherence(math.Hypot(pos[i][0]-pos[j][0], pos[i][1]-pos[j][1]), f)
-			}
-		}
+	out := &SDWeights{Mics: n, pos: pos, Azimuths: make([]float64, nBeams), W: make([][][araBins]complex64, nBeams)}
+	for b := range out.W {
+		out.W[b] = make([][araBins]complex64, n)
+		out.Azimuths[b] = sdAzimuth(b, nBeams)
 	}
-	delay := float64(taps / 2)
 	steer := func(az, f float64) []complex128 {
 		u := unitVec(az, 0)
 		d := make([]complex128, n)
@@ -245,28 +255,32 @@ func designSD(pos [][2]float64, nBeams int, floorOffsetDB float64, taps int, fit
 		}
 		return d
 	}
-	beams := make([]Beam, nBeams)
-	for b := range beams {
-		az := 360 * float64(b) / float64(nBeams)
-		u := unitVec(az, 0)
-		target := make([][]complex128, n) // [mic][grid]
-		for i := range target {
-			target[i] = make([]complex128, len(grid))
+	for k := 1; k < araBins-1; k++ {
+		f := float64(k) * sampleRate / araFFT
+		diffuse := make([][]complex128, n)
+		for i := range diffuse {
+			diffuse[i] = make([]complex128, n)
+			for j := range diffuse[i] {
+				diffuse[i][j] = complex(diffuseCoherence(math.Hypot(pos[i][0]-pos[j][0], pos[i][1]-pos[j][1]), f), 0)
+			}
 		}
-		for g, f := range grid {
+		minWNG := math.Pow(10, sdFloorDB(f, floorOffsetDB)/10)
+		for b := 0; b < nBeams; b++ {
+			az := out.Azimuths[b]
 			r := make([][]complex128, n)
 			for i := range r {
-				r[i] = make([]complex128, n)
-				for j := range r[i] {
-					r[i][j] = complex(diffuse[g][i][j], 0)
-				}
+				r[i] = append([]complex128(nil), diffuse[i]...)
 			}
 			// Directional interference: a ring of equal sources round the
-			// horizontal plane, outside the look sector, where a TV or a
-			// speaker on a shelf sits. Its weight is relative to the diffuse
-			// field, and it is what lets the beam suppress one loud source
-			// that a diffuse model does not know about.
-			if SDRingWeight > 0 {
+			// horizontal plane, outside the look sector, where a TV or a speaker
+			// on a shelf sits. Its weight is relative to the diffuse field, and
+			// it is what lets the beam suppress one loud source that a diffuse
+			// model does not know about.
+			ringW := SDRingWeight
+			if SDRingLowHz > 0 && f < SDRingLowHz {
+				ringW *= f / SDRingLowHz
+			}
+			if ringW > 0 {
 				var cnt int
 				for th := 0.0; th < 360; th += sdRingStep {
 					if math.Abs(angleDiff(th, az)) > SDSectorDeg {
@@ -280,49 +294,17 @@ func designSD(pos [][2]float64, nBeams int, floorOffsetDB float64, taps int, fit
 					d := steer(th, f)
 					for i := range r {
 						for j := range r[i] {
-							r[i][j] += complex(SDRingWeight/float64(cnt), 0) * d[i] * cmplx.Conj(d[j])
+							r[i][j] += complex(ringW/float64(cnt), 0) * d[i] * cmplx.Conj(d[j])
 						}
 					}
 				}
 			}
-			w := mvdrWeights(r, steer(az, f), math.Pow(10, sdFloorDB(f, floorOffsetDB)/10))
-			for i := range w {
-				target[i][g] = cmplx.Conj(w[i])
+			w := mvdrWeights(r, steer(az, f), minWNG)
+			for m := range w {
+				c := cmplx.Conj(w[m])
+				out.W[b][m][k] = complex(float32(real(c)), float32(imag(c)))
 			}
 		}
-		bm := Beam{AzimuthDeg: az, Bulk: delay, Delay: make([]float64, n), H: make([][]float64, n)}
-		for i := range pos {
-			bm.H[i] = fitFIR(taps, delay, grid, weight, target[i])
-		}
-		// The weights are distortionless; the short filters that stand in for
-		// them are not quite. Measure what the fitted beam actually passes from
-		// its look direction at each frequency, scale the targets by the
-		// reciprocal and fit again, so the error is spent where the fit has
-		// slack instead of in the talker's direction.
-		for it := 0; it < sdRefine; it++ {
-			for g, f := range grid {
-				w := 2 * math.Pi * f
-				var y complex128
-				for i, p := range pos {
-					adv := (u[0]*p[0] + u[1]*p[1]) / speedOfSound
-					var h complex128
-					for k, c := range bm.H[i] {
-						h += complex(c, 0) * cmplx.Exp(complex(0, -w*float64(k)/sampleRate))
-					}
-					y += h * cmplx.Exp(complex(0, w*adv))
-				}
-				y *= cmplx.Exp(complex(0, w*delay/sampleRate))
-				if m := cmplx.Abs(y); m > 0.25 && m < 4 {
-					for i := range target {
-						target[i][g] /= y
-					}
-				}
-			}
-			for i := range pos {
-				bm.H[i] = fitFIR(taps, delay, grid, weight, target[i])
-			}
-		}
-		beams[b] = bm
 	}
-	return beams
+	return out
 }

@@ -46,36 +46,44 @@ func araFlags() {
 	flagFloat(&beamformer.ARAMinGain, "ara.floor", "ARA per-bin suppression floor (amplitude)")
 }
 
-// araRunStream runs the beams of one mic scene through an ARA and returns each
-// beam's output power over [lo, hi).
-func araRunStream(beams []Beam, sig [][]float64, on bool, lo, hi int) []float64 {
+// araRunStream runs one mic scene through the beams and the canceller and
+// returns each beam's output power over [lo, hi). For the superdirective beams
+// that is the firmware's own stage (beams formed from the mics' spectra, then
+// cancelling); for the delay-and-sum baseline the beams are filtered in the
+// time domain and handed to the same canceller.
+func araRunStream(d *designSet, sig [][]float64, on bool, lo, hi int) []float64 {
 	n := len(sig[0])
-	raw := make([][]float32, len(beams))
-	for b := range beams {
-		y := apply(beams[b], sig)
-		raw[b] = make([]float32, n)
-		for i, v := range y {
-			raw[b][i] = float32(v)
+	var out [][]float32
+	if d.sd != nil {
+		out = formBeams(d.sd, sig, on)
+	} else {
+		raw := make([][]float32, d.n())
+		for b := range raw {
+			y := apply(d.das[b], sig)
+			raw[b] = make([]float32, n)
+			for i, v := range y {
+				raw[b][i] = float32(v)
+			}
+		}
+		a := beamformer.NewARA(d.n())
+		a.SetEnabled(on)
+		out = make([][]float32, d.n())
+		for b := range out {
+			out[b] = make([]float32, n)
+		}
+		const call = 2560
+		for s := 0; s < n; s += call {
+			e := min(s+call, n)
+			in := make([][]float32, d.n())
+			o := make([][]float32, d.n())
+			for b := range in {
+				in[b], o[b] = raw[b][s:e], out[b][s:e]
+			}
+			a.Process(in, o)
 		}
 	}
-	a := beamformer.NewARA(len(beams))
-	a.SetEnabled(on)
-	out := make([][]float32, len(beams))
-	for b := range out {
-		out[b] = make([]float32, n)
-	}
-	const call = 2560
-	for s := 0; s < n; s += call {
-		e := min(s+call, n)
-		in := make([][]float32, len(beams))
-		o := make([][]float32, len(beams))
-		for b := range beams {
-			in[b], o[b] = raw[b][s:e], out[b][s:e]
-		}
-		a.Process(in, o)
-	}
-	p := make([]float64, len(beams))
-	for b := range beams {
+	p := make([]float64, d.n())
+	for b := range p {
 		for i := lo; i < hi; i++ {
 			p[b] += float64(out[b][i]) * float64(out[b][i])
 		}
@@ -84,7 +92,7 @@ func araRunStream(beams []Beam, sig [][]float64, on bool, lo, hi int) []float64 
 	return p
 }
 
-func araReport(rng *rand.Rand, pos [][2]float64, beams []Beam, inrDB, dnrDB, selfDB float64) {
+func araReport(rng *rand.Rand, pos [][2]float64, beams *designSet, inrDB, dnrDB, selfDB float64) {
 	const (
 		n         = 1 << 18
 		lo, hi    = 100.0, 4000.0
@@ -133,10 +141,10 @@ func araReport(rng *rand.Rand, pos [][2]float64, beams []Beam, inrDB, dnrDB, sel
 
 			// The beam with the most target gain at this azimuth.
 			best, bp := 0, -1.0
-			for b := range beams {
+			for b := 0; b < beams.n(); b++ {
 				var s float64
 				for _, f := range []float64{500, 1000, 2000, 3000} {
-					r := response(beams[b], pos, f, az, 0)
+					r := beams.resp(b, f, az, 0)
 					s += real(r)*real(r) + imag(r)*imag(r)
 				}
 				if s > bp {

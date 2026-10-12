@@ -15,6 +15,8 @@ import (
 	"math"
 	"math/rand"
 	"os"
+	"strconv"
+	"strings"
 
 	"github.com/wilbowes/EchoMuse/internal/beamformer"
 )
@@ -45,10 +47,17 @@ func main() {
 	flag.BoolVar(&useSD, "sd", false, "superdirective design instead of delay-and-sum")
 	flag.Float64Var(&sdWNG, "wng", sdWNG, "shift of the white-noise-gain floor profile for -sd, dB (0 = stock's measured profile)")
 	flag.Float64Var(&beamformer.SDRingWeight, "ring", beamformer.SDRingWeight, "directional-interference ring power re diffuse for -sd (0 = diffuse only)")
+	az := flag.String("azimuths", "", "look directions for -sd, degrees, comma separated (default: even spacing)")
+	flag.Float64Var(&beamformer.SDRingLowHz, "ring.low", beamformer.SDRingLowHz, "taper the interference ring to zero below this frequency, Hz")
 	flag.Float64Var(&beamformer.SDSectorDeg, "sector", beamformer.SDSectorDeg, "half-width of the look sector the ring leaves alone, degrees")
 	araOn := flag.Bool("ara", false, "measure the interference canceller after the beams (use with -sd)")
 	araFlags()
 	flag.Parse()
+	for _, f := range strings.Split(*az, ",") {
+		if v, err := strconv.ParseFloat(strings.TrimSpace(f), 64); err == nil {
+			beamformer.SDAzimuths = append(beamformer.SDAzimuths, v)
+		}
+	}
 
 	if *amazon != "" {
 		if err := amazonReport(*amazon, *inr, *dnr, *snr, *mics); err != nil {
@@ -58,19 +67,17 @@ func main() {
 		return
 	}
 	pos := micPositions(*mics)
-	beams := Design(pos, *nBeams, *taps, 100, 5000)
+	beams := newDesignSet(pos, *nBeams, *taps, 100, 5000)
 	if *araOn {
 		araReport(rand.New(rand.NewSource(*seed)), pos, beams, *inr, *dnr, *snr)
 		return
 	}
-	fmt.Printf("array: %d mics (%s), 36mm radius; %d beams, %d-tap interpolators, longest beam filter %d samples, latency %.2f samples (%.2fms)\n",
-		len(pos), *mics,
-		len(beams), *taps, len(beams[0].H[0]), beams[0].Bulk, beams[0].Bulk/sampleRate*1000)
+	fmt.Printf("array: %d mics (%s), 36mm radius; %s\n", len(pos), *mics, beams.describe())
 
-	if *dump {
-		dumpTaps(beams[0])
+	if *dump && beams.das != nil {
+		dumpTaps(beams.das[0])
 	}
-	patternReport(pos, beams[0])
+	patternReport(beams, 0)
 
 	rng := rand.New(rand.NewSource(*seed))
 	snrReport(rng, pos, beams, *nfft, *inr, *dnr, *snr)
@@ -87,27 +94,27 @@ func dumpTaps(b Beam) {
 	}
 }
 
-// patternReport prints the beam's response at fixed frequencies: look-direction
-// error, the level at a set of azimuths, directivity index and white-noise
-// gain. Every number is for the actual 4-tap filters, not the ideal delays.
-func patternReport(pos [][2]float64, b Beam) {
-	fmt.Printf("\nbeam 0° response (dB re look direction), horizontal plane\n")
-	azs := []float64{0, 45, 90, 135, 180, 225, 270, 315}
+// patternReport prints beam b's response at fixed frequencies: look-direction
+// error, the level at offsets from its look direction, directivity index and
+// white-noise gain. Every number is for the beams as they ship.
+func patternReport(d *designSet, b int) {
+	fmt.Printf("\nbeam %d (look %.0f°) response, dB re look direction, at offsets from the look direction, horizontal plane\n", b, d.az(b))
+	offs := []float64{45, 90, 135, 180, 225, 270, 315}
 	fmt.Printf("%7s %9s", "Hz", "lookErr")
-	for _, a := range azs[1:] {
-		fmt.Printf(" %6.0f°", a)
+	for _, o := range offs {
+		fmt.Printf(" %+6.0f°", o)
 	}
 	fmt.Printf(" %7s %7s %7s\n", "DI dB", "WNG dB", "worst")
 	for _, f := range []float64{250, 500, 1000, 1500, 2000, 3000, 4000} {
-		look := lookGain(b, pos, f)
+		look := d.look(b, f)
 		fmt.Printf("%7.0f %+8.2fdB", f, 20*math.Log10(absC(look)))
 		worst := math.Inf(-1)
-		for _, a := range azs[1:] {
-			r := 20 * math.Log10(absC(response(b, pos, f, a, 0))/absC(response(b, pos, f, 0, 0)))
+		for _, o := range offs {
+			r := 20 * math.Log10(absC(d.resp(b, f, d.az(b)+o, 0))/absC(d.resp(b, f, d.az(b), 0)))
 			fmt.Printf(" %+6.1f", r)
 			worst = math.Max(worst, r)
 		}
-		fmt.Printf(" %7.2f %7.2f %+7.1f\n", directivityIndex(pos, b, f), whiteNoiseGain(pos, b, f), worst)
+		fmt.Printf(" %7.2f %7.2f %+7.1f\n", directivityIndex(d, b, f), whiteNoiseGain(d, b, f), worst)
 	}
 }
 
@@ -117,36 +124,28 @@ func absC(c complex128) float64 { return math.Hypot(real(c), imag(c)) }
 // the whole sphere, in dB. 0dB is an omni mic; a sum of M uncorrelated
 // inputs could reach 10log10(M) only at high frequency, where the field
 // decorrelates.
-func directivityIndex(pos [][2]float64, b Beam, f float64) float64 {
+func directivityIndex(d *designSet, b int, f float64) float64 {
 	var sum, w float64
 	const nAz, nEl = 72, 36
 	for ie := 0; ie < nEl; ie++ {
 		el := -90 + 180*(float64(ie)+0.5)/nEl
 		cw := math.Cos(el * math.Pi / 180)
 		for ia := 0; ia < nAz; ia++ {
-			r := response(b, pos, f, 360*float64(ia)/nAz, el)
+			r := d.resp(b, f, 360*float64(ia)/nAz, el)
 			sum += cw * (real(r)*real(r) + imag(r)*imag(r))
 			w += cw
 		}
 	}
-	l := response(b, pos, f, b.AzimuthDeg, 0)
+	l := d.resp(b, f, d.az(b), 0)
 	return db((real(l)*real(l) + imag(l)*imag(l)) / (sum / w))
 }
 
 // whiteNoiseGain is the SNR change for noise independent between mics (self
-// noise): look-direction power over the summed squared filter magnitudes.
+// noise): look-direction power over the summed squared per-mic gains.
 // 10log10(M) for plain delay-and-sum; below 0dB it is amplifying self-noise.
-func whiteNoiseGain(pos [][2]float64, b Beam, f float64) float64 {
-	l := response(b, pos, f, b.AzimuthDeg, 0)
-	var s float64
-	for i := range pos {
-		var h complex128
-		for t, c := range b.H[i] {
-			h += complex(c*math.Cos(2*math.Pi*f*float64(t)/sampleRate), -c*math.Sin(2*math.Pi*f*float64(t)/sampleRate))
-		}
-		s += real(h)*real(h) + imag(h)*imag(h)
-	}
-	return db((real(l)*real(l) + imag(l)*imag(l)) / s)
+func whiteNoiseGain(d *designSet, b int, f float64) float64 {
+	l := d.resp(b, f, d.az(b), 0)
+	return db((real(l)*real(l) + imag(l)*imag(l)) / d.noise(b, f))
 }
 
 // snrReport sweeps target azimuth over 16 directions (22.5° steps, so half
@@ -155,7 +154,7 @@ func whiteNoiseGain(pos [][2]float64, b Beam, f float64) float64 {
 // SNR (target vs interferer + diffuse + self-noise) of three processors:
 // the centre mic (what the wake word listens on), the perimeter mic nearest
 // the target (the best the onset-ratio selector could do), and the nearest beam.
-func snrReport(rng *rand.Rand, pos [][2]float64, beams []Beam, n int, inrDB, dnrDB, selfDB float64) {
+func snrReport(rng *rand.Rand, pos [][2]float64, beams *designSet, n int, inrDB, dnrDB, selfDB float64) {
 	const lo, hi = 100.0, 4000.0
 	diffuse := scale(Diffuse(rng, pos, n, 64, lo, hi), math.Pow(10, dnrDB/20))
 	self := scale(SelfNoise(rng, len(pos), n, lo, hi), math.Pow(10, selfDB/20))
@@ -201,7 +200,7 @@ func snrReport(rng *rand.Rand, pos [][2]float64, beams []Beam, n int, inrDB, dnr
 			}
 			procs = append(procs,
 				proc{"nearest perimeter mic", tgt[near], sumRow(noise, near)},
-				proc{fmt.Sprintf("%d-beam filter-and-sum", len(beams)), apply(beams[bi], tgt), apply(beams[bi], noise)})
+				proc{fmt.Sprintf("%d-beam %s", beams.n(), map[bool]string{false: "filter-and-sum", true: "superdirective"}[beams.sd != nil]), beams.apply(tgt, bi), beams.apply(noise, bi)})
 			key := fmt.Sprintf("interferer +%.0f°", off)
 			for _, pr := range procs {
 				for bi, bd := range bands {
@@ -280,10 +279,10 @@ func sumSignals(a ...[][]float64) [][]float64 {
 // sumRow wraps one row so it can be treated like a beam output.
 func sumRow(x [][]float64, i int) []float64 { return x[i] }
 
-func nearestBeam(beams []Beam, az float64) int {
+func nearestBeam(beams *designSet, az float64) int {
 	best, bd := 0, math.Inf(1)
-	for i, b := range beams {
-		if d := angDiff(az, b.AzimuthDeg); d < bd {
+	for i := 0; i < beams.n(); i++ {
+		if d := angDiff(az, beams.az(i)); d < bd {
 			best, bd = i, d
 		}
 	}

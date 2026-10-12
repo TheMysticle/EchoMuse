@@ -155,6 +155,13 @@ type ARA struct {
 	n  int
 	on bool
 
+	// Microphone mode (ProcessMics): the mics' last araFFT samples, the hop
+	// being collected, their spectra, and the weights that turn them into beams.
+	mode        bool
+	bufM, pendM [][]float32
+	ms          [][araBins]complex64
+	sd          *SDWeights
+
 	buf  [][]float32 // each beam's last araFFT input samples
 	pend [][]float32 // the hop being collected
 	np   int
@@ -226,12 +233,40 @@ func (a *ARA) CutDB(b int) float64 { return a.cut[b] }
 // Process takes n samples of every beam and returns the same amount, delayed by
 // ARADelay, written into out (each at least that long).
 func (a *ARA) Process(in, out [][]float32) {
+	a.mode = false
+	a.feed(a.pend, in)
+	a.emit(out, len(in[0]))
+}
+
+// ProcessMics is Process for microphones: it forms the beams itself, in the
+// spectral domain, from the weights (one complex weight per mic per bin), then
+// cancels and returns the beams, delayed by ARADelay. This is how the firmware
+// uses the stage; forming the beams from the spectra the stage already takes
+// costs a few complex multiplies per bin where time-domain filters cost a
+// multiply-add per tap per sample.
+func (a *ARA) ProcessMics(mics [][]float32, w *SDWeights, out [][]float32) {
+	if len(a.pendM) != len(mics) {
+		a.pendM = make([][]float32, len(mics))
+		a.bufM = make([][]float32, len(mics))
+		for m := range mics {
+			a.pendM[m] = make([]float32, araHop)
+			a.bufM[m] = make([]float32, araFFT)
+		}
+		a.ms = make([][araBins]complex64, len(mics))
+	}
+	a.mode, a.sd = true, w
+	a.feed(a.pendM, mics)
+	a.emit(out, len(mics[0]))
+}
+
+// feed collects input a hop at a time and runs a frame for each hop.
+func (a *ARA) feed(pend, in [][]float32) {
 	n := len(in[0])
 	for i := 0; i < n; {
 		// Fill the hop being collected a run at a time, not a sample at a time.
 		take := min(araHop-a.np, n-i)
-		for b := 0; b < a.n; b++ {
-			copy(a.pend[b][a.np:a.np+take], in[b][i:i+take])
+		for c := range pend {
+			copy(pend[c][a.np:a.np+take], in[c][i:i+take])
 		}
 		i += take
 		if a.np += take; a.np == araHop {
@@ -239,6 +274,10 @@ func (a *ARA) Process(in, out [][]float32) {
 			a.frame()
 		}
 	}
+}
+
+// emit hands out n finished samples of every beam.
+func (a *ARA) emit(out [][]float32, n int) {
 	for b := 0; b < a.n; b++ {
 		// ARADelay is chosen so that this is always satisfied; if it were
 		// not, the stage would be handing out silence, so say nothing and pad.
@@ -252,36 +291,67 @@ func (a *ARA) Process(in, out [][]float32) {
 	}
 }
 
-// frame processes one hop: spectra of every beam, the cancelling, and the
-// overlap-add back to samples.
+// spectra pairs two real signals into one complex transform: z = a + jb, so
+// A_k = (Z_k + conj Z_{N-k})/2 and B_k = (Z_k - conj Z_{N-k})/(2j).
+func (a *ARA) spectra(x1, x2 []float32, s1, s2 *[araBins]complex64) {
+	for i := 0; i < araFFT; i++ {
+		re := x1[i] * araWin[i]
+		var im float32
+		if x2 != nil {
+			im = x2[i] * araWin[i]
+		}
+		a.fft[i] = complex(re, im)
+	}
+	araFFTc(a.fft, false)
+	for k := 0; k < araBins; k++ {
+		z, zc := a.fft[k], a.fft[(araFFT-k)%araFFT]
+		zc = complex(real(zc), -imag(zc))
+		s1[k] = (z + zc) * 0.5
+		if s2 != nil {
+			d := z - zc // = 2j * B
+			s2[k] = complex(imag(d)*0.5, -real(d)*0.5)
+		}
+	}
+}
+
+// frame processes one hop: spectra, the cancelling, and the overlap-add back
+// to samples.
 func (a *ARA) frame() {
 	n := a.n
 	cur := a.cur
 
-	// Spectra, two real beams to a complex transform.
-	for b := 0; b < n; b++ {
-		copy(a.buf[b][:araHop], a.buf[b][araHop:])
-		copy(a.buf[b][araHop:], a.pend[b])
-	}
-	for b := 0; b+1 < n+1; b += 2 {
-		b2 := b + 1
-		for i := 0; i < araFFT; i++ {
-			re := a.buf[b][i] * araWin[i]
-			var im float32
-			if b2 < n {
-				im = a.buf[b2][i] * araWin[i]
-			}
-			a.fft[i] = complex(re, im)
+	if a.mode {
+		// Microphones in: their spectra, then the beams as weighted sums.
+		nm := len(a.pendM)
+		for m := 0; m < nm; m++ {
+			copy(a.bufM[m][:araHop], a.bufM[m][araHop:])
+			copy(a.bufM[m][araHop:], a.pendM[m])
 		}
-		araFFTc(a.fft, false)
-		for k := 0; k < araBins; k++ {
-			z, zc := a.fft[k], a.fft[(araFFT-k)%araFFT]
-			zc = complex(real(zc), -imag(zc))
-			cur[b][k] = (z + zc) * 0.5
-			if b2 < n {
-				d := z - zc // = 2j * B
-				cur[b2][k] = complex(imag(d)*0.5, -real(d)*0.5)
+		for m := 0; m < nm; m += 2 {
+			if m+1 < nm {
+				a.spectra(a.bufM[m], a.bufM[m+1], &a.ms[m], &a.ms[m+1])
+			} else {
+				a.spectra(a.bufM[m], nil, &a.ms[m], nil)
 			}
+		}
+		for b := 0; b < n; b++ {
+			cur[b][0], cur[b][araBins-1] = 0, 0
+			for k := 1; k < araBins-1; k++ {
+				var sum complex64
+				for m := 0; m < nm; m++ {
+					sum += a.sd.W[b][m][k] * a.ms[m][k]
+				}
+				cur[b][k] = sum
+			}
+		}
+	} else {
+		// Beams in: their spectra, two real beams to a complex transform.
+		for b := 0; b < n; b++ {
+			copy(a.buf[b][:araHop], a.buf[b][araHop:])
+			copy(a.buf[b][araHop:], a.pend[b])
+		}
+		for b := 0; b < n; b += 2 {
+			a.spectra(a.buf[b], a.buf[b+1], &cur[b], &cur[b+1])
 		}
 	}
 

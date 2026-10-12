@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/wilbowes/EchoMuse/internal/beamformer"
 )
 
 // At the look direction the beam must be unity gain with the common delay
@@ -33,9 +35,9 @@ func TestLookDirectionUnity(t *testing.T) {
 // directivity.
 func TestSymmetry(t *testing.T) {
 	pos := micPositions("all")
-	beams := Design(pos, 8, 4, 100, 5000)
-	a := directivityIndex(pos, beams[0], 2000)
-	b := directivityIndex(pos, beams[4], 2000)
+	beams := &designSet{pos: pos, das: Design(pos, 8, 4, 100, 5000)}
+	a := directivityIndex(beams, 0, 2000)
+	b := directivityIndex(beams, 4, 2000)
 	if math.Abs(a-b) > 0.3 {
 		t.Errorf("DI at 2kHz differs between opposite beams: %.2f vs %.2f", a, b)
 	}
@@ -46,10 +48,10 @@ func TestSymmetry(t *testing.T) {
 // fraction of a dB, or the interpolators are attenuating.
 func TestWhiteNoiseGain(t *testing.T) {
 	pos := micPositions("all")
-	b := Design(pos, 8, 4, 100, 5000)[0]
+	d := &designSet{pos: pos, das: Design(pos, 8, 4, 100, 5000)}
 	want := 10 * math.Log10(float64(len(pos)))
 	for _, f := range []float64{250, 1000, 2000} {
-		if g := whiteNoiseGain(pos, b, f); math.Abs(g-want) > 0.5 {
+		if g := whiteNoiseGain(d, 0, f); math.Abs(g-want) > 0.5 {
 			t.Errorf("WNG at %.0fHz = %.2f, want ~%.2f", f, g, want)
 		}
 	}
@@ -122,5 +124,46 @@ func TestAmazonLoaderChecksTheShape(t *testing.T) {
 	want := complex(float64(i%7)/10, float64((i+1)%7)/10)
 	if got := tab.w(3, 2, 5, 0); got != want {
 		t.Errorf("w(3,2,5,0) = %v, want %v", got, want)
+	}
+}
+
+// The tool's analytic numbers are only worth quoting if the beams, run through
+// the firmware's own stage on a real signal, behave as they say. A tone at a bin
+// centre must come out at the analytic gain, from the look direction and off
+// axis. Between bin centres the weights of the neighbouring bins blend: the look
+// direction must still be passed within half a dB, and an off-axis direction,
+// where the response changes quickly from one bin to the next, within 4dB.
+func TestSuperdirectiveBeamsInTheTimeDomainMatchTheirResponse(t *testing.T) {
+	pos := micPositions("amazon4")
+	sd := beamformer.DesignSuperdirective(pos, 8, 0)
+	const n = 1 << 14
+	const beam = 3
+	for _, f := range []float64{312, 1000, 1031, 2000, 2093, 3500} {
+		for _, az := range []float64{sd.Azimuths[beam], 40, 200} {
+			src := make([]complex128, n)
+			k := int(math.Round(f / sampleRate * n))
+			src[k], src[n-k] = complex(n/2, 0), complex(n/2, 0)
+			sig := scale(Source{src}.AtMics(pos, az, 0), 1000)
+			out := formBeams(sd, sig, false)
+			var got float64
+			for i := n / 2; i < n-600; i++ {
+				got += float64(out[beam][i]) * float64(out[beam][i])
+			}
+			got /= float64(n/2 - 600)
+			r := sd.Response(beam, float64(k)*sampleRate/n, az, 0)
+			want := 1000 * 1000 * 0.5 * (real(r)*real(r) + imag(r)*imag(r))
+			dB := 10 * math.Log10(got/want)
+			centre := math.Abs(f/62.5-math.Round(f/62.5)) < 0.01
+			limit := 0.15 // dB
+			switch {
+			case !centre && az == sd.Azimuths[beam]:
+				limit = 0.5
+			case !centre:
+				limit = 4
+			}
+			if math.Abs(dB) > limit {
+				t.Errorf("%.0fHz from %.0f deg: output %.2fdB from the analytic gain, limit %.2f", f, az, dB, limit)
+			}
+		}
 	}
 }

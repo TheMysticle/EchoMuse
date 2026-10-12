@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"math"
 	"math/cmplx"
 
@@ -46,12 +47,145 @@ var (
 	sdWNG = beamformer.SDFloorOffsetDB
 )
 
-// Design derives nBeams beams with the firmware's design.
+// Design derives nBeams delay-and-sum beams with the firmware's baseline design.
 func Design(pos [][2]float64, nBeams, taps int, fLo, fHi float64) []Beam {
-	if useSD {
-		return beamformer.DesignSuperdirective(pos, nBeams, sdWNG)
-	}
 	return beamformer.DesignBeams(pos, nBeams, taps, fLo, fHi)
+}
+
+// designSet is a set of beams the tool can measure: the delay-and-sum baseline
+// (time-domain FIRs) or the firmware's superdirective beams (per-bin weights
+// applied to the mics' spectra, inside the canceller stage). Every report asks
+// it the same few questions, so it measures whichever ships.
+type designSet struct {
+	pos [][2]float64
+	das []Beam
+	sd  *beamformer.SDWeights
+
+	memoKey *float64
+	memo    [][]float32
+}
+
+func newDesignSet(pos [][2]float64, nBeams, taps int, fLo, fHi float64) *designSet {
+	d := &designSet{pos: pos}
+	if useSD {
+		d.sd = beamformer.DesignSuperdirective(pos, nBeams, sdWNG)
+	} else {
+		d.das = Design(pos, nBeams, taps, fLo, fHi)
+	}
+	return d
+}
+
+func (d *designSet) n() int {
+	if d.sd != nil {
+		return d.sd.Beams()
+	}
+	return len(d.das)
+}
+
+// az is beam b's look direction.
+func (d *designSet) az(b int) float64 {
+	if d.sd != nil {
+		return d.sd.Azimuths[b]
+	}
+	return d.das[b].AzimuthDeg
+}
+
+// resp is beam b's complex gain for a plane wave of frequency f from (az, el).
+func (d *designSet) resp(b int, f, az, el float64) complex128 {
+	if d.sd != nil {
+		return d.sd.Response(b, f, az, el)
+	}
+	return response(d.das[b], d.pos, f, az, el)
+}
+
+// noise is beam b's gain for noise independent between mics at f: the sum of
+// the squared per-mic gains.
+func (d *designSet) noise(b int, f float64) float64 {
+	if d.sd != nil {
+		k := int(math.Round(f * 256 / sampleRate))
+		return d.sd.NoisePower(b, k)
+	}
+	var s float64
+	for i := range d.pos {
+		var h complex128
+		for t, c := range d.das[b].H[i] {
+			h += complex(c*math.Cos(2*math.Pi*f*float64(t)/sampleRate), -c*math.Sin(2*math.Pi*f*float64(t)/sampleRate))
+		}
+		s += real(h)*real(h) + imag(h)*imag(h)
+	}
+	return s
+}
+
+// look is beam b's gain at its own look direction, any common delay removed.
+func (d *designSet) look(b int, f float64) complex128 {
+	if d.sd != nil {
+		return d.sd.Response(b, f, d.sd.Azimuths[b], 0)
+	}
+	return lookGain(d.das[b], d.pos, f)
+}
+
+// describe is one line about the design for the report header.
+func (d *designSet) describe() string {
+	if d.sd != nil {
+		return fmt.Sprintf("%d superdirective beams, per-bin weights over %d mics, look directions %v", d.sd.Beams(), len(d.pos), d.sd.Azimuths)
+	}
+	return fmt.Sprintf("%d delay-and-sum beams, longest filter %d samples, latency %.2f samples", len(d.das), len(d.das[0].H[0]), d.das[0].Bulk)
+}
+
+// apply is beam b's time-domain output for the mic signals, up to a fixed delay.
+func (d *designSet) apply(sig [][]float64, b int) []float64 {
+	if d.das != nil {
+		return apply(d.das[b], sig)
+	}
+	out := d.sdOutputs(sig)
+	y := make([]float64, len(out[b]))
+	for i, v := range out[b] {
+		y[i] = float64(v)
+	}
+	return y
+}
+
+// sdOutputs forms every beam from the mic signals through the firmware's own
+// stage with the canceller off, and remembers the last signal it did.
+func (d *designSet) sdOutputs(sig [][]float64) [][]float32 {
+	if d.memoKey == &sig[0][0] {
+		return d.memo
+	}
+	d.memoKey, d.memo = &sig[0][0], formBeams(d.sd, sig, false)
+	return d.memo
+}
+
+// formBeams runs the mic signals through the firmware's stage in the batches
+// the mic loop delivers, with the canceller on or off.
+func formBeams(sd *beamformer.SDWeights, sig [][]float64, ara bool) [][]float32 {
+	n := len(sig[0])
+	mics := make([][]float32, len(sig))
+	for m := range sig {
+		mics[m] = make([]float32, n)
+		for i, v := range sig[m] {
+			mics[m][i] = float32(v)
+		}
+	}
+	a := beamformer.NewARA(sd.Beams())
+	a.SetEnabled(ara)
+	out := make([][]float32, sd.Beams())
+	for b := range out {
+		out[b] = make([]float32, n)
+	}
+	const call = 2560
+	for s := 0; s < n; s += call {
+		e := min(s+call, n)
+		in := make([][]float32, len(mics))
+		o := make([][]float32, len(out))
+		for m := range mics {
+			in[m] = mics[m][s:e]
+		}
+		for b := range out {
+			o[b] = out[b][s:e]
+		}
+		a.ProcessMics(in, sd, o)
+	}
+	return out
 }
 
 func unit(azDeg, elDeg float64) [3]float64 {

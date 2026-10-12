@@ -47,7 +47,7 @@ func TestWakeBeamInfoSaysWhatThePathDid(t *testing.T) {
 	b.fbf.cur, b.fbf.holdLeft = 2, 1<<30
 	run(b, t0.Add(480*time.Millisecond))
 	has(b.WakeBeamAt(t0.Add(480*time.Millisecond)),
-		"beam=2(90 deg)", "in=ch0,ch1,ch3,ch4", "sd=in[ring 3.0x +/-50 deg, floor +0.0dB]")
+		"beam=2(235 deg)", "in=ch0,ch1,ch3,ch4", "sd=in[ring 3.0x +/-35 deg, floor +0.0dB]")
 
 	// A turn holding the mic bypasses it, and the line must not claim otherwise.
 	b.lockedChannel = 3

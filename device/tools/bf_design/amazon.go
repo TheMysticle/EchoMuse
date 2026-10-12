@@ -123,22 +123,11 @@ func amazonProcessor(t *amazonTable) processor {
 
 func shippedProcessor(set string) processor {
 	pos := micPositions(set)
-	beams := Design(pos, 8, 4, 100, 5000)
+	d := newDesignSet(pos, 8, 4, 100, 5000)
 	return processor{
-		name: fmt.Sprintf("ours, %s (%s)", map[bool]string{false: "delay-and-sum", true: "superdirective"}[useSD], set), beams: len(beams),
-		resp: func(b int, f, az, el float64) complex128 { return response(beams[b], pos, f, az, el) },
-		micPower: func(b int, f float64) float64 {
-			var s float64
-			for i := range pos {
-				var h complex128
-				for d, c := range beams[b].H[i] {
-					h += complex(c, 0) * cmplx.Exp(complex(0, -2*math.Pi*f*float64(d)/sampleRate))
-				}
-				a := cmplx.Abs(h)
-				s += a * a
-			}
-			return s
-		},
+		name: fmt.Sprintf("ours, %s (%s)", map[bool]string{false: "delay-and-sum", true: "superdirective"}[useSD], set), beams: d.n(),
+		resp:     func(b int, f, az, el float64) complex128 { return d.resp(b, f, az, el) },
+		micPower: func(b int, f float64) float64 { return d.noise(b, f) },
 	}
 }
 

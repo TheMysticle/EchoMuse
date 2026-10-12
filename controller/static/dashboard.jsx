@@ -10108,7 +10108,7 @@ function DeviceConfigForm({ config, onChange, disabled, sections, onScopeChange,
               firmware that would ignore it. */}
           <Toggle label="Wake word beam (experimental)"
             sub={wakeBeamCapable
-              ? 'listens through four mics, steered at whoever speaks, instead of one; helps against a TV or music off to one side. Costs a few percent of a core. Turns are unaffected'
+              ? 'listens through four mics, steered at whoever speaks, instead of one; helps against a TV or music off to one side. Costs a few percent of a core and delays the wake path by 16ms. Turns are unaffected'
               : 'needs newer firmware on this Echo'}
             disabled={!wakeBeamCapable}
             value={config.wakeBeam ?? false}
@@ -10120,7 +10120,7 @@ function DeviceConfigForm({ config, onChange, disabled, sections, onScopeChange,
               ? 'needs newer firmware on this Echo'
               : !config.wakeBeam
                 ? 'turn on the wake word beam first'
-                : 'learns a TV or speaker off to one side and subtracts it; needs several seconds of it before it helps. Adds CPU load (an estimate, 5-15% of a core with the beam)'}
+                : 'learns a TV or speaker off to one side and subtracts it; needs several seconds of it before it helps. Adds CPU load (an estimate: 4-7% of a core with the beam)'}
             disabled={!wakeBeamAraCapable || !config.wakeBeam}
             value={config.wakeBeamAra ?? false}
             onChange={v => set('wakeBeamAra', v)}/>

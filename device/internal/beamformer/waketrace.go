@@ -163,7 +163,7 @@ func (b *Beamformer) NoteWakePath(now time.Time, in int) {
 		info.Cal = b.fbf.cal
 		info.Ara = b.fbf.araOn
 		if info.To >= 0 {
-			info.Az = b.fbf.beams[info.To].AzimuthDeg
+			info.Az = b.fbf.sd.Azimuths[info.To]
 			info.Chans = b.fbf.beamChans[info.To]
 			info.AraCut = b.fbf.ara.CutDB(info.To)
 			info.AraAdapting = b.fbf.ara.Adapting(info.To)

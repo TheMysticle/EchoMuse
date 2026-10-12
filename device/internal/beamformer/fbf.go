@@ -1,24 +1,30 @@
 package beamformer
 
-// Filter-and-sum wake beam (`wakeBeam`, off by default).
+// Superdirective wake beam (`wakeBeam`, off by default).
 //
 // The default wake path reads one microphone (see Process). With wakeBeam on,
-// the unlocked path instead sums all seven through one of eight fixed beams,
-// chosen by the same onset-ratio statistic that picks a perimeter mic at
-// Lock(), and falls back to the centre mic when nothing stands out. Locked
-// turns are untouched.
+// the unlocked path instead listens through one of eight fixed beams over four
+// mics (fbfChannels), chosen by an onset ratio of speech-band energy and
+// falling back to the centre mic when nothing stands out. Locked turns are
+// untouched.
 //
 // The beams are superdirective (superdirective.go): plain delay-and-sum at a
 // 72mm aperture gains almost nothing below 1.5kHz (tools/bf_design measures
-// +0.2 to +2.6dB there), and device/CLAUDE.md records why the turn path stays
+// +0.2 to +3.1dB there), and device/CLAUDE.md records why the turn path stays
 // a selector. Radar's stock beams on the same mics reach 5.6-7.5dB directivity
-// there by being superdirective, which is what this follows. It is an
-// experiment to A/B on a device, which is why it is a setting and not a
-// replacement.
+// there by being superdirective, which is what this follows, to within 0.15dB
+// of their directivity at every frequency measured. It is an experiment to A/B
+// on a device, which is why it is a setting and not a replacement.
 //
-// An adaptive interference canceller (ara.go) sits between the beams and the
-// selection, off unless `wakeBeamAra` is set: the beams are ranked, and the
-// output heard, after it.
+// The beams are formed in the spectral domain, as stock's are: ara.go takes the
+// mics' 62.5Hz-bin spectra, weights them into the eight beams, optionally
+// cancels interference from each (`wakeBeamAra`), and returns the beams as
+// samples, 256 samples (16ms) later. That delay is there whether or not it
+// cancels, and the centre-mic fallback is delayed to match. The beams are
+// ranked, and the output heard, after cancelling.
+//
+// The delay-and-sum code below (DesignBeams) is the baseline tools/bf_design
+// measures the superdirective design against; the firmware does not run it.
 
 import (
 	"fmt"
@@ -81,8 +87,9 @@ func MicPosition(ch int) [2]float64 {
 	return [2]float64{perimeterRadiusM * math.Sin(a), perimeterRadiusM * math.Cos(a)}
 }
 
-// Beam is one filter-and-sum beam: an FIR per microphone, summed, with the
-// 1/M weight folded in.
+// Beam is one delay-and-sum beam: an FIR per microphone, summed, with the 1/M
+// weight folded in. The baseline in tools/bf_design; the firmware's beams are
+// SDWeights.
 type Beam struct {
 	AzimuthDeg float64
 	// H[mic] is that mic's FIR, indexed by delay in samples.
@@ -213,17 +220,12 @@ func gaussJordan(a [][]float64) []float64 {
 // measured against. Change the list and everything else follows.
 var fbfChannels = []int{0, 1, 3, 4}
 
-// fbfTap is one nonzero coefficient of one beam.
-type fbfTap struct {
-	ch, delay int
-	c         float32
-}
-
-// wakeBeam is the filter-and-sum state: the filter set, each mic's recent
-// past, and the selection statistics.
+// wakeBeam is the wake path's state: the beam weights, the canceller, the
+// centre mic's recent past for the fallback, and the selection statistics.
 type wakeBeam struct {
-	beams []Beam
-	taps  [fbfBeams][]fbfTap
+	// sd is the beams: per-bin weights over the mics, formed in the canceller's
+	// spectral domain (ara.go).
+	sd *SDWeights
 	// chans is every channel read: the beam mics, then the centre mic for the
 	// neutral output if it is not one of them.
 	chans []int
@@ -233,16 +235,15 @@ type wakeBeam struct {
 	check   micCheck
 	// off is the delay of the neutral (centre mic) output.
 	off int
-	// hist holds each mic's last maxDelay samples; ext is the scratch the
-	// current period is appended to.
+	// hist holds each mic's last maxDelay samples (only the centre mic's are
+	// used, for the neutral output); ext is the scratch the current period is
+	// appended to.
 	hist     [NumMics][]float32
 	ext      [NumMics][]float32
 	maxDelay int
-	// raw[b] is beam b as the filters produce it; out[k] is output k's signal
-	// for the period after the canceller: beams 0-7 and the neutral. The
-	// selection and the output both read out, so beams are ranked and heard
-	// after cancelling, as in stock.
-	raw [fbfBeams][]float32
+	// out[k] is output k's signal for the period after the canceller: beams 0-7
+	// and the neutral. The selection and the output both read out, so beams are
+	// ranked and heard after cancelling, as in stock.
 	out [fbfBeams + 1][]float32
 	ara *ARA
 	// araOn is the wakeBeamAra setting; the stage runs either way, so the
@@ -255,6 +256,7 @@ type wakeBeam struct {
 	blocks     int // blocks seen, for the warm-up
 
 	cur      int // output in use, fbfNeutral or a beam
+	sel      int // the output the last emitted block used, to fade from
 	holdLeft int // blocks before cur may change
 	lowFor   int // consecutive blocks cur has sat under fbfReleaseRatio
 	switches uint64
@@ -271,13 +273,13 @@ type wakeBeam struct {
 
 var (
 	fbfDesignOnce  sync.Once
-	fbfDesignBeams []Beam
+	fbfDesignBeams *SDWeights
 )
 
 // fbfDesign is the beam set, designed once per process: it takes long enough
 // (a covariance solve per frequency per beam) that it must never run on the
 // mic goroutine, and the answer never changes.
-func fbfDesign() []Beam {
+func fbfDesign() *SDWeights {
 	fbfDesignOnce.Do(func() {
 		start := time.Now()
 		pos := make([][2]float64, len(fbfChannels))
@@ -292,10 +294,12 @@ func fbfDesign() []Beam {
 }
 
 func newWakeBeam() *wakeBeam {
-	w := &wakeBeam{beams: fbfDesign(), cur: fbfNeutral}
-	// The neutral output must line up with the beams: their latency, and the
-	// canceller's, which is there whether or not it is cancelling.
-	w.off = int(w.beams[0].Bulk) + ARADelay
+	w := &wakeBeam{sd: fbfDesign(), cur: fbfNeutral, sel: fbfNeutral}
+	// The beams are formed in the canceller's spectral domain, so every path
+	// through it has the same delay: the stage's own, which is there whether or
+	// not it is cancelling. The neutral output (the centre mic) is delayed to
+	// match.
+	w.off = ARADelay
 	w.ara = NewARA(fbfBeams)
 	w.chans = append([]int(nil), fbfChannels...)
 	hasCentre := false
@@ -305,22 +309,18 @@ func newWakeBeam() *wakeBeam {
 	if !hasCentre {
 		w.chans = append(w.chans, centreCh)
 	}
-	for b, bm := range w.beams {
-		for i, h := range bm.H {
-			used := false
-			for d, c := range h {
-				if c != 0 {
-					w.taps[b] = append(w.taps[b], fbfTap{fbfChannels[i], d, float32(c)})
-					w.maxDelay = max(w.maxDelay, d)
-					used = true
+	// The channels a beam actually sums: those with a nonzero weight anywhere.
+	for b := 0; b < fbfBeams; b++ {
+		for m, ch := range fbfChannels {
+			for k := 1; k < araBins-1; k++ {
+				if w.sd.W[b][m][k] != 0 {
+					w.beamChans[b] = append(w.beamChans[b], ch)
+					break
 				}
-			}
-			if used {
-				w.beamChans[b] = append(w.beamChans[b], fbfChannels[i])
 			}
 		}
 	}
-	w.maxDelay = max(w.maxDelay, w.off)
+	w.maxDelay = w.off
 	for _, ch := range w.chans {
 		w.hist[ch] = make([]float32, w.maxDelay)
 	}
@@ -375,32 +375,22 @@ func (w *wakeBeam) process(mics [][]byte, gain float64, locked bool) (out []byte
 		}
 		w.out[k] = w.out[k][:n]
 	}
-	for b := range w.raw {
-		if cap(w.raw[b]) < n {
-			w.raw[b] = make([]float32, n)
-		}
-		w.raw[b] = w.raw[b][:n]
-	}
-	for b := 0; b < fbfBeams; b++ {
-		y := w.raw[b]
-		clear(y)
-		for _, t := range w.taps[b] {
-			// The reslice to len(y) lets the compiler drop the bounds check
-			// on x in the loop below; this is 1024 multiply-adds a sample.
-			x := w.ext[t.ch][w.maxDelay-t.delay:][:len(y)]
-			c := t.c
-			for i, v := range x {
-				y[i] += c * v
-			}
-		}
+	// The beams are formed from the mics' spectra inside the canceller. Each
+	// beam mic's period of samples is the tail of its scratch.
+	var micIn [NumMics][]float32
+	for i, ch := range fbfChannels {
+		micIn[i] = w.ext[ch][w.maxDelay:]
 	}
 	w.ara.SetEnabled(w.araOn)
-	w.ara.Process(w.raw[:], w.out[:fbfBeams])
+	w.ara.ProcessMics(micIn[:len(fbfChannels)], w.sd, w.out[:fbfBeams])
 	copy(w.out[fbfNeutral], w.ext[centreCh][w.maxDelay-w.off:])
 
 	out = make([]byte, n*2)
 	g := float32(gain)
-	prevSel := w.cur
+	// Fade from the output the previous block used, which is not necessarily
+	// the one in use when this call began: anything that moves cur between
+	// calls (a lock, a forced beam) is faded too.
+	prevSel := w.sel
 	for s := 0; s < n; s += fbfBlock {
 		e := min(s+fbfBlock, n)
 		if locked {
@@ -428,6 +418,7 @@ func (w *wakeBeam) process(mics [][]byte, gain float64, locked bool) (out []byte
 		}
 		prevSel = w.cur
 	}
+	w.sel = prevSel
 	return out, clipped
 }
 
@@ -509,7 +500,7 @@ func (w *wakeBeam) name(k int) string {
 	if k == fbfNeutral {
 		return fmt.Sprintf("centre (ch%d)", centreCh)
 	}
-	return fmt.Sprintf("beam %d (%.0f deg)", k, w.beams[k].AzimuthDeg)
+	return fmt.Sprintf("beam %d (%.0f deg)", k, w.sd.Azimuths[k])
 }
 
 // logSwitch says what the selection did and why (ratio is the onset ratio that
@@ -531,7 +522,7 @@ func (w *wakeBeam) logSwitch(from, to int, ratio float64) {
 	log.Printf("[beam] %s -> %s onset ratio %.1f%s", w.name(from), w.name(to), ratio, note)
 }
 
-// SetWakeBeam turns the filter-and-sum wake path on or off. Call from the
+// SetWakeBeam turns the superdirective wake path on or off. Call from the
 // goroutine that calls Process. Turning it on starts the design in the
 // background; until it is done the path passes the centre mic through, as it
 // does when nothing stands out.
@@ -567,23 +558,23 @@ func (b *Beamformer) fbfReady() bool {
 	select {
 	case w := <-b.fbfPending:
 		b.fbf, b.fbfPending = w, nil
-		log.Printf("[beam] wake beam on: %d superdirective beams, %d-tap filters, %d samples latency, mic calibration %s",
-			fbfBeams, SDTaps, w.off, w.calNote)
+		log.Printf("[beam] wake beam on: %d superdirective beams (per-bin weights over %d mics), %d samples latency, mic calibration %s",
+			fbfBeams, len(fbfChannels), w.off, w.calNote)
 		return true
 	default:
 		return false
 	}
 }
 
-// WakeBeamOn reports whether the filter-and-sum wake path is enabled. It may
+// WakeBeamOn reports whether the superdirective wake path is enabled. It may
 // not be running yet: WakeBeam returns nil until its design is done.
 func (b *Beamformer) WakeBeamOn() bool { return b.fbfWant }
 
-// WakeBeam returns the filter-and-sum output for one period of the seven mic
+// WakeBeam returns the wake path's output for one period of the seven mic
 // buffers, indexed by channel as MicChannels returns them (S16, mic gain
 // applied, echo already cancelled if it is being). It must be called every
-// period while the path is enabled so the filters' history stays continuous;
-// use the result only while unlocked.
+// period while the path is enabled so the spectral stage's history stays
+// continuous; use the result only while unlocked.
 //
 // Returns nil if the path is off, still being designed, or the buffers are not
 // NumMics equal ones.

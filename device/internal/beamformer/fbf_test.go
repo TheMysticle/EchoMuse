@@ -102,49 +102,46 @@ func TestFractionalDelayAccuracy(t *testing.T) {
 	}
 }
 
-// A short FIR left unconstrained somewhere does not stay near zero there. An
-// early version fitted only up to 5.2kHz and gained 66dB above it, which would
-// have put amplified hiss into the wake word. Mic noise passes through every
-// beam at no more than the profile's worst allowance (+5dB, at 500Hz) anywhere
-// from 5Hz to Nyquist.
+// The weights may not amplify mic noise past the white-noise-gain profile at any
+// bin: -7dB at 250Hz and below, which is stock's measured -7.4dB, so at most 5x
+// the noise power, and the bound leaves a little for the bisection that finds
+// the loading. An early version of this stage fitted short FIRs to the same
+// design and, left free above 5.2kHz, gained 66dB there; a weight has nothing
+// to leak into, but the bound is cheap and catches the next kind of mistake. DC
+// and Nyquist carry nothing.
 func TestBeamsDoNotAmplifyNoiseAnywhere(t *testing.T) {
 	w := newWakeBeam()
-	for _, b := range w.beams {
-		for f := 5.0; f < 8000; f += 25 {
-			var s float64
-			for i := range b.H {
-				var h complex128
-				for d, c := range b.H[i] {
-					h += complex(c, 0) * cmplx.Exp(complex(0, -2*math.Pi*f*float64(d)/sampleRate))
-				}
-				s += real(h)*real(h) + imag(h)*imag(h)
+	for b := 0; b < w.sd.Beams(); b++ {
+		for k := 1; k < araBins-1; k++ {
+			f := float64(k) * sampleRate / araFFT
+			limit := math.Pow(10, -sdFloorDB(f, SDFloorOffsetDB)/10) * 1.05
+			if p := w.sd.NoisePower(b, k); p > limit {
+				t.Errorf("beam %.0f deg: noise power gain %.2f at %.0fHz, the profile allows %.2f", w.sd.Azimuths[b], p, f, limit)
 			}
-			if g := 10 * math.Log10(s); g > 7 {
-				t.Errorf("beam %.0f°: white-noise power gain %.1fdB at %.0fHz", b.AzimuthDeg, g, f)
-			}
+		}
+		if p := w.sd.NoisePower(b, 0) + w.sd.NoisePower(b, araBins-1); p != 0 {
+			t.Errorf("beam %.0f deg: weight at DC or Nyquist", w.sd.Azimuths[b])
 		}
 	}
 }
 
-func TestDesignSharesAnIntegerLatency(t *testing.T) {
+func TestDesignShape(t *testing.T) {
 	w := newWakeBeam()
-	for _, b := range w.beams {
-		// The neutral output is delayed by the beams' latency plus the
-		// canceller's, which is there whether or not it is cancelling.
-		if want := float64(w.off - ARADelay); b.Bulk != want || b.Bulk != math.Floor(b.Bulk) {
-			t.Errorf("beam %.0f°: bulk delay %.3f, want the integer %.0f for every beam", b.AzimuthDeg, b.Bulk, want)
-		}
-		if len(b.H) != len(fbfChannels) {
-			t.Errorf("beam %.0f°: %d filters for %d mics", b.AzimuthDeg, len(b.H), len(fbfChannels))
-		}
-		for i, h := range b.H {
-			if len(h) > w.maxDelay+1 {
-				t.Errorf("beam %.0f° mic %d: filter %d long, history is %d", b.AzimuthDeg, i, len(h), w.maxDelay)
-			}
-		}
+	if w.sd.Beams() != fbfBeams || w.sd.Mics != len(fbfChannels) {
+		t.Fatalf("%d beams over %d mics, want %d over %d", w.sd.Beams(), w.sd.Mics, fbfBeams, len(fbfChannels))
 	}
 	if len(fbfChannels) != 4 {
 		t.Errorf("the wake beam sums %d mics; the stock design uses four", len(fbfChannels))
+	}
+	// Every path through the stage has its delay, so the neutral output has
+	// exactly that.
+	if w.off != ARADelay {
+		t.Errorf("neutral delay %d, want the stage's %d", w.off, ARADelay)
+	}
+	for b := range w.beamChans {
+		if len(w.beamChans[b]) != len(fbfChannels) {
+			t.Errorf("beam %d sums %v, want all of %v", b, w.beamChans[b], fbfChannels)
+		}
 	}
 }
 
@@ -152,24 +149,12 @@ func TestDesignSharesAnIntegerLatency(t *testing.T) {
 // latency as phase, across the speech band.
 func TestBeamPassesItsLookDirection(t *testing.T) {
 	w := newWakeBeam()
-	for _, b := range w.beams {
-		u := unitVec(b.AzimuthDeg, 0)
-		for _, f := range []float64{300, 500, 1000, 2000, 3000} {
-			var y complex128
-			for i, ch := range fbfChannels {
-				p := MicPosition(ch)
-				adv := (u[0]*p[0] + u[1]*p[1]) / speedOfSound
-				x := cmplx.Exp(complex(0, 2*math.Pi*f*adv))
-				for d, c := range b.H[i] {
-					y += complex(c, 0) * x * cmplx.Exp(complex(0, -2*math.Pi*f*float64(d)/sampleRate))
-				}
-			}
-			y *= cmplx.Exp(complex(0, 2*math.Pi*f*b.Bulk/sampleRate))
-			if m := 20 * math.Log10(cmplx.Abs(y)); math.Abs(m) > 1.5 {
-				t.Errorf("beam %.0f° at %.0fHz: look gain %.2fdB", b.AzimuthDeg, f, m)
-			}
-			if ph := cmplx.Phase(y); math.Abs(ph) > 0.35 {
-				t.Errorf("beam %.0f° at %.0fHz: look phase %.2frad", b.AzimuthDeg, f, ph)
+	for b := 0; b < w.sd.Beams(); b++ {
+		for k := 2; k < araBins-1; k++ {
+			f := float64(k) * sampleRate / araFFT
+			y := w.sd.Response(b, f, w.sd.Azimuths[b], 0)
+			if d := cmplx.Abs(y - 1); d > 2e-3 {
+				t.Errorf("beam %.0f deg at %.0fHz: look gain %v, want exactly 1", w.sd.Azimuths[b], f, y)
 			}
 		}
 	}
@@ -315,7 +300,7 @@ func TestBeamImprovesSNRAboveOneAndAHalfKilohertz(t *testing.T) {
 	run := func(src []tone, az float64) (beam, centre []float64) {
 		b := New()
 		enableWakeBeam(b)
-		b.fbf.cur = 1 // force beam 1; selection is tested above
+		b.fbf.cur = nearestBeam(45) // the beam facing the talker; selection is tested above
 		x := make([][]float64, NumMics)
 		for ch := range x {
 			x[ch] = make([]float64, n)
@@ -380,11 +365,15 @@ func TestOffByDefaultAndRefusesBadInput(t *testing.T) {
 
 // Switching beam must not make a step: the shared latency and the crossfade
 // exist for this. The comparison is the largest sample-to-sample change across
-// a forced 2 -> 5 switch against the same signal's largest change on beam 2.
+// a forced switch against the largest in steady state on either beam, since a
+// beam that passes the source and one that rejects it differ in level, and a
+// louder output has bigger steps without any click.
 func TestSwitchingBeamDoesNotClick(t *testing.T) {
 	rng := rand.New(rand.NewSource(4))
 	x := zeros(NumMics, 1024)
-	render(x, tones(rng, 200, 3000, 101, 150), 90, 0, always)
+	// Low tones: against a signal whose own steps are small, a hard switch
+	// stands out; with high-frequency content it hides in the ordinary steps.
+	render(x, tones(rng, 120, 500, 29, 150), 90, 0, always)
 	in := s16(x)
 	slice := func(from, to int) [][]byte {
 		out := make([][]byte, len(in))
@@ -399,18 +388,22 @@ func TestSwitchingBeamDoesNotClick(t *testing.T) {
 		}
 		return m
 	}
-	steady := New()
-	enableWakeBeam(steady)
-	steady.fbf.cur, steady.fbf.holdLeft = 2, 1<<30
-	ref := samples(steady.WakeBeam(in))
+	from, to := nearestBeam(235), nearestBeam(110) // a beam turned away, and one at the source
+	steady := func(beam int) float64 {
+		b := New()
+		enableWakeBeam(b)
+		b.fbf.cur, b.fbf.holdLeft = beam, 1<<30
+		return maxStep(samples(b.WakeBeam(in)))
+	}
+	base := math.Max(steady(from), steady(to))
 
 	sw := New()
 	enableWakeBeam(sw)
-	sw.fbf.cur, sw.fbf.holdLeft = 2, 1<<30
+	sw.fbf.cur, sw.fbf.holdLeft = from, 1<<30
 	first := samples(sw.WakeBeam(slice(0, fbfBlock*3)))
-	sw.fbf.cur = 5
+	sw.fbf.cur = to
 	rest := samples(sw.WakeBeam(slice(fbfBlock*3, 1024)))
-	if got, base := maxStep(append(first, rest...)), maxStep(ref); got > 2.5*base+20 {
+	if got := maxStep(append(first, rest...)); got > 1.25*base+20 {
 		t.Errorf("largest step %.0f across the switch against %.0f in steady state", got, base)
 	}
 }
@@ -435,6 +428,20 @@ func TestClippingIsCounted(t *testing.T) {
 			t.Fatalf("sample %v out of range", v)
 		}
 	}
+}
+
+// nearestBeam is the beam whose design azimuth is closest to az, since the
+// beams are not on an even grid.
+func nearestBeam(az float64) int {
+	w := newWakeBeam()
+	best, bd := 0, 1e9
+	for i, a := range w.sd.Azimuths {
+		d := math.Abs(angleDiff(a, az))
+		if d < bd {
+			best, bd = i, d
+		}
+	}
+	return best
 }
 
 func zeros(mics, n int) [][]float64 {
@@ -519,7 +526,7 @@ func TestARAImprovesTheWakePathAgainstASteadyInterferer(t *testing.T) {
 			// The beam facing the talker, held there: the selection's own
 			// release would send a steady scene back to the centre mic after a
 			// second, and then this would measure the centre mic.
-			b.fbf.cur, b.fbf.holdLeft, b.fbf.lowFor = 1, 1<<30, 0
+			b.fbf.cur, b.fbf.holdLeft, b.fbf.lowFor = nearestBeam(45), 1<<30, 0
 			out := samples(b.WakeBeam(batch))
 			if k*period >= 16000*10 { // well into the talk
 				for _, v := range out {
@@ -590,6 +597,8 @@ func TestARAToggleDoesNotClick(t *testing.T) {
 func TestABeamAndTheCentreMicLineUp(t *testing.T) {
 	rng := rand.New(rand.NewSource(10))
 	src := denseTones(rng, 300, 3000, 100)
+	const target = 2
+	look := newWakeBeam().sd.Azimuths[target]
 	for _, ara := range []bool{false, true} {
 		runOne := func(cur int) []float64 {
 			b := New()
@@ -599,12 +608,12 @@ func TestABeamAndTheCentreMicLineUp(t *testing.T) {
 			for k := 0; k < 12; k++ {
 				b.fbf.cur, b.fbf.holdLeft, b.fbf.lowFor = cur, 1<<30, 0
 				x := zeros(NumMics, 2560)
-				render(x, src, 90, k*2560, always)
+				render(x, src, look, k*2560, always)
 				out = append(out, samples(b.WakeBeam(s16(x)))...)
 			}
 			return out[16000:]
 		}
-		beam, centre := runOne(2), runOne(fbfNeutral)
+		beam, centre := runOne(target), runOne(fbfNeutral)
 		best, bestLag := math.Inf(-1), 0
 		for lag := -6; lag <= 6; lag++ {
 			var c float64
