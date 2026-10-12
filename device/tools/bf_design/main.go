@@ -15,6 +15,8 @@ import (
 	"math"
 	"math/rand"
 	"os"
+
+	"github.com/wilbowes/EchoMuse/internal/beamformer"
 )
 
 var bands = []struct {
@@ -40,6 +42,10 @@ func main() {
 		nfft   = flag.Int("n", 1<<15, "record length in samples (power of two)")
 		amazon = flag.String("amazon", "", "path to a Radar AFE beamformer coefficient table to measure beside the shipped design")
 	)
+	flag.BoolVar(&useSD, "sd", false, "superdirective design instead of delay-and-sum")
+	flag.Float64Var(&sdWNG, "wng", sdWNG, "shift of the white-noise-gain floor profile for -sd, dB (0 = stock's measured profile)")
+	flag.Float64Var(&beamformer.SDRingWeight, "ring", beamformer.SDRingWeight, "directional-interference ring power re diffuse for -sd (0 = diffuse only)")
+	flag.Float64Var(&beamformer.SDSectorDeg, "sector", beamformer.SDSectorDeg, "half-width of the look sector the ring leaves alone, degrees")
 	flag.Parse()
 
 	if *amazon != "" {

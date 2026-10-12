@@ -125,7 +125,7 @@ func shippedProcessor(set string) processor {
 	pos := micPositions(set)
 	beams := Design(pos, 8, 4, 100, 5000)
 	return processor{
-		name: fmt.Sprintf("ours, delay-and-sum (%s)", set), beams: len(beams),
+		name: fmt.Sprintf("ours, %s (%s)", map[bool]string{false: "delay-and-sum", true: "superdirective"}[useSD], set), beams: len(beams),
 		resp: func(b int, f, az, el float64) complex128 { return response(beams[b], pos, f, az, el) },
 		micPower: func(b int, f float64) float64 {
 			var s float64
@@ -185,18 +185,18 @@ func (p processor) wng(b int, f, az float64) float64 {
 // patternTable prints, per beam, where it points and its directivity there.
 func patternTable(p processor) {
 	fmt.Printf("\n%s: look direction and directivity per beam\n", p.name)
-	fmt.Printf("%5s %8s %9s | DI dB at 500 1000 2000 3000 Hz | WNG dB at 1000 2000\n", "beam", "peak az", "peak gain")
-	var avg [4]float64
+	fmt.Printf("%5s %8s %9s | DI dB at 250 500 1000 2000 3000 Hz | WNG dB at 250 500 1000 2000 Hz\n", "beam", "peak az", "peak gain")
+	var avg [5]float64
 	for b := 0; b < p.beams; b++ {
 		az, g := p.peakAzimuth(b)
-		fmt.Printf("%5d %7.0f° %9.2f | %9.2f %5.2f %5.2f %5.2f | %9.2f %5.2f\n", b, az, g,
-			p.di(b, 500, az), p.di(b, 1000, az), p.di(b, 2000, az), p.di(b, 3000, az),
-			p.wng(b, 1000, az), p.wng(b, 2000, az))
-		for i, f := range []float64{500, 1000, 2000, 3000} {
+		fmt.Printf("%5d %7.0f° %9.2f | %7.2f %5.2f %5.2f %5.2f %5.2f | %8.2f %5.2f %5.2f %5.2f\n", b, az, g,
+			p.di(b, 250, az), p.di(b, 500, az), p.di(b, 1000, az), p.di(b, 2000, az), p.di(b, 3000, az),
+			p.wng(b, 250, az), p.wng(b, 500, az), p.wng(b, 1000, az), p.wng(b, 2000, az))
+		for i, f := range []float64{250, 500, 1000, 2000, 3000} {
 			avg[i] += p.di(b, f, az) / float64(p.beams)
 		}
 	}
-	fmt.Printf("%5s %8s %9s | %9.2f %5.2f %5.2f %5.2f |\n", "mean", "", "", avg[0], avg[1], avg[2], avg[3])
+	fmt.Printf("%5s %8s %9s | %7.2f %5.2f %5.2f %5.2f %5.2f |\n", "mean", "", "", avg[0], avg[1], avg[2], avg[3], avg[4])
 }
 
 // analyticSweep is snrReport without the time-domain simulation: for

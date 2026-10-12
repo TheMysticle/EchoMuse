@@ -39,8 +39,18 @@ func micPositions(set string) [][2]float64 {
 	return p
 }
 
+// useSD and sdWNG pick the design: delay-and-sum, or the superdirective one
+// with a white-noise-gain floor in dB.
+var (
+	useSD bool
+	sdWNG = beamformer.SDFloorOffsetDB
+)
+
 // Design derives nBeams beams with the firmware's design.
 func Design(pos [][2]float64, nBeams, taps int, fLo, fHi float64) []Beam {
+	if useSD {
+		return beamformer.DesignSuperdirective(pos, nBeams, sdWNG)
+	}
 	return beamformer.DesignBeams(pos, nBeams, taps, fLo, fHi)
 }
 
