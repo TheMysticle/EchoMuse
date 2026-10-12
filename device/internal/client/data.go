@@ -1234,10 +1234,18 @@ func (d *DataClient) streamMic(conn *websocket.Conn, stopCh <-chan struct{}, loc
 			if snap.WakeMic != nil {
 				d.beam.SetWakeMic(*snap.WakeMic)
 			}
-			d.beam.SetWakeBeam(snap.WakeBeam != nil && *snap.WakeBeam)
-			d.beam.SetWakeBeamAra(snap.WakeBeamAra != nil && *snap.WakeBeamAra)
-			d.beam.SetWakeBeamTurns(snap.WakeBeamTurns != nil && *snap.WakeBeamTurns)
-			d.beam.SetWakeBeamStock(snap.WakeBeamStock != nil && *snap.WakeBeamStock)
+			// One switch. The beam, the canceller, stock's merger and rules, and
+			// the turn audio are measured as a set on real captures
+			// (tools/bf_design -sweep): that combination is the one that does
+			// not lose in either a quiet room or a TV, where each piece alone
+			// loses in one of them. wakeBeamAra, wakeBeamTurns and
+			// wakeBeamStock are no longer read; controllers that still push
+			// them are ignored.
+			beamOn := snap.WakeBeam != nil && *snap.WakeBeam
+			d.beam.SetWakeBeam(beamOn)
+			d.beam.SetWakeBeamAra(beamOn)
+			d.beam.SetWakeBeamTurns(beamOn)
+			d.beam.SetWakeBeamStock(beamOn)
 			d.beam.SetPlaying(d.playing != nil && d.playing())
 			epOn := snap.WakeEndpoint != nil && *snap.WakeEndpoint
 			mono, angle := d.beam.Process(raw, beamAngle, gainLin)

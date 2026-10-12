@@ -943,12 +943,7 @@ func (b *Beamformer) SetWakeBeamAra(on bool) { b.araWant = on }
 // share of the score) and its canceller control (a beam's SNR gates the step,
 // any beam over the line stops them all). Off, it is the faster rule the path
 // started with. Call from the goroutine that calls Process.
-func (b *Beamformer) SetWakeBeamStock(on bool) {
-	b.stockWant = on
-	if on {
-		startStockTable()
-	}
-}
+func (b *Beamformer) SetWakeBeamStock(on bool) { b.stockWant = on }
 
 // SetPlaying says whether the Echo's own speaker is audible. Stock resets its
 // canceller (and the beamformer's state with it) whenever that changes, because
@@ -1043,19 +1038,6 @@ func (b *Beamformer) WakeBeam(mics [][]byte) []byte {
 		log.Printf("[beam] stock's merger and canceller control: %v", b.stockWant)
 	}
 	b.fbf.ara.SetGate(gate)
-	// With stock's rules the beams are stock's own table when the device has
-	// it and it was read; the canceller starts over because what it learnt was
-	// for different beams.
-	use := b.fbf.ownSD
-	if t := stockTableResult.Load(); b.stockWant && t != nil {
-		use = t
-	}
-	if b.fbf.sd != use {
-		b.fbf.sd = use
-		b.fbf.ara.Reset()
-		b.fbf.votes = [fbfBeams]int{}
-		log.Printf("[beam] beams now %s", map[bool]string{true: "stock's own table", false: "our design"}[use != b.fbf.ownSD])
-	}
 	out, clipped := b.fbf.process(mics, 1, mode)
 	b.pathTo = b.fbf.outIndex()
 	b.clippedSamples += clipped
@@ -1083,6 +1065,16 @@ func (b *Beamformer) PinWakeGroup(g int) {
 		return
 	}
 	b.fbf.cur, b.fbf.holdLeft = g%fbfBeams, 1<<30
+}
+
+// UseWakeBeamWeights replaces the beams the wake path forms (the stock rules
+// still prefer the stock table when it was read). For tools/bf_design, which
+// runs the same capture through different weight sets; the firmware never
+// calls it.
+func (b *Beamformer) UseWakeBeamWeights(sd *SDWeights) {
+	if b.fbf != nil {
+		b.fbf.sd, b.fbf.ownSD = sd, sd
+	}
 }
 
 // WakeBeamIndex is the group in use (see groupBeams), or -1 for the centre mic. For logs and

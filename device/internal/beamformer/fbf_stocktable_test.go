@@ -111,29 +111,3 @@ func TestRealStockTableMakesEightBeams(t *testing.T) {
 		}
 	}
 }
-
-// With stock's rules on and the table read, the path forms its beams from the
-// table, starting the canceller over; with them off it goes back to ours.
-func TestStockRulesUseTheTableWhenThereIsOne(t *testing.T) {
-	b := New()
-	enableWakeBeam(b)
-	own := b.fbf.ownSD
-	table := &SDWeights{Mics: own.Mics, pos: own.pos, Azimuths: own.Azimuths, W: own.W}
-	stockTableResult.Store(table)
-	t.Cleanup(func() { stockTableResult.Store(nil) })
-	x := zeros(NumMics, 2560)
-	b.WakeBeam(s16(x))
-	if b.fbf.sd != own {
-		t.Fatal("our design should stay in use without stock's rules")
-	}
-	b.stockWant = true // SetWakeBeamStock would also start a read of the real path
-	b.WakeBeam(s16(x))
-	if b.fbf.sd != table {
-		t.Error("stock's rules did not switch to the table")
-	}
-	b.stockWant = false
-	b.WakeBeam(s16(x))
-	if b.fbf.sd != own {
-		t.Error("turning stock's rules off did not return to our design")
-	}
-}

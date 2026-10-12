@@ -9613,7 +9613,7 @@ function DeviceConfigForm({ config, onChange, disabled, sections, onScopeChange,
   };
 
   function selectPreset(key) {
-    if (disabled) return;
+    if (disabled || config.wakeBeam) return;
     const p = PRESETS[key];
     onChange('beamAngle', p.beamAngle);
     onChange('beamformingEnabled', p.beamformingEnabled);
@@ -10023,7 +10023,7 @@ function DeviceConfigForm({ config, onChange, disabled, sections, onScopeChange,
       {/* 03 MICROPHONES */}
       <Stage n="03" title="Microphones"
         chips={<ScopeChip tone="device">Device</ScopeChip>}
-        desc="Capture from the 7-mic array. Presets steer which perimeter mic is used during voice turns — wake-word listening always uses the centre mic. Gain here is the only gain in the wake path: it sets the level everything downstream hears."
+        desc="Capture from the 7-mic array. Presets steer which perimeter mic is used during voice turns, and wake-word listening uses the centre mic, unless the beam audio switch below is on: it replaces both. Gain here is the only gain in the wake path: it sets the level everything downstream hears."
         scope={scopeEl('microphones')} dim={secStyle('microphones')}>
         <div className="em-grid2" style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: 20, alignItems: 'center' }}>
           <DeviceDiagram
@@ -10038,7 +10038,8 @@ function DeviceConfigForm({ config, onChange, disabled, sections, onScopeChange,
                   : 'linear-gradient(160deg,var(--raised),var(--surface))',
                 border: `1px solid ${currentPreset === key ? 'var(--accent)' : 'var(--border-soft)'}`,
                 borderRadius: 10, padding: '9px 6px 8px',
-                cursor: disabled ? 'default' : 'pointer',
+                cursor: (disabled || config.wakeBeam) ? 'default' : 'pointer',
+                opacity: config.wakeBeam ? 0.45 : 1,
                 display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6,
                 transition: 'border-color 0.15s, background 0.15s',
               }}>
@@ -10055,8 +10056,14 @@ function DeviceConfigForm({ config, onChange, disabled, sections, onScopeChange,
             <Slider label="MICPGA" sub="analog gain, before the ADC" value={config.adcMicpga ?? 40} min={0} max={59} onChange={v => set('adcMicpga', v)}/>
             <Slider label="Digital gain" sub="ADC digital gain — affects wake + turns" value={config.adcDigitalGain ?? 88} min={0} max={100} onChange={v => set('adcDigitalGain', v)}/>
             <Slider label="Mic gain" sub="fixed gain on the 24-bit capture, pre-16-bit stream" value={config.micGainDb ?? 24} min={0} max={42} unit="dB" onChange={v => set('micGainDb', v)}/>
-            <Slider label="Beam angle" sub="-1 = auto (onset-ratio selection)" value={config.beamAngle ?? -1} min={-1} max={359} step={1} onChange={v => set('beamAngle', v)}/>
-            <Toggle label="Beamforming" sub="perimeter mic lock during turns" value={config.beamformingEnabled ?? false} onChange={v => set('beamformingEnabled', v)}/>
+            <Slider label="Beam angle"
+              sub={config.wakeBeam ? 'not used while the beam audio is on: it steers itself' : '-1 = auto (onset-ratio selection)'}
+              disabled={!!config.wakeBeam}
+              value={config.beamAngle ?? -1} min={-1} max={359} step={1} onChange={v => set('beamAngle', v)}/>
+            <Toggle label="Beamforming"
+              sub={config.wakeBeam ? 'not used while the beam audio is on: commands are heard through the beam' : 'perimeter mic lock during turns'}
+              disabled={!!config.wakeBeam}
+              value={config.beamformingEnabled ?? false} onChange={v => set('beamformingEnabled', v)}/>
             <Toggle label="Echo cancel (AEC)" sub="subtracts the device's own playback — wake + turns" value={config.aecEnabled ?? false} onChange={v => set('aecEnabled', v)}/>
             <Toggle label="Noise suppression" sub="DTLN denoise on speech-to-text audio only — helps fans/hum, not TV speech" value={config.nsAsr ?? false} onChange={v => set('nsAsr', v)}/>
             <Slider label="AEC delay"
@@ -10114,45 +10121,18 @@ function DeviceConfigForm({ config, onChange, disabled, sections, onScopeChange,
             onChange={v => set('wakeMic', v)}/>
           {/* Experimental. Off unless chosen, and disabled with the reason on
               firmware that would ignore it. */}
-          <Toggle label="Wake word beam (experimental)"
-            sub={wakeBeamCapable
-              ? 'listens through four mics, steered at whoever speaks, instead of one; helps against a TV or music off to one side. Costs a few percent of a core and delays the wake path by 16ms. Turns are unaffected'
-              : 'needs newer firmware on this Echo'}
-            disabled={!wakeBeamCapable}
+          {/* One switch. The beam, the interference canceller, the original
+              firmware's beam rules and the beam for what you say after the wake
+              word are measured as a set on real recordings and are not offered
+              separately: each alone loses in a quiet room or against a TV, and
+              the set does not. Needs the firmware that has all of them. */}
+          <Toggle label="Original-style beam audio (experimental)"
+            sub={!(wakeBeamCapable && wakeBeamStockCapable)
+              ? 'needs newer firmware on this Echo'
+              : 'listens through four mics steered at whoever speaks, subtracts a TV or speaker off to one side, and hears your command the same way, as the original Echo firmware does. Replaces the single-mic settings above while it is on. Costs a few percent of a core and delays the wake path by 16ms'}
+            disabled={!(wakeBeamCapable && wakeBeamStockCapable)}
             value={config.wakeBeam ?? false}
             onChange={v => set('wakeBeam', v)}/>
-          {/* Experimental, and meaningless without the beam it follows, so it
-              says which of the two reasons it is off. */}
-          <Toggle label="Interference canceller (experimental)"
-            sub={!wakeBeamAraCapable
-              ? 'needs newer firmware on this Echo'
-              : !config.wakeBeam
-                ? 'turn on the wake word beam first'
-                : 'learns a TV or speaker off to one side and subtracts it; needs several seconds of it before it helps. Adds CPU load (an estimate: 4-7% of a core with the beam)'}
-            disabled={!wakeBeamAraCapable || !config.wakeBeam}
-            value={config.wakeBeamAra ?? false}
-            onChange={v => set('wakeBeamAra', v)}/>
-          {/* Experimental, changes what speech-to-text hears, and follows the
-              beam, so it says which reason it is off. */}
-          <Toggle label="Beam for what you say after the wake word (experimental)"
-            sub={!wakeBeamTurnsCapable
-              ? 'needs newer firmware on this Echo'
-              : !config.wakeBeam
-                ? 'turn on the wake word beam first'
-                : 'the command or question is heard through the beam (and the canceller, if on) instead of one mic. Untested against transcripts: turn on "Save utterances" and compare'}
-            disabled={!wakeBeamTurnsCapable || !config.wakeBeam}
-            value={config.wakeBeamTurns ?? false}
-            onChange={v => set('wakeBeamTurns', v)}/>
-          {/* Experimental, and meaningless without the beam it follows. */}
-          <Toggle label="Radar's own beam rules (experimental)"
-            sub={!wakeBeamStockCapable
-              ? 'needs newer firmware on this Echo'
-              : !config.wakeBeam
-                ? 'turn on the wake word beam first'
-                : 'picks and mixes the beams, and controls the canceller, the way the original Echo firmware does (decoded from it): steadier against a TV, slower to follow someone who moves. Compare with it off'}
-            disabled={!wakeBeamStockCapable || !config.wakeBeam}
-            value={config.wakeBeamStock ?? false}
-            onChange={v => set('wakeBeamStock', v)}/>
           {/* Experimental. Independent of the beam: it works from whichever mic
               the wake word is heard on. */}
           <Toggle label="End a command when you stop talking (experimental)"

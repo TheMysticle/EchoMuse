@@ -1,13 +1,16 @@
 package beamformer
 
-// Stock's own beam table, read from the Echo it is running on.
+// Stock's own beam table, for measurement only.
 //
-// With wakeBeamStock on, the path can form its eight beams from the table
-// Radar's AFE loads (AFE.cfg: "ASR FixedBeamFormerV2"), which is on the
-// device's own system partition: /vendor/etc/audio-algorithms on FireOS and on
-// emOS, which mounts the same userspace. It is READ there and never copied into
-// this repository or the firmware, and when it is absent or not the table we
-// expect, the beams we design ourselves stay in use.
+// Radar's AFE loads a precomputed table (AFE.cfg: "ASR FixedBeamFormerV2"),
+// which is on the device's own system partition (/vendor/etc/audio-algorithms
+// on FireOS and on emOS). The firmware does NOT read it: on real captures
+// (tools/bf_design -sweep -stock.table) it ties our own design on voice over
+// background (+0.6 and +1.9 dB) and is duller (spectral tilt 3 to 6 dB worse),
+// and running it in stock's own 768-tap filter bank with its four taps applied
+// (tools/bf_design -bank) gains nothing over folding them. This loader stays so
+// those tools can keep making the comparison. It is read from a path, never
+// copied into this repository.
 //
 // Layout (established in tools/bf_design/amazon.go): 32,768 values =
 // [beam 8][mic 4][band 128][tap 4][re, im], mics in the AFE's channel map
@@ -24,19 +27,11 @@ package beamformer
 import (
 	"bufio"
 	"fmt"
-	"log"
 	"math"
 	"os"
 	"regexp"
 	"strconv"
-	"sync"
-	"sync/atomic"
-	"time"
 )
-
-// StockTablePath is where the table is on the device; a variable for tests and
-// for tools/bf_design, which replays captures on a machine with the dump.
-var StockTablePath = "/vendor/etc/audio-algorithms/coefs_FBFV2_4micsSq_8beams_idnr_m15_lowLatency.cfg"
 
 const (
 	stockTableBands = 128
@@ -44,6 +39,9 @@ const (
 )
 
 var stockTableValue = regexp.MustCompile(`^\s*(-?\d+\.\d+(?:[eE][-+]?\d+)?),?\s*$`)
+
+// LoadStockTable reads the table at path and folds it into per-bin weights.
+func LoadStockTable(path string) (*SDWeights, error) { return loadStockTable(path) }
 
 // loadStockTable reads the table and folds it into per-bin weights.
 func loadStockTable(path string) (*SDWeights, error) {
@@ -101,26 +99,4 @@ func loadStockTable(path string) (*SDWeights, error) {
 		}
 	}
 	return out, nil
-}
-
-var (
-	stockTableOnce   sync.Once
-	stockTableResult atomic.Pointer[SDWeights]
-)
-
-// startStockTable reads the table in the background, once per process; the
-// result (nil when it could not be used) is picked up by stockTableReady.
-func startStockTable() {
-	stockTableOnce.Do(func() {
-		go func() {
-			start := time.Now()
-			w, err := loadStockTable(StockTablePath)
-			if err != nil {
-				log.Printf("[beam] stock's beam table not used, keeping our own beams: %v", err)
-				return
-			}
-			log.Printf("[beam] stock's beam table read from %s in %v", StockTablePath, time.Since(start).Round(time.Millisecond))
-			stockTableResult.Store(w)
-		}()
-	})
 }

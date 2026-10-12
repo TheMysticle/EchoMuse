@@ -94,7 +94,7 @@ def test_wake_mic_capability_is_surfaced_to_the_dashboard():
     assert "wake_mic_capable" in CONTROLLER.read_text()
     assert "wakeMicCapable" in API.read_text()
     jsx = (ROOT / "controller" / "static" / "dashboard.jsx").read_text()
-    assert "disabled={!wakeMicCapable}" in jsx
+    assert "disabled={!wakeMicCapable || !!config.wakeBeam}" in jsx  # off too while the beam is on, which does not read it
 
 
 def test_wake_beam_capability_is_surfaced_to_the_dashboard():
@@ -104,7 +104,12 @@ def test_wake_beam_capability_is_surfaced_to_the_dashboard():
     assert "wake_beam_capable" in CONTROLLER.read_text()
     assert "wakeBeamCapable" in API.read_text()
     jsx = (ROOT / "controller" / "static" / "dashboard.jsx").read_text()
-    assert "disabled={!wakeBeamCapable}" in jsx
+    # One switch since 2026-10-13: the beam, the canceller, the original rules
+    # and the beam for turns are a measured set, and the firmware that has the
+    # newest of them has all of them.
+    assert "disabled={!(wakeBeamCapable && wakeBeamStockCapable)}" in jsx
+    for gone in ("set('wakeBeamAra'", "set('wakeBeamTurns'", "set('wakeBeamStock'"):
+        assert gone not in jsx, f"{gone} is not a separate control any more"
 
 
 def test_wake_beam_ara_capability_is_surfaced_to_the_dashboard():
@@ -114,7 +119,6 @@ def test_wake_beam_ara_capability_is_surfaced_to_the_dashboard():
     assert "wake_beam_ara_capable" in CONTROLLER.read_text()
     assert "wakeBeamAraCapable" in API.read_text()
     jsx = (ROOT / "controller" / "static" / "dashboard.jsx").read_text()
-    assert "!wakeBeamAraCapable || !config.wakeBeam" in jsx
 
 
 def test_wake_beam_turns_capability_is_surfaced_to_the_dashboard():
@@ -124,7 +128,6 @@ def test_wake_beam_turns_capability_is_surfaced_to_the_dashboard():
     assert "wake_beam_turns_capable" in CONTROLLER.read_text()
     assert "wakeBeamTurnsCapable" in API.read_text()
     jsx = (ROOT / "controller" / "static" / "dashboard.jsx").read_text()
-    assert "!wakeBeamTurnsCapable || !config.wakeBeam" in jsx
 
 
 def test_wake_beam_stock_capability_is_surfaced_to_the_dashboard():
@@ -134,7 +137,6 @@ def test_wake_beam_stock_capability_is_surfaced_to_the_dashboard():
     assert "wake_beam_stock_capable" in CONTROLLER.read_text()
     assert "wakeBeamStockCapable" in API.read_text()
     jsx = (ROOT / "controller" / "static" / "dashboard.jsx").read_text()
-    assert "!wakeBeamStockCapable || !config.wakeBeam" in jsx
 
 
 def test_wake_endpoint_capability_is_surfaced_to_the_dashboard():

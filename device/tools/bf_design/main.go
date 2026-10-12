@@ -54,6 +54,10 @@ func main() {
 	selFlags()
 	epClip := flag.String("ep.clip", "", "run the endpointer on a recorded session (comma separated WAV paths); the TV-only part of the recording, repeated to -ep.history seconds, stands in for the room before the wake")
 	rawPath := flag.String("raw", "", "a raw 9-channel S24_3LE capture (the firmware's capture.req, or capture_mics): report each mic and each wake-path mode by band")
+	bankRaw := flag.String("bank", "", "a raw capture: compare stock's beam table in stock's own filter bank with the firmware's fold (needs -bank.fb and -bank.table)")
+	bankFB := flag.String("bank.fb", "", "coefs_FilterBank_AnalysisSynthesis_768cvxGLow.cfg")
+	bankTable := flag.String("bank.table", "", "coefs_FBFV2_4micsSq_8beams_idnr_m15_lowLatency.cfg")
+	sweepRaw := flag.String("sweep", "", "a raw capture: every combination of the wake path's switches, scored on the voice")
 	rawFrom := flag.Float64("raw.from", 0, "start of the window in the capture, seconds")
 	flag.Float64Var(&rawHotDB, "raw.hot", 8, "dB over the median for a 250ms block to count as speech in -raw")
 	rawTo := flag.Float64("raw.to", 0, "end of the window, seconds (0 = the end)")
@@ -78,6 +82,14 @@ func main() {
 	}
 	pos := micPositions(*mics)
 	beams := newDesignSet(pos, *nBeams, *taps, 100, 5000)
+	if *sweepRaw != "" {
+		modeSweep(*sweepRaw)
+		return
+	}
+	if *bankRaw != "" {
+		bankExperiment(*bankRaw, *bankFB, *bankTable)
+		return
+	}
 	if *rawPath != "" {
 		rawReport(*rawPath, *rawFrom, *rawTo)
 		return

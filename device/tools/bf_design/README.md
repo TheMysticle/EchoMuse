@@ -272,3 +272,17 @@ off and on.
 - **Limits of the model.** Free-field plane waves (plus four reflections for
   "room"), matched mics, no enclosure, no AEC residual. Sources are shaped noise,
   not recordings. A single coherent interferer is the best case for any sum.
+
+## Comparing paths on a real capture (2026-10-13)
+
+```bash
+# every combination of the wake path's switches, run twice over the capture and scored on the second pass
+go run ./tools/bf_design -sweep capture.raw -raw.hot 4
+go run ./tools/bf_design -sweep capture.raw -raw.hot 4 -stock.table /path/to/coefs_FBFV2_4micsSq_8beams_idnr_m15_lowLatency.cfg
+
+# stock's beam table in stock's own 768-tap filter bank (taps applied) against the same table folded
+go run ./tools/bf_design -bank capture.raw -bank.fb /path/to/coefs_FilterBank_AnalysisSynthesis_768cvxGLow.cfg \
+    -bank.table /path/to/coefs_FBFV2_4micsSq_8beams_idnr_m15_lowLatency.cfg -raw.hot 4
+```
+
+The two files come from a device's `/vendor/etc/audio-algorithms` and are only read from the path given, never copied here. The results and what they decided are in `device/CLAUDE.md` (one switch, 2026-10-13).

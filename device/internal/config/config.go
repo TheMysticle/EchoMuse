@@ -120,6 +120,10 @@ type Device struct {
 	// baseline. Turns are unaffected.
 	WakeBeam bool
 
+	// WakeBeamAra, WakeBeamTurns and WakeBeamStock are no longer read: WakeBeam
+	// turns on the whole set (client/data.go). They stay so a controller that
+	// still pushes them is accepted.
+	//
 	// WakeBeamAra adds the adaptive interference canceller after the wake
 	// beams (internal/beamformer/ara.go). Off by default, and only meaningful
 	// with WakeBeam on. It learns the interferer over some seconds, so it is
