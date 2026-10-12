@@ -53,29 +53,74 @@ against plane waves a single omni mic has no direction, so selection by
 position cannot help here. Selection's value in the firmware is the room, not
 this model.
 
+## Against Radar's stock beams
+
+```bash
+go run ./tools/bf_design -amazon /path/to/vendor/etc/audio-algorithms/coefs_FBFV2_4micsSq_8beams_idnr_m15_lowLatency.cfg
+```
+
+The table is read from the path given and is not in this repository. It is
+32,768 values, laid out `[beam 8][mic 4][band 128][tap 4][re, im]` (found by
+experiment: every beam's block opens with eight zeros for DC, and read this
+way the eight beams have unity gain at their peak, a peak azimuth that holds
+within a degree across 1-2.5kHz, and eight distinct directions). Mics are the
+AFE's channel map `[0,1,3,4]`, bands are the 256-point filter bank's, and tap t
+is t hops of 128 samples. The sign conventions cannot be told apart from
+magnitudes; all eight give the same beams up to a half turn, which choosing the
+best beam per target does not see. The same code measures both designs, with
+the sums evaluated analytically (a filter bank has no time-domain form here);
+for the shipped design that agrees with the time-domain simulation above to
+about 1dB.
+
+Directivity at 500 / 1000 / 2000 / 3000 Hz, mean over the eight beams:
+
+| | 500 | 1000 | 2000 | 3000 | white-noise gain at 1kHz |
+|---|---|---|---|---|---|
+| stock, 4 mics | 5.6 dB | 6.8 | 7.5 | 6.6 | -2.4 to +0.5 dB (mean -1.3) |
+| ours, same 4 mics | 0.4 | 1.5 | 4.4 | 5.3 | +6.0 |
+
+Output SNR gain over one mic, 6dB interferer, -6dB diffuse noise, best beam per
+target, mean of 16 azimuths:
+
+| interferer | design | 100-500 | 500-1500 | 1500-4000 | 100-4000 |
+|---|---|---|---|---|---|
+| +90° | stock | +5.8 dB | +10.9 | +9.7 | +6.7 |
+| | ours, 4 mics | +0.2 | +1.7 | +6.5 | +1.7 |
+| | ours, 7 mics | +0.1 | +1.3 | +8.7 | +1.7 |
+| +180° | stock | +10.0 | +9.4 | +12.0 | +9.8 |
+| | ours, 4 mics | +0.3 | +3.1 | +8.7 | +2.2 |
+| | ours, 7 mics | +0.3 | +2.5 | +13.2 | +2.4 |
+
 ## What this does and does not show
 
-- **Below 1.5 kHz a sum buys almost nothing**: DI is 0.1-2.8 dB and the gain
-  is 0.2-2.6 dB. That is where speech energy and most of a wake word's
-  mel-band content sit, and it agrees with the coherence argument in SETUP.md.
-- **Above 1.5 kHz it is large** (10-14 dB against a single interferer), but
-  that band is also where plane-wave, free-field assumptions are most
-  flattering, and the grating lobes start above 4.7 kHz.
-- **Limits of the model.** Free-field plane waves, matched mics, no enclosure
-  scattering, no reverberation, no AEC residual. The speech and music sources
-  are shaped noise, not recordings. A single coherent interferer is the best
-  case for a sum; a real TV in a room is partly diffuse.
-- **"4 taps" is not the same 4 taps.** Radar's coefficient file holds 32,768
-  values, which is exactly 8 beams x 4 mics x 128 sub-bands x complex x 4
-  taps: a separate complex weight per frequency band, across frames. Mine is
-  28 taps per beam of one delay each. Matching the count says nothing about
-  matching the design freedom. Their set can shape a null per band; this one
-  cannot.
-- **The "-15 dB" in the coefficient filenames is a design parameter, not a
-  measured rejection.** The files say `idnr_m15` and "-15dB Idrn: Normal
-  noise"; the neighbouring files are named `EVD_*_MVDR`. Nothing in the
-  firmware defines IDNR. The reading consistent with the names is an MVDR-type
-  design regularised against diffuse noise, which is the superdirective class
-  `device/CLAUDE.md` already identifies as the only one that works at this
-  aperture. Plain delay-and-sum has no such term, so there is no -15 dB figure
-  here to compare against. Its diffuse-noise gain is -DI: about 0 dB at 500 Hz.
+- **The aperture is not what limits a sum below 1.5kHz.** Stock gets 5.6-7.5dB
+  of directivity from the same four mics at 36 x 62mm where delay-and-sum
+  gets 0.4-4.4. The beams are superdirective: the 1kHz white-noise gain is
+  negative on six of the eight beams (mean -1.3dB), meaning they spend sensor self-noise to buy
+  directivity, which is the trade `device/CLAUDE.md` names as the only class
+  that works at this aperture. The shipped design is plain delay-and-sum and
+  gets none of that; its gain is above 1.5kHz.
+- **Self-noise is where that trade is paid, and stock prepares for it.**
+  `asp.cfg` turns on a per-unit mic calibration read from `/proc/idme/miccal.*`
+  (default value 16384). A superdirective sum on unmatched capsules across four
+  ADCs amplifies the mismatch; nothing here reads those values.
+- **Beam directions are not a 45° grid.** The stock peaks sit near 35°, 56°,
+  112°, 136°, 215°, 236°, 292° and 316°, in four pairs, and the beams are wide
+  (7dB directivity), so a talker is always within one beam's reach. Ours are
+  eight at 45° with narrower low-frequency patterns.
+- **Limits of the model.** Free-field plane waves, matched mics, no
+  enclosure, no reverberation, no AEC residual, and nothing after the beams:
+  stock follows them with an adaptive stage that subtracts beams about 135° away
+  from the target, which this does not model. Sources are shaped noise, not
+  recordings. A single coherent interferer is the best case for any sum.
+- **Their "4 taps" are per band.** 32,768 = 8 beams x 4 mics x 128 sub-bands x
+  complex x 4 taps: a separate complex weight per frequency band and frame
+  delay. Ours is 28 delay taps per beam. Matching the count says nothing about
+  matching the design freedom.
+- **The "-15 dB" in the filenames is a design parameter, not a measured
+  rejection.** The files say `idnr_m15` and "-15dB Idrn: Normal noise"; the
+  neighbouring files are `EVD_*_MVDR`. Nothing in the firmware defines IDNR.
+  The reading consistent with the names and with the measurements above is an
+  MVDR-type design with a diffuse-noise term, which is what gives the 5.6dB at
+  500Hz. Delay-and-sum has no such term, so there is no -15 dB figure for it;
+  its diffuse-noise gain is -DI, about 0 dB at 500Hz.

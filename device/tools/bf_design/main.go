@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"os"
 )
 
 var bands = []struct {
@@ -37,9 +38,17 @@ func main() {
 		seed   = flag.Int64("seed", 1, "random seed")
 		dump   = flag.Bool("dump", false, "print the derived taps")
 		nfft   = flag.Int("n", 1<<15, "record length in samples (power of two)")
+		amazon = flag.String("amazon", "", "path to a Radar AFE beamformer coefficient table to measure beside the shipped design")
 	)
 	flag.Parse()
 
+	if *amazon != "" {
+		if err := amazonReport(*amazon, *inr, *dnr, *snr, *mics); err != nil {
+			fmt.Fprintln(os.Stderr, "bf_design:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	pos := micPositions(*mics)
 	beams := Design(pos, *nBeams, *taps, 100, 5000)
 	fmt.Printf("array: %d mics (%s), 36mm radius; %d beams, %d-tap interpolators, longest beam filter %d samples, latency %.2f samples (%.2fms)\n",

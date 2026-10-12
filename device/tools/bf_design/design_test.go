@@ -1,9 +1,13 @@
 package main
 
 import (
+	"fmt"
 	"math"
 	"math/cmplx"
 	"math/rand"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -87,5 +91,36 @@ func TestBeamBeatsOmniAboveTwoKilohertz(t *testing.T) {
 	beam := bandPower(apply(b, tgt), 1500, 4000) / bandPower(apply(b, intf), 1500, 4000)
 	if db(beam/omni) < 6 {
 		t.Errorf("beam gained only %.1fdB over one mic against a 180° interferer", db(beam/omni))
+	}
+}
+
+// The table loader must refuse anything that is not the 8-beam, 4-mic shape,
+// since a different size read with this layout would give plausible nonsense.
+func TestAmazonLoaderChecksTheShape(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name string, n int) string {
+		var b strings.Builder
+		b.WriteString("/* synthetic */\n")
+		for i := 0; i < n; i++ {
+			fmt.Fprintf(&b, "%.12f,\n", float64(i%7)/10)
+		}
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(b.String()), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	if _, err := loadAmazon(write("short.cfg", 100)); err == nil {
+		t.Error("a 100-value table was accepted")
+	}
+	tab, err := loadAmazon(write("ok.cfg", amzBeams*amzMics*amzBands*amzTaps*2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Beam, mic, band, tap are slowest to fastest, then re, im.
+	i := (((3*amzMics+2)*amzBands + 5) * amzTaps * 2)
+	want := complex(float64(i%7)/10, float64((i+1)%7)/10)
+	if got := tab.w(3, 2, 5, 0); got != want {
+		t.Errorf("w(3,2,5,0) = %v, want %v", got, want)
 	}
 }
