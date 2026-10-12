@@ -612,11 +612,6 @@ func (w *wakeBeam) sample(k, i int) float32 {
 type beamSNR struct {
 	hp, lp     biquad
 	fast, slow float64
-	// freeze holds the noise floor where it is: the powers are still tracked,
-	// but nothing new enters the buffer the floor is the minimum of. An
-	// endpointer sets it while a command is being spoken, so that a long
-	// sentence cannot become the floor it is then judged against.
-	freeze bool
 	// ring holds the slow power sampled every fbfNoiseSlotBlocks blocks; its
 	// minimum is the floor once the initial estimate period is over.
 	ring  [fbfNoiseSlots]float64
@@ -680,9 +675,6 @@ func (e *beamSNR) addPower(p float64, n int) float64 {
 	} else {
 		e.fast = fbfPowFast*e.fast + (1-fbfPowFast)*p
 		e.slow = fbfPowSlow*e.slow + (1-fbfPowSlow)*p
-	}
-	if e.freeze {
-		return e.fast / math.Max(e.floor, fbfPowFloor)
 	}
 	if n%fbfNoiseSlotBlocks == 0 {
 		e.ring[e.nRing%fbfNoiseSlots] = e.slow

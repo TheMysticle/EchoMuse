@@ -4,51 +4,61 @@ package beamformer
 //
 // A wake-triggered command ends when the speech-to-text service says the
 // talker has finished, and with a TV on that never comes: the TV is speech to
-// it, so it waits out its own cap (15s), measured on a device 2026-10-12 with
-// the TV running, whether or not the beam and canceller were in the path.
-// Radar's stock firmware does not ask a VAD to tell a talker from a TV. Its
-// front end gives every beam an SNR, speech-band power over a floor that is the
-// MINIMUM of the last few seconds (ara.go's neighbour, fbf.go's beamSNR), and a
-// steady TV, being there all along, is the floor; and what ends the utterance is
-// decided in Amazon's cloud on audio that has already been through that.
+// it, so it waits out its own cap (15s). Measured 2026-10-12 with the TV
+// running, beam and canceller on or off: 15s, 15s and 9s against ~2s in a quiet
+// room. Stock's firmware does not ask a VAD to tell a talker from a TV: its
+// front end cleans the stream and Amazon's cloud decides the end, so there is
+// nothing on the Echo to copy. This is built for the same job from what the
+// device does have.
 //
-// This is the on-device half of that, with the same estimator: a block is
-// speech while its smoothed SNR is well above 1, and a command is over when
-// speech was heard after the wake word and then nothing rose above the floor
-// for a second. While a command is being spoken the floor is held where it was,
-// so the talker cannot raise it.
+// The first version judged speech by power over the MINIMUM of recent power,
+// stock's floor for its canceller. The three real TV recordings showed why that
+// cannot work here: a TV's dialogue swings 5-14dB above its own quiet moments
+// the whole time, so it is "speech" by that measure all the time. What does
+// separate a talker from the TV is level against the TV's PEAKS: in the
+// recordings the command is 7-8dB above the 90th percentile of the TV's level
+// around it. So the reference here is a high percentile of the speech-band power
+// over the seconds BEFORE the wake word, and a block is speech when it is well
+// over that. On the three recordings this ends the command at 2.2s where the
+// controller took 15s, 15s and 9s, with under 1% of the TV counted as speech.
 //
-// It is a heuristic and has the heuristic's failure: a TV whose level rises
-// well above its own floor (a shout, an explosion) looks like a talker for as
-// long as it lasts. It can only ever END a turn early, never hold one open: the
-// controller's own ending is still there behind it.
+// The reference is fixed when the command starts, so a long sentence cannot
+// raise it. It can only ever END a turn early: the controller's own ending is
+// still behind it. A talker no louder than the TV's peaks is not separable.
 
 import (
 	"encoding/binary"
 	"math"
 	"os"
+	"sort"
 	"strconv"
 )
 
 // Tunables, variables so tools can sweep them and a device can be tried with
 // EM_EP_* without a rebuild.
 var (
-	// EPOn and EPOff are the smoothed SNR a block must reach to become speech and
-	// fall under to stop being. Stock's canceller treats an SNR under ~3.4 as
-	// interference only and over ~10 as a talker; a TV that the canceller has
-	// already pulled down leaves a voice well clear of 2.5.
-	EPOn, EPOff = 2.5, 1.8
+	// EPQuantile is the part of the pre-wake history the reference is the
+	// level of: its 97th percentile, so the TV's own loud moments sit under it.
+	EPQuantile = 0.97
+	// EPOn is how far over the reference a block must be to be speech, and
+	// EPOff how far it must fall under to stop being: twice, and 1.4 times.
+	EPOn, EPOff = 2.0, 1.4
 	// EPSpeechBlocks is how much speech counts as the command having started
 	// (8ms blocks): 160ms, over a click or a creak.
 	EPSpeechBlocks = 20
 	// EPSilenceBlocks is how long after the last speech the command is over:
-	// 1.0s. Longer than a breath between words, shorter than HA's own wait.
+	// 1.0s. Longer than a breath between words.
 	EPSilenceBlocks = 125
 	// EPWakeTailBlocks is how long after the wake word's own frame speech is
 	// ignored, so its last syllable is not the command: 250ms.
 	EPWakeTailBlocks = 31
-	// epSmooth is stock's SNR smoothing (ARA_V2 keeps 0.75 old / 0.25 new).
-	epSmooth = 0.75
+	// EPSkipBlocks is how much of the history just before the command is left
+	// out of the reference, besides the blocks since the wake word's frame: the
+	// wake word itself, 2s.
+	EPSkipBlocks = 250
+	// EPMinHistory is how much history makes a reference: 6s. Less than that
+	// and the session is left to the controller.
+	EPMinHistory = 750
 )
 
 func init() {
@@ -62,34 +72,37 @@ func init() {
 			*dst = v
 		}
 	}
+	envF("EM_EP_QUANTILE", &EPQuantile)
 	envF("EM_EP_ON", &EPOn)
 	envF("EM_EP_OFF", &EPOff)
 	envI("EM_EP_SPEECH_BLOCKS", &EPSpeechBlocks)
 	envI("EM_EP_SILENCE_BLOCKS", &EPSilenceBlocks)
 }
 
-const epHist = 512 // blocks of speech flags kept, to look back over a session's backlog
+// epRing is the history kept: 1500 blocks, 12s.
+const epRing = 1500
 
 type Endpointer struct {
-	est   beamSNR
-	n     int       // blocks seen
-	acc   []float32 // the block being filled
-	sm    float64   // smoothed SNR
-	speak bool      // the last block was speech
-	run   int       // consecutive speech blocks
-	quiet int       // consecutive non-speech blocks
-	hist  [epHist]bool
+	hp, lp biquad
+	fast   float64 // speech-band power, smoothed as stock's canceller does
+	n      int     // blocks seen
+	acc    []float32
+	hist   [epRing]float32 // the smoothed power of each of the last epRing blocks
+
+	ref   float64 // the reference level, fixed for a session (0 = none)
+	speak bool
+	run   int
+	quiet int
 
 	inSession bool
-	ignore    int // blocks of wake-word tail still to ignore
+	ignore    int
 	seen      bool
 	ended     bool
-	// Last values, for the log.
-	lastSNR float64
+	last      float64 // the last block's power over the reference, for the log
 }
 
 func NewEndpointer() *Endpointer {
-	return &Endpointer{est: newBeamSNR()}
+	return &Endpointer{hp: butterworth2(fbfBandLoHz, true), lp: butterworth2(fbfBandHiHz, false)}
 }
 
 // Push takes S16LE mono at 16kHz, any length.
@@ -104,34 +117,45 @@ func (e *Endpointer) Push(pcm []byte) {
 }
 
 func (e *Endpointer) block(x []float32) {
+	var p float64
+	for _, v := range x {
+		y := e.lp.run(e.hp.run(float64(v)))
+		p += y * y
+	}
+	p /= float64(len(x))
 	e.n++
-	// The first blocks are the filters filling from nothing.
-	var snr float64
-	if e.n > fbfSettleBlocks {
-		snr = e.est.add(x, e.n-fbfSettleBlocks)
+	if e.n <= fbfSettleBlocks { // the filters filling from nothing
+		return
 	}
-	e.sm = epSmooth*e.sm + (1-epSmooth)*snr
-	e.lastSNR = e.sm
-	switch {
-	case !e.speak && e.sm >= EPOn:
-		e.speak = true
-	case e.speak && e.sm < EPOff:
-		e.speak = false
+	if e.n == fbfSettleBlocks+1 {
+		e.fast = p
 	}
-	e.hist[e.n%epHist] = e.speak
-	e.step(e.speak)
+	e.fast = fbfPowFast*e.fast + (1-fbfPowFast)*p
+	e.hist[e.n%epRing] = float32(e.fast)
+	if !e.inSession {
+		return
+	}
+	e.verdict(e.fast)
 }
 
-// step applies one block's verdict to the session.
-func (e *Endpointer) step(speech bool) {
-	if speech {
+// verdict applies one block's power to the session.
+func (e *Endpointer) verdict(v float64) {
+	r := v / e.ref
+	e.last = r
+	switch {
+	case !e.speak && r >= EPOn:
+		e.speak = true
+	case e.speak && r < EPOff:
+		e.speak = false
+	}
+	if e.speak {
 		e.run++
 		e.quiet = 0
 	} else {
 		e.run = 0
 		e.quiet++
 	}
-	if !e.inSession || e.ended {
+	if e.ended {
 		return
 	}
 	if e.ignore > 0 {
@@ -151,42 +175,49 @@ func (e *Endpointer) step(speech bool) {
 // StartSession is called when a command begins. sinceCrossMs is how long ago
 // the wake word's last frame was: the blocks since then have already gone by,
 // and the talker may have started speaking inside them, so they are looked back
-// over (the first EPWakeTailBlocks of them are the wake word's own tail and are
-// skipped).
+// over (the first EPWakeTailBlocks of them are the wake word's own tail). The
+// reference is the EPQuantile level of the history from before the wake word.
 func (e *Endpointer) StartSession(sinceCrossMs int) {
-	e.inSession, e.seen, e.ended = true, false, false
-	e.run, e.quiet = 0, 0
-	e.est.freeze = true
-	back := min(max(sinceCrossMs*16000/1000/fbfBlock, 0), epHist-1)
+	e.inSession, e.seen, e.ended, e.speak = true, false, false, false
+	e.run, e.quiet, e.ref = 0, 0, 0
+	back := min(max(sinceCrossMs*16000/1000/fbfBlock, 0), epRing-1)
 	e.ignore = max(EPWakeTailBlocks-back, 0)
+
+	// History older than the wake word and the command's first moments.
+	end := e.n - back - EPSkipBlocks // newest block index to use
+	start := max(e.n-epRing+1, fbfSettleBlocks+1)
+	if end-start+1 < EPMinHistory {
+		return // no reference: Warm() is false, nothing is ever ended
+	}
+	vals := make([]float64, 0, end-start+1)
+	for i := start; i <= end; i++ {
+		vals = append(vals, float64(e.hist[i%epRing]))
+	}
+	sort.Float64s(vals)
+	e.ref = math.Max(vals[int(float64(len(vals)-1)*EPQuantile)], fbfPowFloor)
 	for j := EPWakeTailBlocks; j < back; j++ {
-		e.step(e.hist[(e.n-back+1+j+epHist)%epHist])
+		e.verdict(float64(e.hist[(e.n-back+1+j+epRing)%epRing]))
 	}
 }
 
-// EndSession returns to tracking the floor freely.
+// EndSession returns to tracking the room.
 func (e *Endpointer) EndSession() {
-	e.inSession, e.seen, e.ended = false, false, false
-	e.ignore = 0
-	e.est.freeze = false
+	e.inSession, e.seen, e.ended, e.speak = false, false, false, false
+	e.ignore, e.ref = 0, 0
 }
 
-// Warm reports that the floor means something: its initial estimate period is
-// over and the buffer it is the minimum of has filled. Before that it is the
-// room's level a moment ago, which a talker would already be part of, so a
-// session that begins earlier is left to the controller's own ending.
-func (e *Endpointer) Warm() bool {
-	return e.n >= fbfNoiseInitBlocks+fbfSettleBlocks && e.est.nRing >= fbfNoiseSlots
-}
+// Warm reports that the session has a reference: there were seconds of room to
+// take it from. Without one the controller's own ending is left alone.
+func (e *Endpointer) Warm() bool { return e.ref > 0 }
 
 // Ended reports that the command is over: it was heard, and then it stopped.
-func (e *Endpointer) Ended() bool { return e.inSession && e.ended }
+func (e *Endpointer) Ended() bool { return e.inSession && e.ended && e.ref > 0 }
 
 // Heard reports that speech has been heard since the session began.
 func (e *Endpointer) Heard() bool { return e.inSession && e.seen }
 
-// State is for the log: the smoothed SNR, the floor power, whether the last
-// block was speech.
-func (e *Endpointer) State() (snr, floor float64, speech bool) {
-	return e.lastSNR, math.Max(e.est.floor, fbfPowFloor), e.speak
+// State is for the log: the last block's power over the reference, the
+// reference, and whether the last block was speech.
+func (e *Endpointer) State() (ratio, ref float64, speech bool) {
+	return e.last, e.ref, e.speak
 }

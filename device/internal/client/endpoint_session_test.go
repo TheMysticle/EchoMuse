@@ -50,7 +50,7 @@ func driveSession(t *testing.T, on bool) (sends int, firstSendMs int) {
 		}
 		ms += 80
 	}
-	for i := 0; i < 100; i++ { // 8s of TV alone: the floor
+	for i := 0; i < 150; i++ { // 12s of TV alone: the room it is judged against
 		step(900, 0)
 	}
 	step(900, 1) // the session opens

@@ -52,6 +52,8 @@ func main() {
 	flag.Float64Var(&beamformer.SDSectorDeg, "sector", beamformer.SDSectorDeg, "half-width of the look sector the ring leaves alone, degrees")
 	selOn := flag.Bool("sel", false, "drive the real wake path through a living-room scene with a quiet distant talker")
 	selFlags()
+	epClip := flag.String("ep.clip", "", "run the endpointer on a recorded session (comma separated WAV paths); the TV-only part of the recording, repeated to -ep.history seconds, stands in for the room before the wake")
+	epHist := flag.Float64("ep.history", 11, "seconds of the recording's tail used as the room before the wake word")
 	selTonal := flag.Bool("sel.tonal", false, "with -sel: measure in one run, talker and TV as interleaved tone combs (use for the canceller)")
 	colorOn := flag.Bool("color", false, "how much a talker's spectrum is coloured by the beams, by how far off-axis they are")
 	araOn := flag.Bool("ara", false, "measure the interference canceller after the beams (use with -sd)")
@@ -72,6 +74,12 @@ func main() {
 	}
 	pos := micPositions(*mics)
 	beams := newDesignSet(pos, *nBeams, *taps, 100, 5000)
+	if *epClip != "" {
+		for _, p := range strings.Split(*epClip, ",") {
+			epClipReport(p, *epHist)
+		}
+		return
+	}
 	if *selOn && *selTonal {
 		selTonalReport(rand.New(rand.NewSource(*seed)))
 		return

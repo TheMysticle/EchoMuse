@@ -1539,20 +1539,20 @@ func (d *DataClient) endpointSession(on bool, frames int, session uint32, cur *u
 		// A session just opened. The wake word's frame was `frames` ago.
 		*cur, *sent, *tick = session, false, 0
 		d.endpoint.StartSession(frames * 80)
-		snr, floor, _ := d.endpoint.State()
-		log.Printf("[endpoint] session %d: following the talker (warm=%v, floor %.0f, snr %.1f)",
-			session, d.endpoint.Warm(), floor, snr)
+		ratio, ref, _ := d.endpoint.State()
+		log.Printf("[endpoint] session %d: following the talker (reference %.0f, warm=%v, level %.1fx the reference)",
+			session, ref, d.endpoint.Warm(), ratio)
 		return
 	}
 	*tick++
 	if *tick%12 == 0 { // about once a second
-		snr, floor, speech := d.endpoint.State()
-		log.Printf("[endpoint] session %d: snr %.1f floor %.0f speech=%v heard=%v", session, snr, floor, speech, d.endpoint.Heard())
+		ratio, ref, speech := d.endpoint.State()
+		log.Printf("[endpoint] session %d: level %.1fx reference %.0f speech=%v heard=%v", session, ratio, ref, speech, d.endpoint.Heard())
 	}
 	if !*sent && d.endpoint.Ended() && d.endpoint.Warm() {
 		*sent = true
-		snr, floor, _ := d.endpoint.State()
-		log.Printf("[endpoint] session %d: the talker stopped (snr %.1f, floor %.0f); sending end of speech", session, snr, floor)
+		ratio, ref, _ := d.endpoint.State()
+		log.Printf("[endpoint] session %d: the talker stopped (level %.1fx reference %.0f); sending end of speech", session, ratio, ref)
 		send()
 	}
 }
