@@ -53,22 +53,36 @@ func loadMicCal(dir string) (gains [NumMics]float64, note string) {
 	}
 	var raw [NumMics]float64
 	var missing []string
+	// firstProblem is why the first unusable value was unusable, so a set that
+	// is all "missing" says what was wrong with it: an unreadable file and an
+	// unparseable one look identical otherwise, and the second cost a
+	// calibration that read as "not available" on a unit that has it.
+	var firstProblem string
 	for ch := 0; ch < NumMics; ch++ {
 		b, err := os.ReadFile(filepath.Join(dir, fmt.Sprintf("miccal.%d", ch)))
 		if err != nil {
 			missing = append(missing, strconv.Itoa(ch))
+			if firstProblem == "" {
+				firstProblem = err.Error()
+			}
 			continue
 		}
-		v, err := strconv.ParseInt(strings.TrimSpace(string(b)), 0, 64)
+		// idme values are NUL-terminated (pkg/board does the same for the
+		// device type), and TrimSpace leaves a NUL in place.
+		text := strings.TrimRight(string(b), "\x00 \t\r\n")
+		v, err := strconv.ParseInt(text, 0, 64)
 		if err != nil || v == 0 {
 			// The AFE's own rule for a zero: use the default.
 			missing = append(missing, strconv.Itoa(ch))
+			if firstProblem == "" {
+				firstProblem = fmt.Sprintf("mic %d holds %q", ch, string(b))
+			}
 			continue
 		}
 		raw[ch] = float64(v)
 	}
 	if len(missing) == NumMics {
-		return gains, "not available, mics left uncalibrated"
+		return gains, "not available, mics left uncalibrated (" + firstProblem + ")"
 	}
 	var g [NumMics]float64
 	for ch := range g {

@@ -5,6 +5,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -35,6 +36,41 @@ func TestMicCalReadsAUnitsValuesAsQ14Gains(t *testing.T) {
 	}
 	if note == "" {
 		t.Error("no account of what was done")
+	}
+}
+
+// idme hands values back NUL-terminated, which `cat` does not show. The first
+// version trimmed only whitespace, so a unit with all seven values logged "not
+// available" and ran uncalibrated.
+func TestMicCalReadsNULTerminatedValues(t *testing.T) {
+	dir := t.TempDir()
+	for i, v := range radarMicCal {
+		body := []byte(fmt.Sprintf("%d\x00", v))
+		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("miccal.%d", i)), body, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	g, note := loadMicCal(dir)
+	for ch, v := range radarMicCal {
+		if want := float64(v) / 16384; math.Abs(g[ch]-want) > 1e-12 {
+			t.Errorf("mic %d: gain %v, want %v (%s)", ch, g[ch], want, note)
+		}
+	}
+}
+
+// A set that cannot be used must say why, so an unparseable file and an
+// unreadable one are not the same line in the log.
+func TestMicCalSaysWhyItGaveUp(t *testing.T) {
+	_, note := loadMicCal(t.TempDir())
+	if !strings.Contains(note, "no such file") {
+		t.Errorf("missing files: %q", note)
+	}
+	dir := t.TempDir()
+	for i := 0; i < NumMics; i++ {
+		os.WriteFile(filepath.Join(dir, fmt.Sprintf("miccal.%d", i)), []byte("abc\x00"), 0o644)
+	}
+	if _, note = loadMicCal(dir); !strings.Contains(note, `"abc\x00"`) {
+		t.Errorf("unparseable files: %q", note)
 	}
 }
 
