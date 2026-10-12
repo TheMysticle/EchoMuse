@@ -170,9 +170,12 @@ type Beamformer struct {
 	// use, reused across periods: nothing keeps them past the canceller.
 	micBuf [NumMics][]byte
 
-	// fbf is the filter-and-sum wake path (fbf.go); nil while wakeBeam is
-	// off, which is the default.
-	fbf *wakeBeam
+	// fbf is the filter-and-sum wake path (fbf.go): fbfWant is the setting,
+	// fbfPending the design being made in the background and fbf the running
+	// state. All nil/false while wakeBeam is off, which is the default.
+	fbfWant    bool
+	fbfPending chan *wakeBeam
+	fbf        *wakeBeam
 }
 
 // New creates a Beamformer.

@@ -1234,7 +1234,7 @@ func (d *DataClient) streamMic(conn *websocket.Conn, stopCh <-chan struct{}, loc
 			if d.aec.Enabled() {
 				echoRef = d.beam.EchoRef(raw)
 			}
-			// wakeBeam (internal/beamformer/fbf.go) sums all seven microphones
+			// wakeBeam (internal/beamformer/fbf.go) sums four microphones
 			// instead of reading one, so it needs every one of them, cancelled
 			// if the canceller is running. It runs every period so the filter
 			// history stays continuous, and is used only while unlocked.

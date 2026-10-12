@@ -1302,7 +1302,7 @@ func capabilities() []string {
 	// "wake_mic": this firmware reads `wakeMic` and can listen for the wake
 	// word on a perimeter mic when the centre one is dead (#705).
 	// "wake_beam": this firmware reads `wakeBeam` and can listen for the wake
-	// word through a filter-and-sum beam over all seven mics. Experimental.
+	// word through eight superdirective beams over four mics. Experimental.
 	// "wake_word_off": this firmware honours wakeWordEnabled=false (#286),
 	// so a crossing opens no session. Without it the controller declines
 	// HA's "No wake word" for a privately listening Echo, which would

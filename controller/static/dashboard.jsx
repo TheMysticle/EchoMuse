@@ -10106,7 +10106,7 @@ function DeviceConfigForm({ config, onChange, disabled, sections, onScopeChange,
               firmware that would ignore it. */}
           <Toggle label="Wake word beam (experimental)"
             sub={wakeBeamCapable
-              ? 'listens through all seven mics, steered at whoever speaks, instead of one; helps against a TV or music off to one side, mostly above 1.5kHz. Turns are unaffected'
+              ? 'listens through four mics, steered at whoever speaks, instead of one; helps against a TV or music off to one side. Costs a few percent of a core. Turns are unaffected'
               : 'needs newer firmware on this Echo'}
             disabled={!wakeBeamCapable}
             value={config.wakeBeam ?? false}

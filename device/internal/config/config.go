@@ -114,8 +114,8 @@ type Device struct {
 	// hatch for a dead centre mic (#705), not a tuning knob.
 	WakeMic int
 
-	// WakeBeam listens for the wake word through a filter-and-sum beam over
-	// all seven mics instead of one mic (internal/beamformer/fbf.go). Off by
+	// WakeBeam listens for the wake word through one of eight superdirective
+	// beams over four mics instead of one mic (internal/beamformer/fbf.go). Off by
 	// default: it is an experiment, and the single mic is the measured
 	// baseline. Turns are unaffected.
 	WakeBeam bool
