@@ -97,6 +97,16 @@ def test_wake_mic_capability_is_surfaced_to_the_dashboard():
     assert "disabled={!wakeMicCapable}" in jsx
 
 
+def test_wake_beam_capability_is_surfaced_to_the_dashboard():
+    """Older firmware ignores `wakeBeam`, so the control must not be offered
+    there as a switch that does nothing."""
+    assert "wake_beam" in device_capabilities(), "firmware no longer announces wake_beam"
+    assert "wake_beam_capable" in CONTROLLER.read_text()
+    assert "wakeBeamCapable" in API.read_text()
+    jsx = (ROOT / "controller" / "static" / "dashboard.jsx").read_text()
+    assert "disabled={!wakeBeamCapable}" in jsx
+
+
 def test_volume_cue_capability_is_surfaced_to_the_dashboard():
     """Old firmware must not be offered a switch it cannot honour."""
     caps = device_capabilities()

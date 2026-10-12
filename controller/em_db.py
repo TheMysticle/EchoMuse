@@ -290,6 +290,9 @@ DEFAULT_DEVICE_CONFIG = {
     # wakeMic: which mic the wake word listens on. 0 = centre (default),
     # 1-6 = perimeter MK1-MK6. For a dead centre mic only (#705).
     "wakeMic":          0,
+    # wakeBeam: listen for the wake word through a filter-and-sum beam over
+    # all seven mics instead of one. Experimental, so OFF; turns unaffected.
+    "wakeBeam":         False,
     "eqBands":          [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
     "eqLoudness":       False,
     # Radar's own stock FIR curve (em_eq._OverlapSaveFIR), layered under the

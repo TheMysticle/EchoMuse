@@ -1211,6 +1211,7 @@ func (d *DataClient) streamMic(conn *websocket.Conn, stopCh <-chan struct{}, loc
 			if snap.WakeMic != nil {
 				d.beam.SetWakeMic(*snap.WakeMic)
 			}
+			d.beam.SetWakeBeam(snap.WakeBeam != nil && *snap.WakeBeam)
 			mono, angle := d.beam.Process(raw, beamAngle, gainLin)
 			clipped := d.beam.ClippedSamples()
 
@@ -1233,13 +1234,40 @@ func (d *DataClient) streamMic(conn *websocket.Conn, stopCh <-chan struct{}, loc
 			if d.aec.Enabled() {
 				echoRef = d.beam.EchoRef(raw)
 			}
+			// wakeBeam (internal/beamformer/fbf.go) sums all seven microphones
+			// instead of reading one, so it needs every one of them, cancelled
+			// if the canceller is running. It runs every period so the filter
+			// history stays continuous, and is used only while unlocked.
+			wakeBeam := d.beam.WakeBeamOn()
 			if echoRef != nil && d.noteEchoRef(echoRef) {
 				// Every microphone is cancelled, not only the one in use:
 				// the echo path differs per microphone and a turn locks to
 				// a different one each time (#814).
 				sel := d.beam.OutputChannel(beamAngle)
-				mono = d.aec.ProcessMicsWithRef(d.beam.MicChannels(raw, gainLin, sel, mono), sel, echoRef)
+				mics := d.beam.MicChannels(raw, gainLin, sel, mono)
+				var all [][]byte
+				if wakeBeam {
+					all = d.aec.CancelMicsWithRef(mics, echoRef)
+				}
+				if all != nil {
+					// Same cancellation as ProcessMicsWithRef, kept for all
+					// seven: the locked turn reads its own, the beam the lot.
+					mono = all[sel]
+					mics = all
+				} else {
+					mono = d.aec.ProcessMicsWithRef(mics, sel, echoRef)
+				}
+				if wakeBeam {
+					if out := d.beam.WakeBeam(mics); out != nil && d.beam.WakeBeamUsable() {
+						mono = out
+					}
+				}
 			} else {
+				if wakeBeam {
+					if out := d.beam.WakeBeam(d.beam.MicChannels(raw, gainLin, -1, nil)); out != nil && d.beam.WakeBeamUsable() {
+						mono = out
+					}
+				}
 				mono = d.aec.Process(mono)
 			}
 

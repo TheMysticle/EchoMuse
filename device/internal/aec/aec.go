@@ -665,8 +665,23 @@ func (c *Canceller) noteAttLocked(micRMS, outRMS, refRMS float64, useHW bool, mi
 // Anything it cannot handle goes the same way and is logged there, never
 // silently bypassed.
 func (c *Canceller) ProcessMicsWithRef(mics [][]byte, active int, ref []byte) []byte {
+	out, _ := c.processMics(mics, active, ref, false)
+	return out
+}
+
+// CancelMicsWithRef is ProcessMicsWithRef returning every microphone's
+// cancelled audio, for a stage that combines them (the wake beam). all is nil
+// when the hardware path cannot run, and the caller keeps the inputs; a
+// microphone skipped as quiet is returned as it came in, since nothing was
+// playing to remove from it.
+func (c *Canceller) CancelMicsWithRef(mics [][]byte, ref []byte) (all [][]byte) {
+	_, all = c.processMics(mics, 0, ref, true)
+	return all
+}
+
+func (c *Canceller) processMics(mics [][]byte, active int, ref []byte, wantAll bool) ([]byte, [][]byte) {
 	if active < 0 || active >= len(mics) {
-		return nil
+		return nil, nil
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -677,10 +692,20 @@ func (c *Canceller) ProcessMicsWithRef(mics [][]byte, active int, ref []byte) []
 		ok = ok && len(m) == len(mono)
 	}
 	if !ok {
-		return c.processLocked(mono, ref)
+		if wantAll {
+			return nil, nil
+		}
+		return c.processLocked(mono, ref), nil
 	}
 
 	out := make([]byte, len(mono))
+	var all [][]byte
+	if wantAll {
+		all = make([][]byte, NumMics)
+		for m := range all {
+			all[m] = append([]byte(nil), mics[m]...)
+		}
+	}
 	mic := unsafe.Slice((*int16)(unsafe.Pointer(c.micBuf)), FrameSize)
 	far := unsafe.Slice((*int16)(unsafe.Pointer(c.refBuf)), FrameSize)
 	res := unsafe.Slice((*int16)(unsafe.Pointer(c.outBuf)), FrameSize)
@@ -709,13 +734,18 @@ func (c *Canceller) ProcessMicsWithRef(mics [][]byte, active int, ref []byte) []
 				mic[i] = int16(binary.LittleEndian.Uint16(sub[i*2:]))
 			}
 			C.speex_echo_cancellation(c.micStates[m], c.micBuf, c.refBuf, c.outBuf)
+			if wantAll {
+				for i := 0; i < FrameSize; i++ {
+					binary.LittleEndian.PutUint16(all[m][off+i*2:], uint16(res[i]))
+				}
+			}
 		}
 		for i := 0; i < FrameSize; i++ {
 			binary.LittleEndian.PutUint16(out[off+i*2:], uint16(res[i]))
 		}
 		c.noteAttLocked(frameRMS(mic), frameRMS(res), frameRMS(far), true, active)
 	}
-	return out
+	return out, all
 }
 
 func frameRMS(s []int16) float64 {

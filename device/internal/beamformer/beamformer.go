@@ -169,6 +169,10 @@ type Beamformer struct {
 	// micBuf holds the microphones MicChannels extracts beside the one in
 	// use, reused across periods: nothing keeps them past the canceller.
 	micBuf [NumMics][]byte
+
+	// fbf is the filter-and-sum wake path (fbf.go); nil while wakeBeam is
+	// off, which is the default.
+	fbf *wakeBeam
 }
 
 // New creates a Beamformer.

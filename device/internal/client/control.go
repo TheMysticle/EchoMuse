@@ -1301,6 +1301,8 @@ func capabilities() []string {
 	// at the new level, and suppress it while voice or music is audible.
 	// "wake_mic": this firmware reads `wakeMic` and can listen for the wake
 	// word on a perimeter mic when the centre one is dead (#705).
+	// "wake_beam": this firmware reads `wakeBeam` and can listen for the wake
+	// word through a filter-and-sum beam over all seven mics. Experimental.
 	// "wake_word_off": this firmware honours wakeWordEnabled=false (#286),
 	// so a crossing opens no session. Without it the controller declines
 	// HA's "No wake word" for a privately listening Echo, which would
@@ -1328,7 +1330,7 @@ func capabilities() []string {
 	caps := []string{"mic", "speaker", "leds", "led_anim", "buttons",
 		"oww_shadow", "oww_trigger", "button_hold", "audio_mix",
 		"aec_hw_ref", "oww_local_only", "output_chain", "wake_cue", "volume_cue", "remote_volume_arc",
-		"response_level", "wake_mic", "pairing",
+		"response_level", "wake_mic", "wake_beam", "pairing",
 		"wake_word_off", "sendspin", "ble_connect"}
 	if als.Present() {
 		caps = append(caps, "ambient_light")

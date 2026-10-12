@@ -53,6 +53,7 @@ KINDS: dict[str, str] = {
     "responseLevel": STR,
     "beamAngle": FLOAT,
     "wakeMic": INT,
+    "wakeBeam": BOOL,
     "beamformingEnabled": BOOL,
     "agcEnabled": BOOL,
     "aecEnabled": BOOL,

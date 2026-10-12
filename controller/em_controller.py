@@ -1132,6 +1132,11 @@ class Device:
         return "wake_mic" in (self.capabilities or [])
 
     @property
+    def wake_beam_capable(self) -> bool:
+        """Whether firmware can listen for the wake word through a beam."""
+        return "wake_beam" in (self.capabilities or [])
+
+    @property
     def volume_cue_capable(self) -> bool:
         """Whether physical volume changes can play an idle preview tone."""
         return "volume_cue" in (self.capabilities or [])

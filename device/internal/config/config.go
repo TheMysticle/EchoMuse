@@ -114,6 +114,12 @@ type Device struct {
 	// hatch for a dead centre mic (#705), not a tuning knob.
 	WakeMic int
 
+	// WakeBeam listens for the wake word through a filter-and-sum beam over
+	// all seven mics instead of one mic (internal/beamformer/fbf.go). Off by
+	// default: it is an experiment, and the single mic is the measured
+	// baseline. Turns are unaffected.
+	WakeBeam bool
+
 	// AGC toggle — pointer typed so false is expressible over the wire.
 	// Defaults true; applies to bounded lockMic turn streams only (forced
 	// off on the always-on wake stream). RNNoise NS was removed 2026-07-12 —
@@ -241,6 +247,7 @@ func (d *Device) loadDefaults() {
 	d.BeamAngle = envFloat("BEAM_ANGLE", -1)
 	d.BeamformingEnabled = envBool("BEAMFORMING_ENABLED", true)
 	d.WakeMic = clampWakeMic(envInt("WAKE_MIC", 0))
+	d.WakeBeam = envBool("WAKE_BEAM", false)
 	agcEnabled := envBool("AGC_ENABLED", true)
 	d.AgcEnabled = &agcEnabled
 	// true to match em_db.DEFAULT_DEVICE_CONFIG, which now defaults AEC on
@@ -344,6 +351,9 @@ func (d *Device) Apply(msg ConfigMessage) {
 	}
 	if msg.WakeMic != nil {
 		d.WakeMic = clampWakeMic(*msg.WakeMic)
+	}
+	if msg.WakeBeam != nil {
+		d.WakeBeam = *msg.WakeBeam
 	}
 	if msg.AgcEnabled != nil {
 		d.AgcEnabled = msg.AgcEnabled
@@ -499,6 +509,7 @@ func (d *Device) Snapshot() ConfigMessage {
 	defer d.mu.RUnlock()
 	beamAngle := d.BeamAngle
 	wakeMic := d.WakeMic
+	wakeBeam := d.WakeBeam
 	// C4 fix (2026-07-05 review): previously &d.BeamformingEnabled leaked a
 	// pointer into the live mutex-guarded struct — the caller (streamMic,
 	// every period) dereferences it after RUnlock, racing with Apply()
@@ -553,6 +564,7 @@ func (d *Device) Snapshot() ConfigMessage {
 		MicGainDb:           &micGainDb,
 		BeamAngle:           &beamAngle,
 		WakeMic:             &wakeMic,
+		WakeBeam:            &wakeBeam,
 		BeamformingEnabled:  &beamformingEnabled,
 		AgcEnabled:          &agcEnabled,
 		AecEnabled:          &aecEnabled,
@@ -626,6 +638,7 @@ type ConfigMessage struct {
 	BeamformingEnabled  *bool    `json:"beamformingEnabled,omitempty"`
 	HasBeamforming      bool     `json:"hasBeamforming,omitempty"`
 	WakeMic             *int     `json:"wakeMic,omitempty"`
+	WakeBeam            *bool    `json:"wakeBeam,omitempty"`
 	AgcEnabled          *bool    `json:"agcEnabled,omitempty"`
 	AecEnabled          *bool    `json:"aecEnabled,omitempty"`
 	AecDelayMs          *int     `json:"aecDelayMs,omitempty"`
