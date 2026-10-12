@@ -33,6 +33,7 @@ var (
 	selTrans    float64
 	selTV       float64
 	selTVAz     float64
+	selDRR      float64
 	selBursts   int
 	selSeedList string
 )
@@ -45,6 +46,7 @@ func selFlags() {
 	flag.Float64Var(&selTrans, "sel.trans", 600, "transient (keyboard, door) rms while it lasts")
 	flag.Float64Var(&selTV, "sel.tv", 0, "a steady music-like source (a TV) at this rms at a mic; 0 = none")
 	flag.Float64Var(&selTVAz, "sel.tvaz", 200, "the TV's azimuth in degrees")
+	flag.Float64Var(&selDRR, "sel.drr", 99, "talker direct-to-reverberant ratio in dB (99 = a plane wave); below that a diffuse tail from every direction is added, as for a voice from another room")
 	flag.IntVar(&selBursts, "sel.bursts", 8, "talker bursts")
 }
 

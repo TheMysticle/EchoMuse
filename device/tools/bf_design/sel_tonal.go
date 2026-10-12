@@ -108,6 +108,20 @@ func selTonalReport(rng *rand.Rand) {
 		}
 		bursts = append(bursts, burst{start, az})
 		mics := scale(comb(rng, period, talkHz).AtMics(pos, az, 0), selTalker)
+		if selDRR < 90 {
+			// The tail: independent copies from 16 directions, so the same words
+			// reach every beam, as they do from another room. Its power relative to
+			// the direct path is 10^(-DRR/10).
+			g := selTalker * math.Pow(10, -selDRR/20) / 4
+			for d := 0; d < 16; d++ {
+				t := scale(comb(rng, period, talkHz).AtMics(pos, float64(d)*22.5, 0), g)
+				for m := range mics {
+					for i := range mics[m] {
+						mics[m][i] += t[m][i]
+					}
+				}
+			}
+		}
 		for m := range speech {
 			for i := 0; i < burstLen; i++ {
 				t := float64(i) / sampleRate
