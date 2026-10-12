@@ -33,8 +33,10 @@ const (
 	// A value outside this range of unity is a fault in the file, not a
 	// capsule: it is ignored, and so is the rest of the set.
 	micCalMin, micCalMax = 0.5, 2.0
-	// micCheckBlocks is how long the level check listens: 5s of 8ms blocks.
-	micCheckBlocks = 625
+	// micCheckSamples is how long the level check listens: 5s. Counted in
+	// samples because it is fed whole mic batches (160ms), not 8ms blocks;
+	// counting calls made it a 100s check.
+	micCheckSamples = 5 * sampleRate
 )
 
 // micCalDir is where the values are read from. A variable so the tests can
@@ -123,17 +125,16 @@ func formatDB(g []float64) string {
 // the right correction is the one that flattens the levels; it is logged, not
 // acted on, because a TV on one side flattens nothing and must not choose.
 type micCheck struct {
-	sum    [NumMics]float64
-	n      int
-	blocks int
-	done   bool
+	sum  [NumMics]float64
+	n    int
+	done bool
 }
 
 func (c *micCheck) add(ch int, x float32) { c.sum[ch] += float64(x) * float64(x) }
 
 func (c *micCheck) block(samples int) {
 	c.n += samples
-	if c.blocks++; c.blocks == micCheckBlocks {
+	if c.n >= micCheckSamples {
 		c.done = true
 	}
 }

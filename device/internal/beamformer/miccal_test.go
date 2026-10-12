@@ -175,10 +175,15 @@ func TestMicCheckSpreadIsZeroForEqualLevels(t *testing.T) {
 	if c.done {
 		t.Error("done before its blocks were counted")
 	}
-	for i := 0; i < micCheckBlocks; i++ {
-		c.block(128)
+	// Fed what the mic really delivers: 160ms batches of 2560 samples. It
+	// must take 5s of them, not a count of calls.
+	c = micCheck{}
+	calls := 0
+	for !c.done && calls < 1000 {
+		c.block(2560)
+		calls++
 	}
-	if !c.done {
-		t.Error("never finished")
+	if want := 32; calls != want { // 5s / 160ms = 31.25, rounded up
+		t.Errorf("finished after %d batches (%.1fs), want %d (5s)", calls, float64(calls)*0.16, want)
 	}
 }
