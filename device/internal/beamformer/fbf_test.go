@@ -63,6 +63,7 @@ func enableWakeBeam(b *Beamformer) {
 	// Unity, so a level read off the path is the signal's; the gain has its own
 	// test.
 	b.fbf.outGain = 1
+	b.fbf.shapeOn = false // the path as the other tests mean it; the shelf has its own
 }
 
 func samples(b []byte) []float64 {
@@ -835,4 +836,61 @@ func power32(x []float64) float64 {
 		p += v * v
 	}
 	return p / float64(len(x))
+}
+
+// The shelf is flat below its corner and gives its gain well above it, with no
+// level change at DC and none beyond the gain at the top.
+func TestTheHighShelfIsFlatBelowAndRaisedAbove(t *testing.T) {
+	sh := highShelf(fbfShelfHz, fbfShelfDB)
+	gain := func(hz float64) float64 {
+		var s biquad = sh
+		var peak float64
+		for i := 0; i < 16000; i++ {
+			y := s.run(math.Sin(2 * math.Pi * hz * float64(i) / sampleRate))
+			if i > 8000 {
+				peak = math.Max(peak, math.Abs(y))
+			}
+		}
+		return 20 * math.Log10(peak)
+	}
+	for _, c := range []struct{ hz, want, tol float64 }{{100, 0, 0.3}, {400, 0, 0.5}, {1200, fbfShelfDB / 2, 0.5}, {4000, fbfShelfDB, 0.5}, {7000, fbfShelfDB, 0.5}} {
+		if g := gain(c.hz); math.Abs(g-c.want) > c.tol {
+			t.Errorf("%.0fHz: %.2fdB, want %.1f", c.hz, g, c.want)
+		}
+	}
+}
+
+// The low-cut takes the rumble out of the wake path's output and leaves the
+// voice band alone.
+func TestTheLowCutRemovesRumbleAndKeepsTheVoice(t *testing.T) {
+	level := func(hz float64) float64 {
+		// A path of its own per tone: after the 3s warm-up the selection would
+		// leave the centre mic.
+		b := New()
+		enableWakeBeam(b)
+		b.fbf.shapeOn = true
+		b.fbf.cur = fbfNeutral // the centre mic alone, so only the shaping acts
+		var out []float64
+		for k := 0; k < 8; k++ {
+			x := zeros(NumMics, 2560)
+			for ch := range x {
+				for i := range x[ch] {
+					x[ch][i] = 2000 * math.Sin(2*math.Pi*hz*float64(k*2560+i)/sampleRate)
+				}
+			}
+			out = samples(b.WakeBeam(s16(x)))
+		}
+		var p float64
+		for _, v := range out[1280:] {
+			p += v * v
+		}
+		return 10 * math.Log10(p/float64(len(out)-1280)+1e-9)
+	}
+	ref := level(1000)
+	if d := level(60) - ref; d > -15 {
+		t.Errorf("60Hz is only %.1fdB under 1kHz after the cut, want 15dB or more", d)
+	}
+	if d := level(400) - ref; math.Abs(d) > 3 {
+		t.Errorf("400Hz moved %.1fdB against 1kHz, want within 3dB", d)
+	}
 }

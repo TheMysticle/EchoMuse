@@ -45,6 +45,7 @@ func araFlags() {
 	flagFloat(&beamformer.ARALeak, "ara.leak", "ARA weight leakage per adapting frame")
 	flagFloat(&beamformer.ARAMinGain, "ara.floor", "ARA per-bin suppression floor (amplitude)")
 	flag.IntVar(&beamformer.GroupMode, "grp.mode", beamformer.GroupMean, "how the wake path picks and mixes beams: 0 mean/margin, 1 stock's decoded vote and share weights")
+	flag.IntVar(&beamformer.ARAKMax, "ara.kmax", beamformer.ARAKMax, "top 62.5Hz bin the canceller works on (96 = 6kHz, 40 = 2.5kHz)")
 	flag.IntVar(&beamformer.ARAGate, "ara.gate", beamformer.ARAGateOurs, "what lets ARA learn: 0 ours, 1 stock's SNR gate, 2 both")
 }
 

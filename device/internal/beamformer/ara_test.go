@@ -179,6 +179,10 @@ func scene(rng *rand.Rand, n int, talkFrom, talkTo int, interf, talk, leak float
 // The point of the stage: learn the interferer from the references and take it
 // out of the target beam, without touching what is not interference.
 func TestARACancelsADirectionalInterferer(t *testing.T) {
+	// The whole band, not only the part of it the shipped default cancels: this
+	// is the stage's own ability to learn an interferer.
+	defer func(k int) { ARAKMax = k }(ARAKMax)
+	ARAKMax = 96
 	rng := rand.New(rand.NewSource(2))
 	const n = 16000 * 12
 	in, _ := scene(rng, n, 0, 0, 2000, 0, 0)
@@ -397,5 +401,60 @@ func TestPlaybackChangesResetTheCancellerOnlyInStockMode(t *testing.T) {
 	b.SetPlaying(true)
 	if b.fbf.ara.trained[0] != 0 {
 		t.Error("the speaker starting did not reset the canceller in stock mode")
+	}
+}
+
+// Above the top bin the canceller works on the beam is not touched. A tone at
+// 3.5kHz heard louder by both references than by the target is exactly what the
+// canceller would take out if it reached that far, and with the whole band on
+// it does; at the shipped default (2.5kHz) it must come through. Without this
+// the talker's consonants go to filters nobody is supervising.
+func TestAboveTheCancelledBandTheBeamIsUntouched(t *testing.T) {
+	const n = 16000 * 10
+	scene := func() [][]float32 {
+		in := empty(n, 8)
+		rng := rand.New(rand.NewSource(5))
+		for i := 0; i < n; i++ {
+			a := float64(i) / 16000
+			lo, hi := math.Sin(2*math.Pi*1000*a), math.Sin(2*math.Pi*3500*a)
+			noise := float32(rng.NormFloat64() * 5)
+			in[0][i] = float32(500*lo+500*hi) + noise
+			for _, r := range []int{3, 5} {
+				in[r][i] = float32(1500*lo+1500*hi) + noise
+			}
+		}
+		return in
+	}
+	atTone := func(x []float32, hz float64) float64 {
+		var re, im float64
+		for i, v := range x {
+			a := 2 * math.Pi * hz * float64(i) / 16000
+			re += float64(v) * math.Cos(a)
+			im += float64(v) * math.Sin(a)
+		}
+		return math.Hypot(re, im) / float64(len(x))
+	}
+	run := func(kmax int) (cut1k, cut35k float64) {
+		defer func(k int) { ARAKMax = k }(ARAKMax)
+		ARAKMax = kmax
+		in := scene()
+		a := NewARA(8)
+		a.SetEnabled(true)
+		out := araRun(a, in, 2560)
+		lo := 16000 * 7
+		return 20 * math.Log10(atTone(in[0][lo:], 1000)/atTone(out[0][lo:], 1000)),
+			20 * math.Log10(atTone(in[0][lo:], 3500)/atTone(out[0][lo:], 3500))
+	}
+	wideLo, wideHi := run(96)
+	narrowLo, narrowHi := run(40)
+	t.Logf("whole band: 1kHz cut %.1fdB, 3.5kHz cut %.1fdB; to 2.5kHz: 1kHz cut %.1fdB, 3.5kHz cut %.1fdB", wideLo, wideHi, narrowLo, narrowHi)
+	if wideHi < 6 {
+		t.Fatalf("the scene does not make the canceller reach 3.5kHz with the whole band on (cut %.1fdB): the test would pass for nothing", wideHi)
+	}
+	if narrowLo < 6 {
+		t.Errorf("1kHz tone cut only %.1fdB inside the band", narrowLo)
+	}
+	if math.Abs(narrowHi) > 0.5 {
+		t.Errorf("3.5kHz tone changed by %.1fdB above the cancelled band, want untouched", narrowHi)
 	}
 }

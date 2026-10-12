@@ -109,6 +109,25 @@ const (
 	fbfShareMin          = 1e-6
 	fbfMergeSmooth       = 0.75
 
+	// fbfShelfDB and fbfShelfHz are a high shelf on what the wake path outputs.
+	// The beams give an off-axis or reverberant talker more of the body of the
+	// voice than of its upper range (tools/bf_design -sel -sel.tonal, band table:
+	// 0.4-0.8kHz +4.9dB against 2.5-3.6kHz +1.9dB over the centre mic; in the
+	// hood recordings the 1.6-3.2kHz band sat 10.5dB under the 200-400Hz band
+	// against 7.9dB for the single mic), which a listener hears as muffled and a
+	// recogniser mishears ("floor lamp" as "florida"). Stock does not do this: its
+	// output goes to a recogniser trained on it. This puts the tilt back.
+	fbfShelfDB = 3.0
+	fbfShelfHz = 1200.0
+	// fbfLowCutHz is a high-pass on the same output: 150Hz, second order. The
+	// recordings of a room with a hood or a TV are mostly rumble under 400Hz
+	// (the 60-200Hz band sat within 5dB of the speech in the hood clips, and the
+	// beams lift it further), which muddies speech for a recogniser and carries
+	// none of what it needs. openWakeWord does not mind either way: its peak
+	// score on synthetic "alexa" stayed 0.99-1.00 at 4dB SNR against hum with
+	// the cut at 80, 150 and 200Hz.
+	fbfLowCutHz = 150.0
+
 	// fbfOutGainDB is stock's "ASR Output Gain": a group average gives some of
 	// the talker back (the neighbours' beams see him off axis), and this puts it
 	// back. Applied to every output of the wake path so the level never steps
@@ -319,6 +338,10 @@ type wakeBeam struct {
 	wts     [fbfGroupSize]float32
 	// group is the selection rule in use (GroupMean or GroupStock).
 	group int
+	// shelf and lowcut shape the output (fbfShelfDB, fbfLowCutHz); shapeOn
+	// lets a test see the path without them.
+	shelf, lowcut biquad
+	shapeOn       bool
 
 	cur      int // output in use: fbfNeutral, or a group (0-7, see groupBeams)
 	sel      int // the output the last emitted block used, to fade from
@@ -372,7 +395,7 @@ func fbfDesign() *SDWeights {
 
 func newWakeBeam() *wakeBeam {
 	w := &wakeBeam{sd: fbfDesign(), cur: fbfNeutral, sel: fbfNeutral,
-		group: GroupMode, outGain: float32(math.Pow(10, fbfOutGainDB/20)), wts: [fbfGroupSize]float32{1.0 / 3, 1.0 / 3, 1.0 / 3}}
+		group: GroupMode, shelf: highShelf(fbfShelfHz, fbfShelfDB), lowcut: butterworth2(fbfLowCutHz, true), shapeOn: true, outGain: float32(math.Pow(10, fbfOutGainDB/20)), wts: [fbfGroupSize]float32{1.0 / 3, 1.0 / 3, 1.0 / 3}}
 	// The beams are formed in the canceller's spectral domain, so every path
 	// through it has the same delay: the stage's own, which is there whether or
 	// not it is cancelling. The neutral output (the centre mic) is delayed to
@@ -534,6 +557,9 @@ func (w *wakeBeam) process(mics [][]byte, gain float64, mode int) (out []byte, c
 				f := float32(i-s+1) / fbfFade
 				v = v*f + w.sample(prevSel, i)*(1-f)
 			}
+			if w.shapeOn {
+				v = float32(w.lowcut.run(w.shelf.run(float64(v))))
+			}
 			// 80Hz high-pass, always running, heard only in a turn.
 			y := fbfHP[0]*v + w.hpz1
 			w.hpz1 = fbfHP[1]*v - fbfHP[3]*y + w.hpz2
@@ -645,6 +671,22 @@ func butterworth2(hz float64, high bool) biquad {
 		b0, b1, b2 = (1-c)/2, 1-c, (1-c)/2
 	}
 	return biquad{c: [5]float64{b0 / a0, b1 / a0, b2 / a0, -2 * c / a0, (1 - alpha) / a0}}
+}
+
+// highShelf is an RBJ high-shelf biquad: unity below hz, gainDB above it.
+func highShelf(hz, gainDB float64) biquad {
+	A := math.Pow(10, gainDB/40)
+	w0 := 2 * math.Pi * hz / sampleRate
+	cs, sn := math.Cos(w0), math.Sin(w0)
+	alpha := sn / 2 * math.Sqrt2 // shelf slope 1
+	sq := 2 * math.Sqrt(A) * alpha
+	b0 := A * ((A + 1) + (A-1)*cs + sq)
+	b1 := -2 * A * ((A - 1) + (A+1)*cs)
+	b2 := A * ((A + 1) + (A-1)*cs - sq)
+	a0 := (A + 1) - (A-1)*cs + sq
+	a1 := 2 * ((A - 1) - (A+1)*cs)
+	a2 := (A + 1) - (A-1)*cs - sq
+	return biquad{c: [5]float64{b0 / a0, b1 / a0, b2 / a0, a1 / a0, a2 / a0}}
 }
 
 func newBeamSNR() beamSNR { return newBandSNR(fbfBandLoHz, fbfBandHiHz) }

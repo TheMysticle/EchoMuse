@@ -155,6 +155,45 @@ func selTonalReport(rng *rand.Rand) {
 		}
 		rs = append(rs, r)
 	}
+	// Where in frequency each path puts the talker, against the centre mic: the
+	// tilt a listener hears as muddy and a recogniser mishears as the wrong word.
+	// The talker comb is split into four bands of tones.
+	bandEdges := []float64{437, 800, 1500, 2500, 3600}
+	bandName := []string{"0.4-0.8k", "0.8-1.5k", "1.5-2.5k", "2.5-3.6k"}
+	bandLevel := func(out []float64, b int) float64 {
+		var hz []float64
+		for _, f := range talkHz {
+			if f >= bandEdges[b] && f < bandEdges[b+1] {
+				hz = append(hz, f)
+			}
+		}
+		var sum float64
+		for _, bu := range bursts {
+			sum += db(combPower(out, bu.start+4000, bu.start+burstLen, hz, 7))
+		}
+		return sum / float64(len(bursts))
+	}
+	{
+		fmt.Printf("\ntalker level by band against the centre mic (dB), and the tilt (top band minus bottom band):\n%-34s", "")
+		for _, n := range bandName {
+			fmt.Printf(" %9s", n)
+		}
+		fmt.Printf(" %9s\n", "tilt")
+		var ref [4]float64
+		for i, p := range paths {
+			out := p.run()
+			fmt.Printf("%-34s", p.name)
+			var lv [4]float64
+			for b := range lv {
+				lv[b] = bandLevel(out, b)
+				if i == 0 {
+					ref[b] = lv[b]
+				}
+				fmt.Printf(" %+8.1f ", lv[b]-ref[b])
+			}
+			fmt.Printf(" %+8.1f\n", (lv[3]-ref[3])-(lv[0]-ref[0]))
+		}
+	}
 	mean := func(v []float64) float64 {
 		var s float64
 		for _, x := range v {

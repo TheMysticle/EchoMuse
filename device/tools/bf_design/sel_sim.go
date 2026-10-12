@@ -60,6 +60,8 @@ func runWakePath(sig [][]float64, ara bool, pins []int) ([]float64, []int) {
 	b := beamformer.New()
 	b.SetWakeBeam(true)
 	b.SetWakeBeamAra(ara)
+	// -grp.mode / -ara.gate choose stock's rules for the whole run.
+	b.SetWakeBeamStock(beamformer.GroupMode == beamformer.GroupStock || beamformer.ARAGate == beamformer.ARAGateStock)
 	const batch = 128 // one selection block, so a replay is exact
 	n := len(sig[0])
 	s16 := func(x []float64) []byte {

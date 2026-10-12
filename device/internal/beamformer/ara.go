@@ -56,10 +56,6 @@ const (
 
 	// The adaptation band, in bins of 62.5Hz: 375-2500Hz, stock's 400-2500.
 	araBandLo, araBandHi = 6, 40
-
-	// araKMax is the top bin cancelled, 6kHz: above the speech the wake word
-	// scores, where the beams are close to a plain sum, and 25% of the cost.
-	araKMax = 96
 )
 
 // Tunables, variables so tools/bf_design can sweep them.
@@ -92,6 +88,16 @@ var (
 	// beam is over the half-way point nothing learns. ARAGateBoth needs both to
 	// agree. Default is ours until the other has been measured against it.
 	ARAGate = ARAGateOurs
+	// ARAKMax is the top bin the canceller works on (62.5Hz bins; 40 = 2.5kHz,
+	// where stock's error band ends); above it the beam passes through
+	// untouched. It was 96 (6kHz), with learning judged only
+	// on 375-2500Hz, so the bins above the band that was watched were cancelled
+	// by filters nobody was supervising: with no interferer at all it took 4.7dB
+	// off the talker's 2.5-3.6kHz and left the voice dull (tools/bf_design -sel
+	// -sel.tonal, band table; at 40 the tilt is -1.1dB, at 96 -7.3dB, for 2.4dB
+	// of SNR gain against a TV). The consonants a recogniser needs are up there
+	// and a TV or fan is mostly not.
+	ARAKMax = 40
 	// ARAMinGain limits the suppression per bin: the output is never below
 	// this fraction of the target beam's own magnitude (0.1 is -20dB).
 	ARAMinGain = 0.1
@@ -551,7 +557,7 @@ func (a *ARA) cancel(b int) {
 	gmin2 := gmin * gmin
 
 	var pIn, pOut float64
-	for k := 1; k <= araKMax; k++ {
+	for k := 1; k <= ARAKMax; k++ {
 		var pre, pim float32
 		var norm float32 = 1 // a floor, so silence cannot divide by zero
 		for j, rb := range refs {
