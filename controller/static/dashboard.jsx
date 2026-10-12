@@ -10098,10 +10098,12 @@ function DeviceConfigForm({ config, onChange, disabled, sections, onScopeChange,
           {/* An escape hatch for a dead centre mic (#705). Disabled with the
               reason on firmware that ignores the key. */}
           <Select label="Wake word microphone"
-            sub={wakeMicCapable
-              ? 'Centre unless that mic has failed; MK1 to MK6 are the ones around the edge'
-              : 'needs newer firmware on this Echo'}
-            disabled={!wakeMicCapable}
+            sub={!wakeMicCapable
+              ? 'needs newer firmware on this Echo'
+              : config.wakeBeam
+                ? 'not used while the wake word beam is on: it listens through four mics, as the original firmware does'
+                : 'Centre unless that mic has failed; MK1 to MK6 are the ones around the edge'}
+            disabled={!wakeMicCapable || !!config.wakeBeam}
             value={config.wakeMic ?? 0}
             options={[
               { value: 0, label: 'Centre' },
