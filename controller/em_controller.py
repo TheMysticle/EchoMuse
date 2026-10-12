@@ -112,6 +112,7 @@ import em_oww_models
 import em_player
 import em_volume
 import em_speechgate
+import em_ringlight
 import em_timers
 import em_loglevel
 
@@ -1707,6 +1708,68 @@ async def leds_off(device: Device):
         await device.send_led_anim({"pattern": "off"})
     else:
         await device.set_leds(_make_leds(0, 0, 0))
+    # "Off" is what every turn and every timer leaves behind, and the ring
+    # light is the layer that belongs underneath them: put it back.
+    await paint_ring_light(device)
+
+
+# ─── The ring as a Home Assistant light (em_ringlight) ────────────────────────
+#
+# HA's light entity for the ring is a BACKGROUND layer. It paints only while
+# nothing else owns the ring, and it is refreshed on a short timer because the
+# device clears an animation after its ttlSec (the dead-man that keeps a dead
+# controller from leaving the ring lit). Anything that clears the ring ends in
+# leds_off, which repaints it at once; the timer is the backstop for the rest.
+
+_ring_light_tasks: "dict[str, asyncio.Task]" = {}
+
+
+def _ring_idle(device: Device) -> bool:
+    """Whether the ring is free for the light: no turn, no reply, no timer."""
+    return not (device.listening or device.thinking or device.speaking
+                or device.timer_alarm_ringing)
+
+
+async def paint_ring_light(device: Device) -> None:
+    """Paint the ring light if it is on and the ring is idle. Never raises."""
+    try:
+        if not device.led_anim_capable or not _ring_idle(device):
+            return
+        anim = em_ringlight.to_anim(esphome.get_ring_light(device.device_id))
+        if anim is not None:
+            await device.send_led_anim(anim)
+    except Exception as e:  # a ring colour must never break a turn
+        log.debug(f"[{device.device_id}] ring light paint failed: {e}")
+
+
+async def _ring_light_loop(device: Device) -> None:
+    try:
+        while True:
+            await asyncio.sleep(em_ringlight.REFRESH_S)
+            await paint_ring_light(device)
+    except asyncio.CancelledError:
+        pass
+
+
+def stop_ring_light(device: Device) -> None:
+    """Stop refreshing; the ring itself clears on the device's own TTL."""
+    t = _ring_light_tasks.pop(device.device_id, None)
+    if t is not None:
+        t.cancel()
+
+
+async def apply_ring_light(device: Device, state: "em_ringlight.RingLight") -> None:
+    """HA changed the light: start or stop the refresher and paint now."""
+    if em_ringlight.to_anim(state) is None:
+        stop_ring_light(device)
+        # Dark. Clear only a ring the light was painting: an off command in
+        # the middle of a turn must not wipe the listening ring.
+        if device.led_anim_capable and _ring_idle(device):
+            await device.send_led_anim({"pattern": "off"})
+        return
+    if device.device_id not in _ring_light_tasks:
+        _ring_light_tasks[device.device_id] = em_tasks.spawn(_ring_light_loop(device))
+    await paint_ring_light(device)
 
 
 # Turn outcomes that get a distinguishing ring cue at turn end. Everything
@@ -4876,6 +4939,8 @@ async def handle_control(ws: WebSocketServerProtocol, secure: bool = False):
                     "state":     {"wake_word_enabled": t.enabled},
                 })
             em_tasks.spawn(_follow())
+        def _set_ring_light(state, _d=_device_ref) -> None:
+            em_tasks.spawn(apply_ring_light(_d, state))
         # Capabilities before the servers come up: they decide which HA
         # entities are advertised, and advertising is a one-shot at
         # ListEntities time.
@@ -4891,7 +4956,11 @@ async def handle_control(ws: WebSocketServerProtocol, secure: bool = False):
             board_id=device.board_id,
             set_wake_word=_set_wake_word,
             wake_word_enabled=device.wake_word_enabled,
+            set_ring_light=_set_ring_light,
         )
+        # HA's last choice for the ring, from before this connection.
+        if esphome.get_ring_light(device_id).on:
+            await apply_ring_light(device, esphome.get_ring_light(device_id))
         # A device boots at its stored startupVolume, which an output mute
         # never overwrites — so a mute from before this connection has to be
         # sent again, or HA shows muted over audible music.
@@ -5598,6 +5667,7 @@ async def _release_device_services(device) -> None:
             f"{CONTROL_RECONNECT_GRACE_S:.0f}s — releasing services"
         )
         await api.notify_device_disconnected(device.device_id)
+        stop_ring_light(device)
         await esphome.device_disconnected(device.device_id)
         await em_ble_proxy.device_disconnected(device.device_id)
         em_player.device_gone(device.device_id)

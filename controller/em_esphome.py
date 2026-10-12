@@ -96,6 +96,7 @@ import em_timers
 import em_turnclock
 import em_volume
 import em_wakeword
+import em_ringlight
 import em_output_mute
 
 # ── VAD sentinels ──────────────────────────────────────────────────────────────
@@ -258,6 +259,7 @@ MEDIA_PLAYER_KEY = 1
 EVENT_KEY        = 2   # action-button hold, as an HA event entity
 AMBIENT_LUX_KEY  = 3   # TSL2540 ambient light, as an HA sensor
 MIC_MUTED_KEY    = 4   # the mic mute button, as a read-only binary sensor (#438)
+RING_LIGHT_KEY   = 5   # the LED ring as a light (em_ringlight); append-only like the rest
 
 # Press types the event entity advertises. double/triple were parked because
 # detecting them means delaying the single press by the multi-tap window to
@@ -541,6 +543,12 @@ class EchoMuseSatellite(SatelliteServerProtocol):
     def _mic_capable(self) -> bool:
         return self._device_has("mic")
 
+    @property
+    def _ring_light_capable(self) -> bool:
+        # The ring renders from `led_anim` specs, so that is what a light
+        # needs; a device on streamed frames cannot hold a colour or an effect.
+        return self._device_has("led_anim")
+
     def _voice_assistant_flags(self) -> int:
         """
         Feature flags for DeviceInfoResponse, gated on what the device has.
@@ -680,6 +688,17 @@ class EchoMuseSatellite(SatelliteServerProtocol):
                     name="Microphone Muted",
                     icon="mdi:microphone-off",
                 )
+            # The LED ring as a light. Only for firmware that animates it
+            # locally; an entity that cannot hold its state is worse than none.
+            if self._ring_light_capable:
+                yield api_pb2.ListEntitiesLightResponse(
+                    object_id="ring",
+                    key=RING_LIGHT_KEY,
+                    name="Ring",
+                    icon="mdi:led-strip-variant",
+                    supported_color_modes=[api_pb2.COLOR_MODE_RGB],
+                    effects=em_ringlight.EFFECT_NAMES,
+                )
             yield api_pb2.ListEntitiesDoneResponse()
             return
 
@@ -690,6 +709,21 @@ class EchoMuseSatellite(SatelliteServerProtocol):
             # Otherwise HA shows "unknown" until the button is next pressed.
             if self._mic_capable:
                 yield self._mic_muted_msg()
+            if self._ring_light_capable:
+                yield self._ring_light_msg()
+            return
+
+        if isinstance(msg, api_pb2.LightCommandRequest):
+            srv = self._owning_server
+            if srv is None or msg.key != RING_LIGHT_KEY or not self._ring_light_capable:
+                return
+            srv.ring_light = em_ringlight.apply_command(srv.ring_light, msg)
+            log.debug(f"[{self._log_name}] ring light command → {srv.ring_light}")
+            # HA waits for the state to confirm a command; send it before the
+            # ring is touched so a slow device cannot leave the entity stale.
+            yield self._ring_light_msg()
+            if srv._set_ring_light is not None:
+                srv._set_ring_light(srv.ring_light)
             return
 
         if isinstance(msg, api_pb2.SubscribeVoiceAssistantRequest):
@@ -1168,6 +1202,19 @@ class EchoMuseSatellite(SatelliteServerProtocol):
         return api_pb2.BinarySensorStateResponse(
             key=MIC_MUTED_KEY,
             state=bool(srv is not None and srv.mic_muted),
+        )
+
+    def _ring_light_msg(self) -> api_pb2.LightStateResponse:
+        srv = self._owning_server
+        st = srv.ring_light if srv is not None else em_ringlight.RingLight()
+        return api_pb2.LightStateResponse(
+            key=RING_LIGHT_KEY,
+            state=st.on,
+            brightness=st.brightness,
+            color_mode=api_pb2.COLOR_MODE_RGB,
+            color_brightness=st.color_brightness,
+            red=st.red, green=st.green, blue=st.blue,
+            effect=st.effect,
         )
 
     def _apply_wake_word(self, on: bool) -> None:
@@ -2451,6 +2498,12 @@ class DeviceESPhomeServer:
         # Injected by device_connected(); applies HA's wake word choice
         # synchronously. None when no device is connected.
         self._set_wake_word = None
+        # The ring as a light (em_ringlight). On the server so it outlives a
+        # reconnect, like the mute and the wake word picker: HA keeps showing
+        # what it last set, and the controller repaints it when the device
+        # comes back. `_set_ring_light` is injected by device_connected().
+        self.ring_light = em_ringlight.RingLight()
+        self._set_ring_light = None
         # Injected by device_connected() — async callable(pcm_bytes) for
         # standalone announce playback (setup wizard, push TTS) when no
         # voice turn is active.
@@ -3233,6 +3286,7 @@ async def device_connected(
     board_id=None,
     set_wake_word=None,
     wake_word_enabled: bool = True,
+    set_ring_light=None,
 ) -> None:
     """
     Called by em_controller.handle_control() when an Echo Dot connects.
@@ -3265,6 +3319,9 @@ async def device_connected(
 
     wake_word_enabled: HA's stored picker choice, set before the port comes
     up so HA's first read is already correct.
+
+    set_ring_light: callable(state: em_ringlight.RingLight) — paints the ring
+    for HA's light entity; the state also stays on the server across reconnects.
     """
     server = _servers.get(device_id)
     if server is None:
@@ -3286,6 +3343,7 @@ async def device_connected(
     server._start_conversation = start_conversation
     server.board_id = board_id
     server._set_wake_word = set_wake_word
+    server._set_ring_light = set_ring_light
     server.wake_word_enabled = bool(wake_word_enabled)
     if server._server is not None:
         log.debug(f"[esphome.{device_id[-8:]}] device_connected: port {server.port} already listening")
@@ -3317,6 +3375,7 @@ async def device_disconnected(device_id: str) -> None:
     server._stop_alarm = None
     server._start_conversation = None
     server._set_wake_word = None
+    server._set_ring_light = None
     await server.stop()
     log.info(f"[esphome.{device_id[-8:]}] ESPHome port {server.port} down (device disconnected)")
 
@@ -3444,6 +3503,12 @@ def update_ambient_lux(device_id: str, lux) -> None:
         state=float(lux) if lux is not None else 0.0,
         missing_state=lux is None,
     ))
+
+
+def get_ring_light(device_id: str) -> "em_ringlight.RingLight":
+    """The ring light as HA last set it; off with no server."""
+    server = _servers.get(device_id)
+    return server.ring_light if server is not None else em_ringlight.RingLight()
 
 
 def get_mic_muted_and_wake_word(device_id: str) -> tuple[bool, bool]:
