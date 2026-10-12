@@ -119,3 +119,34 @@ func TestWakeBeamStockSwitchesBothRules(t *testing.T) {
 		t.Error("turning it off did not restore the first rule")
 	}
 }
+
+// Stock's ASR path has no centre mic, so with stock's rules the path is
+// beamformed from the first block: no warm-up on the centre mic, and a turn on
+// the single mic does not park it there either.
+func TestStockMergerNeverUsesTheCentreMic(t *testing.T) {
+	b := New()
+	enableWakeBeam(b)
+	b.SetWakeBeamStock(true)
+	rng := rand.New(rand.NewSource(10))
+	at := 0
+	for k := 0; k < 3*16000/2560; k++ { // inside the old 3s warm-up
+		x := zeros(NumMics, 2560)
+		for ch := range x {
+			for i := range x[ch] {
+				x[ch][i] = rng.NormFloat64() * 5
+			}
+		}
+		b.WakeBeam(s16(x))
+		at += 2560
+		if b.fbf.cur == fbfNeutral {
+			t.Fatalf("on the centre mic %dms in", at*1000/16000)
+		}
+	}
+	before := b.fbf.cur
+	// A bypassed block (a turn on the single mic) leaves the selection alone.
+	x := zeros(NumMics, 2560)
+	b.fbf.process(s16(x), 1, modeBypass)
+	if b.fbf.cur != before {
+		t.Errorf("a bypassed turn moved the selection from %d to %d", before, b.fbf.cur)
+	}
+}

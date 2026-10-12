@@ -546,7 +546,11 @@ func (w *wakeBeam) process(mics [][]byte, gain float64, mode int) (out []byte, c
 		e := min(s+fbfBlock, n)
 		switch mode {
 		case modeBypass:
-			w.cur, w.holdLeft = fbfNeutral, 0
+			// A turn on the single mic does not use this output. Stock's path
+			// has no centre mic to park on, so the selection stays where it was.
+			if w.group != GroupStock {
+				w.cur, w.holdLeft = fbfNeutral, 0
+			}
 		default:
 			// Listening, and a turn heard through the beam: stock does nothing
 			// different once a wake word is reported (one beamformed ASR stream
@@ -805,8 +809,15 @@ func (w *wakeBeam) stockStep(s, e int) {
 			w.wbFloor[b] = fbfMergeSmooth*w.wbFloor[b] + (1-fbfMergeSmooth)*fl
 		}
 	}
-	if w.blocks < fbfWarmBlocks {
-		return
+	// Stock has no neutral output: its merger starts on the first group with
+	// the estimates at their initial values (every beam alike, so group 0 and
+	// equal shares) and votes from the first frame, so the path is beamformed
+	// from the start and the centre mic, which stock's ASR path never reads, is
+	// not used for a warm-up.
+	if w.cur == fbfNeutral {
+		w.cur = 0
+		w.votes = [fbfBeams]int{}
+		log.Printf("[beam] starting on %s, as stock's merger does", w.name(w.cur))
 	}
 	// bias: the loudest floor over the beam's own.
 	maxFloor := 0.0
