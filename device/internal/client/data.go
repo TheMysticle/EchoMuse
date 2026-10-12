@@ -1232,6 +1232,7 @@ func (d *DataClient) streamMic(conn *websocket.Conn, stopCh <-chan struct{}, loc
 			d.beam.SetWakeBeam(snap.WakeBeam != nil && *snap.WakeBeam)
 			d.beam.SetWakeBeamAra(snap.WakeBeamAra != nil && *snap.WakeBeamAra)
 			d.beam.SetWakeBeamTurns(snap.WakeBeamTurns != nil && *snap.WakeBeamTurns)
+			d.beam.SetWakeBeamStock(snap.WakeBeamStock != nil && *snap.WakeBeamStock)
 			epOn := snap.WakeEndpoint != nil && *snap.WakeEndpoint
 			mono, angle := d.beam.Process(raw, beamAngle, gainLin)
 			clipped := d.beam.ClippedSamples()

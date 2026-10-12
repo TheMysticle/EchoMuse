@@ -133,6 +133,13 @@ type Device struct {
 	// hears, so it is a setting to compare transcripts with, not to assume.
 	WakeBeamTurns bool
 
+	// WakeBeamStock puts the wake beam on Radar's own rules, decoded from its
+	// firmware: its merger (a beam group wins after a second of being best, beams
+	// weighted by their share of the score) and its canceller control (a beam's
+	// SNR gates the learning step; any beam over the line stops them all). Off is
+	// the faster rule the path started with. Only meaningful with WakeBeam on.
+	WakeBeamStock bool
+
 	// WakeEndpoint lets the device end a wake-triggered command itself: when
 	// the talker was heard after the wake word and then nothing has risen above
 	// the room's floor for a second, it sends the end-of-speech marker a button
@@ -271,6 +278,7 @@ func (d *Device) loadDefaults() {
 	d.WakeBeam = envBool("WAKE_BEAM", false)
 	d.WakeBeamAra = envBool("WAKE_BEAM_ARA", false)
 	d.WakeBeamTurns = envBool("WAKE_BEAM_TURNS", false)
+	d.WakeBeamStock = envBool("WAKE_BEAM_STOCK", false)
 	d.WakeEndpoint = envBool("WAKE_ENDPOINT", false)
 	agcEnabled := envBool("AGC_ENABLED", true)
 	d.AgcEnabled = &agcEnabled
@@ -384,6 +392,9 @@ func (d *Device) Apply(msg ConfigMessage) {
 	}
 	if msg.WakeBeamTurns != nil {
 		d.WakeBeamTurns = *msg.WakeBeamTurns
+	}
+	if msg.WakeBeamStock != nil {
+		d.WakeBeamStock = *msg.WakeBeamStock
 	}
 	if msg.WakeEndpoint != nil {
 		d.WakeEndpoint = *msg.WakeEndpoint
@@ -545,6 +556,7 @@ func (d *Device) Snapshot() ConfigMessage {
 	wakeBeam := d.WakeBeam
 	wakeBeamAra := d.WakeBeamAra
 	wakeBeamTurns := d.WakeBeamTurns
+	wakeBeamStock := d.WakeBeamStock
 	wakeEndpoint := d.WakeEndpoint
 	// C4 fix (2026-07-05 review): previously &d.BeamformingEnabled leaked a
 	// pointer into the live mutex-guarded struct — the caller (streamMic,
@@ -603,6 +615,7 @@ func (d *Device) Snapshot() ConfigMessage {
 		WakeBeam:            &wakeBeam,
 		WakeBeamAra:         &wakeBeamAra,
 		WakeBeamTurns:       &wakeBeamTurns,
+		WakeBeamStock:       &wakeBeamStock,
 		WakeEndpoint:        &wakeEndpoint,
 		BeamformingEnabled:  &beamformingEnabled,
 		AgcEnabled:          &agcEnabled,
@@ -680,6 +693,7 @@ type ConfigMessage struct {
 	WakeBeam            *bool    `json:"wakeBeam,omitempty"`
 	WakeBeamAra         *bool    `json:"wakeBeamAra,omitempty"`
 	WakeBeamTurns       *bool    `json:"wakeBeamTurns,omitempty"`
+	WakeBeamStock       *bool    `json:"wakeBeamStock,omitempty"`
 	WakeEndpoint        *bool    `json:"wakeEndpoint,omitempty"`
 	AgcEnabled          *bool    `json:"agcEnabled,omitempty"`
 	AecEnabled          *bool    `json:"aecEnabled,omitempty"`

@@ -1137,6 +1137,11 @@ class Device:
         return "wake_beam" in (self.capabilities or [])
 
     @property
+    def wake_beam_stock_capable(self) -> bool:
+        """Whether firmware can run the wake beam on Radar's own rules."""
+        return "wake_beam_stock" in (self.capabilities or [])
+
+    @property
     def wake_endpoint_capable(self) -> bool:
         """Whether firmware can end a wake-triggered command when the talker stops."""
         return "wake_endpoint" in (self.capabilities or [])

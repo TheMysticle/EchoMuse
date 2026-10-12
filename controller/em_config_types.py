@@ -56,6 +56,7 @@ KINDS: dict[str, str] = {
     "wakeBeam": BOOL,
     "wakeBeamAra": BOOL,
     "wakeBeamTurns": BOOL,
+    "wakeBeamStock": BOOL,
     "wakeEndpoint": BOOL,
     "beamformingEnabled": BOOL,
     "agcEnabled": BOOL,

@@ -231,6 +231,7 @@ type ARA struct {
 	gframes   [8]int
 	gate      [8]float64 // the gate from the last frame
 	freezeAll bool       // some beam's gate was under one half
+	gmode     int        // ARAGateOurs, ARAGateStock or ARAGateBoth
 }
 
 // NewARA returns a canceller for n beams, off: until enabled it passes the
@@ -241,7 +242,7 @@ func NewARA(n int) *ARA {
 	if n != 8 {
 		panic("beamformer: ARA is built for 8 beams on a ring")
 	}
-	a := &ARA{n: n}
+	a := &ARA{n: n, gmode: ARAGate}
 	a.buf = make([][]float32, n)
 	a.pend = make([][]float32, n)
 	a.acc = make([][]float32, n)
@@ -266,6 +267,10 @@ func NewARA(n int) *ARA {
 // SetEnabled turns the cancelling on or off. The spectra are computed either
 // way, so the output timing is the same and there is nothing to ramp.
 func (a *ARA) SetEnabled(on bool) { a.on = on }
+
+// SetGate chooses what lets the filters learn (ARAGateOurs, ARAGateStock,
+// ARAGateBoth).
+func (a *ARA) SetGate(mode int) { a.gmode = mode }
 
 // Enabled reports whether cancelling is on.
 func (a *ARA) Enabled() bool { return a.on }
@@ -500,7 +505,7 @@ func (a *ARA) cancel(b int) {
 	ours := interferenceDominates && !unexplained && a.hold[b] == 0
 	stock := !a.freezeAll
 	var adapt bool
-	switch ARAGate {
+	switch a.gmode {
 	case ARAGateStock:
 		adapt = stock
 	case ARAGateBoth:
@@ -513,7 +518,7 @@ func (a *ARA) cancel(b int) {
 	if a.trained[b] < ARATrainFrames {
 		mu = float32(ARAMu)
 	}
-	if ARAGate != ARAGateOurs {
+	if a.gmode != ARAGateOurs {
 		mu *= float32(a.gate[b])
 	}
 	if adapt {

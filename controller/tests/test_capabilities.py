@@ -127,6 +127,16 @@ def test_wake_beam_turns_capability_is_surfaced_to_the_dashboard():
     assert "!wakeBeamTurnsCapable || !config.wakeBeam" in jsx
 
 
+def test_wake_beam_stock_capability_is_surfaced_to_the_dashboard():
+    """Older firmware ignores `wakeBeamStock`, so the control must not be offered
+    there as a switch that does nothing, and it follows the beam it needs."""
+    assert "wake_beam_stock" in device_capabilities(), "firmware no longer announces wake_beam_stock"
+    assert "wake_beam_stock_capable" in CONTROLLER.read_text()
+    assert "wakeBeamStockCapable" in API.read_text()
+    jsx = (ROOT / "controller" / "static" / "dashboard.jsx").read_text()
+    assert "!wakeBeamStockCapable || !config.wakeBeam" in jsx
+
+
 def test_wake_endpoint_capability_is_surfaced_to_the_dashboard():
     """Older firmware ignores `wakeEndpoint`, so the control must not be offered
     there as a switch that does nothing."""

@@ -39,6 +39,19 @@ import (
 	"time"
 )
 
+// Group selection modes, GroupMode.
+const (
+	// GroupMean is the first reading of stock's config: a group's score is its
+	// beams' mean SNR, a group takes over 1.26x better after a 96ms hold, and the
+	// output is the plain mean of the group.
+	GroupMean = iota
+	// GroupStock is the rule decoded from libasp (see fbfVoteFrames).
+	GroupStock
+)
+
+// GroupMode chooses the rule. A variable so tools/bf_design can compare them.
+var GroupMode = GroupMean
+
 const (
 	// fbfBeams are spaced evenly from 0°, clockwise from 12 o'clock.
 	fbfBeams = 8
@@ -81,6 +94,20 @@ const (
 	// fbfPowFloor keeps the ratio finite on digital silence (stock's "Minimum
 	// ARA Power Buffer Threshold" is 1.0).
 	fbfPowFloor = 1.0
+
+	// Stock's merger, decoded from libasp (FUN_0008608c): every beam has a
+	// wide-band SNR (300-4500Hz) and a noise floor, both smoothed 0.75/0.25; a
+	// group's score is the sum over its beams of SNR x bias, bias being the
+	// loudest floor over the beam's own (a beam in a quieter place counts for
+	// more); the best group gets a vote each frame and the selection moves when
+	// one reaches fbfVoteFrames (125, 1s), clearing every count; inside the
+	// chosen group each beam's weight is its share of the score, or an equal share
+	// when the total is no more than fbfShareMin. fbfGroupMargin and
+	// fbfHoldBlocks (stock's config 1.26 and 12) are not read on that path.
+	fbfWBLoHz, fbfWBHiHz = 300.0, 4500.0
+	fbfVoteFrames        = 125
+	fbfShareMin          = 1e-6
+	fbfMergeSmooth       = 0.75
 
 	// fbfOutGainDB is stock's "ASR Output Gain": a group average gives some of
 	// the talker back (the neighbours' beams see him off axis), and this puts it
@@ -283,6 +310,16 @@ type wakeBeam struct {
 	snr    [fbfBeams]beamSNR
 	blocks int // blocks seen, for the warm-up
 
+	// Stock's merger state: each beam's wide-band estimator, its smoothed SNR
+	// and floor, a vote counter per group, and the weights inside the group in use.
+	wb      [fbfBeams]beamSNR
+	wbSNR   [fbfBeams]float64
+	wbFloor [fbfBeams]float64
+	votes   [fbfBeams]int
+	wts     [fbfGroupSize]float32
+	// group is the selection rule in use (GroupMean or GroupStock).
+	group int
+
 	cur      int // output in use: fbfNeutral, or a group (0-7, see groupBeams)
 	sel      int // the output the last emitted block used, to fade from
 	holdLeft int // blocks before cur may change
@@ -335,7 +372,7 @@ func fbfDesign() *SDWeights {
 
 func newWakeBeam() *wakeBeam {
 	w := &wakeBeam{sd: fbfDesign(), cur: fbfNeutral, sel: fbfNeutral,
-		outGain: float32(math.Pow(10, fbfOutGainDB/20))}
+		group: GroupMode, outGain: float32(math.Pow(10, fbfOutGainDB/20)), wts: [fbfGroupSize]float32{1.0 / 3, 1.0 / 3, 1.0 / 3}}
 	// The beams are formed in the canceller's spectral domain, so every path
 	// through it has the same delay: the stage's own, which is there whether or
 	// not it is cancelling. The neutral output (the centre mic) is delayed to
@@ -557,6 +594,12 @@ func (w *wakeBeam) sample(k, i int) float32 {
 		return w.out[fbfNeutral][i]
 	}
 	var v float32
+	if w.group == GroupStock {
+		for j, b := range groupBeams(k) {
+			v += w.wts[j] * w.out[b][i]
+		}
+		return v
+	}
 	for _, b := range groupBeams(k) {
 		v += w.out[b][i]
 	}
@@ -609,8 +652,13 @@ func butterworth2(hz float64, high bool) biquad {
 	return biquad{c: [5]float64{b0 / a0, b1 / a0, b2 / a0, -2 * c / a0, (1 - alpha) / a0}}
 }
 
-func newBeamSNR() beamSNR {
-	return beamSNR{hp: butterworth2(fbfBandLoHz, true), lp: butterworth2(fbfBandHiHz, false)}
+func newBeamSNR() beamSNR { return newBandSNR(fbfBandLoHz, fbfBandHiHz) }
+
+// newBandSNR is the estimator over another band: the merger's is wide, 300 to
+// 4500Hz (ARA_V2 "WB Start/Stop freq Err"), where the canceller's is the speech
+// band.
+func newBandSNR(lo, hi float64) beamSNR {
+	return beamSNR{hp: butterworth2(lo, true), lp: butterworth2(hi, false)}
 }
 
 // add folds one block of the beam's output in and returns its SNR: fast power
@@ -667,6 +715,10 @@ func (w *wakeBeam) step(s, e int) {
 		snr[b] = w.snr[b].add(w.out[b][s:e], w.blocks-fbfSettleBlocks+1)
 	}
 	w.blocks++
+	if w.group == GroupStock {
+		w.stockStep(s, e)
+		return
+	}
 	if w.blocks < fbfWarmBlocks {
 		return
 	}
@@ -691,6 +743,80 @@ func (w *wakeBeam) step(s, e int) {
 		w.pick(best, score[best])
 	case w.holdLeft == 0 && best != w.cur && score[best] > fbfGroupMargin*score[w.cur]:
 		w.pick(best, score[best]/math.Max(score[w.cur], 1e-9))
+	}
+}
+
+// stockStep is stock's merger for one block: score the groups on the wide-band
+// SNRs and floors, vote, and set the weights inside the group in use.
+func (w *wakeBeam) stockStep(s, e int) {
+	n := w.blocks - fbfSettleBlocks
+	for b := range w.wb {
+		if w.wb[b].lp.c[0] == 0 {
+			w.wb[b] = newBandSNR(fbfWBLoHz, fbfWBHiHz)
+			w.wbSNR[b], w.wbFloor[b] = 1, 1
+		}
+		if n < 1 {
+			continue
+		}
+		snr := w.wb[b].add(w.out[b][s:e], n)
+		fl := math.Max(w.wb[b].floor, fbfPowFloor)
+		if n == 1 {
+			w.wbSNR[b], w.wbFloor[b] = snr, fl
+		} else {
+			w.wbSNR[b] = fbfMergeSmooth*w.wbSNR[b] + (1-fbfMergeSmooth)*snr
+			w.wbFloor[b] = fbfMergeSmooth*w.wbFloor[b] + (1-fbfMergeSmooth)*fl
+		}
+	}
+	if w.blocks < fbfWarmBlocks {
+		return
+	}
+	// bias: the loudest floor over the beam's own.
+	maxFloor := 0.0
+	for _, f := range w.wbFloor {
+		maxFloor = math.Max(maxFloor, f)
+	}
+	var x [fbfBeams]float64 // each beam's SNR x bias
+	for b := range x {
+		x[b] = w.wbSNR[b] * maxFloor / math.Max(w.wbFloor[b], fbfPowFloor)
+	}
+	var score [fbfBeams]float64
+	best := 0
+	for g := range score {
+		for _, b := range groupBeams(g) {
+			score[g] += x[b]
+		}
+		if score[g] > score[best] {
+			best = g
+		}
+	}
+	switch {
+	case w.cur == fbfNeutral:
+		w.pick(best, score[best])
+		w.votes = [fbfBeams]int{}
+	default:
+		if w.holdLeft > 0 {
+			w.holdLeft-- // only ever the turn's hold at its start
+		}
+		w.votes[best]++
+		if w.votes[best] >= fbfVoteFrames && w.holdLeft == 0 {
+			if best != w.cur {
+				w.pick(best, score[best]/math.Max(score[w.cur], 1e-9))
+			}
+			w.votes = [fbfBeams]int{}
+		}
+	}
+	// Weights: each beam's share of the group's score, equal shares when it has none.
+	cur := w.cur
+	if cur == fbfNeutral {
+		return
+	}
+	total := score[cur]
+	for j, b := range groupBeams(cur) {
+		if total >= fbfShareMin {
+			w.wts[j] = float32(x[b] / total)
+		} else {
+			w.wts[j] = 1.0 / fbfGroupSize
+		}
 	}
 }
 
@@ -754,6 +880,13 @@ func (b *Beamformer) SetWakeBeam(on bool) {
 // filters it has learnt are kept while it is off. Call from the goroutine that
 // calls Process.
 func (b *Beamformer) SetWakeBeamAra(on bool) { b.araWant = on }
+
+// SetWakeBeamStock puts the wake path on stock's own rules (wakeBeamStock): its
+// merger (a group wins after a second of being best, beams weighted by their
+// share of the score) and its canceller control (a beam's SNR gates the step,
+// any beam over the line stops them all). Off, it is the faster rule the path
+// started with. Call from the goroutine that calls Process.
+func (b *Beamformer) SetWakeBeamStock(on bool) { b.stockWant = on }
 
 // SetWakeBeamTurns makes a locked turn listen through the beam (held on the one
 // chosen at the wake) instead of the single mic the lock picked. Off by
@@ -820,6 +953,16 @@ func (b *Beamformer) WakeBeam(mics [][]byte) []byte {
 		}
 	}
 	b.fbf.lockAz, b.fbf.lockAzOK = b.lockAz, b.lockAzOK
+	rule, gate := GroupMean, ARAGateOurs
+	if b.stockWant {
+		rule, gate = GroupStock, ARAGateStock
+	}
+	if b.fbf.group != rule {
+		b.fbf.group = rule
+		b.fbf.votes = [fbfBeams]int{}
+		log.Printf("[beam] stock's merger and canceller control: %v", b.stockWant)
+	}
+	b.fbf.ara.SetGate(gate)
 	out, clipped := b.fbf.process(mics, 1, mode)
 	b.pathTo = b.fbf.outIndex()
 	b.clippedSamples += clipped

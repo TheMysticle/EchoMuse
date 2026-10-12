@@ -176,6 +176,7 @@ type Beamformer struct {
 	fbfWant    bool
 	araWant    bool
 	turnWant   bool
+	stockWant  bool    // wakeBeamStock
 	lockAz     float64 // where the last Lock() pointed, degrees; valid while locked
 	lockAzOK   bool
 	fbfPending chan *wakeBeam

@@ -44,6 +44,7 @@ func araFlags() {
 	flagFloat(&beamformer.ARARatio, "ara.ratio", "adapt while references exceed this multiple of the target beam")
 	flagFloat(&beamformer.ARALeak, "ara.leak", "ARA weight leakage per adapting frame")
 	flagFloat(&beamformer.ARAMinGain, "ara.floor", "ARA per-bin suppression floor (amplitude)")
+	flag.IntVar(&beamformer.GroupMode, "grp.mode", beamformer.GroupMean, "how the wake path picks and mixes beams: 0 mean/margin, 1 stock's decoded vote and share weights")
 	flag.IntVar(&beamformer.ARAGate, "ara.gate", beamformer.ARAGateOurs, "what lets ARA learn: 0 ours, 1 stock's SNR gate, 2 both")
 }
 

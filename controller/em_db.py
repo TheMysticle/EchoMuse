@@ -300,6 +300,11 @@ DEFAULT_DEVICE_CONFIG = {
     # chosen at the wake) instead of the single mic the lock picked. Changes
     # what speech-to-text hears. Experimental, OFF, and only with wakeBeam on.
     "wakeBeamTurns":    False,
+    # wakeBeamStock: run the wake beam on Radar's own rules, decoded from its
+    # firmware (merger: a group wins after a second of being best, beams weighted
+    # by share of the score; canceller: a beam's SNR gates learning, any beam over
+    # the line stops them all). Experimental, OFF, and only with wakeBeam on.
+    "wakeBeamStock":    False,
     # wakeEndpoint: the Echo ends a wake-triggered command itself when the
     # talker stops, because with a TV on Home Assistant's VAD hears the TV as
     # speech and waits out its own cap (measured 15s). Same estimate as stock's

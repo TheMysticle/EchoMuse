@@ -291,10 +291,8 @@ func TestStockGateCurve(t *testing.T) {
 // One beam over the half-way point stops every beam learning, not only itself:
 // the talker is in one beam and leaks into the others' references.
 func TestStockGateFreezesEveryBeamWhenOneIsAboveTheFloor(t *testing.T) {
-	old := ARAGate
-	ARAGate = ARAGateStock
-	defer func() { ARAGate = old }()
 	a := NewARA(8)
+	a.SetGate(ARAGateStock)
 	a.SetEnabled(true)
 	for b := range a.gate {
 		a.gate[b] = 1
