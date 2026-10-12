@@ -255,6 +255,7 @@ type DataClient struct {
 	// same SNR-over-a-floor estimate stock's front end uses (wakeEndpoint). It
 	// lives for the process, not the stream: its floor is the last few seconds
 	// of the room, and a stream restarting must not throw them away.
+	capture    rawCapture
 	endpoint   *beamformer.Endpointer
 	endpointMu sync.Mutex
 	// playing says whether the speaker is audible (voice or music, with the
@@ -1179,6 +1180,7 @@ func (d *DataClient) streamMic(conn *websocket.Conn, stopCh <-chan struct{}, loc
 			if !ok {
 				return
 			}
+			d.capture.feed(raw, time.Now())
 			// Stop has priority: select picks randomly among ready cases,
 			// so without this a closed stopCh racing a ready mic channel
 			// keeps this goroutine draining periods alongside its
