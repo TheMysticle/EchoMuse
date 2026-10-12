@@ -186,24 +186,6 @@ func scale(x [][]float64, g float64) [][]float64 {
 	return out
 }
 
-// Apply runs the beam in the time domain: y[t] = sum_i sum_k H[i][k] x_i[t-k].
-// Circular, because the sources are periodic over the record.
-func (b Beam) Apply(x [][]float64) []float64 {
-	n := len(x[0])
-	y := make([]float64, n)
-	for i, h := range b.H {
-		for k, c := range h {
-			if c == 0 {
-				continue
-			}
-			for t := 0; t < n; t++ {
-				y[t] += c * x[i][((t-k)%n+n)%n]
-			}
-		}
-	}
-	return y
-}
-
 // bandPower is the mean-square of x inside [lo, hi] Hz, by Parseval.
 func bandPower(x []float64, lo, hi float64) float64 {
 	n := len(x)

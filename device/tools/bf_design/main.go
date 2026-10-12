@@ -58,7 +58,7 @@ func main() {
 func dumpTaps(b Beam) {
 	fmt.Printf("\nbeam %.0f° taps (rows: mic; cols: sample index; weights include 1/M):\n", b.AzimuthDeg)
 	for i, h := range b.H {
-		fmt.Printf("  mic %d (delay %.3f):", i, b.DelaySamples[i])
+		fmt.Printf("  mic %d (delay %.3f):", i, b.Delay[i])
 		for _, c := range h {
 			fmt.Printf(" %8.4f", c)
 		}
@@ -78,11 +78,11 @@ func patternReport(pos [][2]float64, b Beam) {
 	}
 	fmt.Printf(" %7s %7s %7s\n", "DI dB", "WNG dB", "worst")
 	for _, f := range []float64{250, 500, 1000, 1500, 2000, 3000, 4000} {
-		look := b.lookGain(pos, f)
+		look := lookGain(b, pos, f)
 		fmt.Printf("%7.0f %+8.2fdB", f, 20*math.Log10(absC(look)))
 		worst := math.Inf(-1)
 		for _, a := range azs[1:] {
-			r := 20 * math.Log10(absC(b.Response(pos, f, a, 0))/absC(b.Response(pos, f, 0, 0)))
+			r := 20 * math.Log10(absC(response(b, pos, f, a, 0))/absC(response(b, pos, f, 0, 0)))
 			fmt.Printf(" %+6.1f", r)
 			worst = math.Max(worst, r)
 		}
@@ -103,12 +103,12 @@ func directivityIndex(pos [][2]float64, b Beam, f float64) float64 {
 		el := -90 + 180*(float64(ie)+0.5)/nEl
 		cw := math.Cos(el * math.Pi / 180)
 		for ia := 0; ia < nAz; ia++ {
-			r := b.Response(pos, f, 360*float64(ia)/nAz, el)
+			r := response(b, pos, f, 360*float64(ia)/nAz, el)
 			sum += cw * (real(r)*real(r) + imag(r)*imag(r))
 			w += cw
 		}
 	}
-	l := b.Response(pos, f, b.AzimuthDeg, 0)
+	l := response(b, pos, f, b.AzimuthDeg, 0)
 	return db((real(l)*real(l) + imag(l)*imag(l)) / (sum / w))
 }
 
@@ -116,7 +116,7 @@ func directivityIndex(pos [][2]float64, b Beam, f float64) float64 {
 // noise): look-direction power over the summed squared filter magnitudes.
 // 10log10(M) for plain delay-and-sum; below 0dB it is amplifying self-noise.
 func whiteNoiseGain(pos [][2]float64, b Beam, f float64) float64 {
-	l := b.Response(pos, f, b.AzimuthDeg, 0)
+	l := response(b, pos, f, b.AzimuthDeg, 0)
 	var s float64
 	for i := range pos {
 		var h complex128
@@ -180,7 +180,7 @@ func snrReport(rng *rand.Rand, pos [][2]float64, beams []Beam, n int, inrDB, dnr
 			}
 			procs = append(procs,
 				proc{"nearest perimeter mic", tgt[near], sumRow(noise, near)},
-				proc{fmt.Sprintf("%d-beam filter-and-sum", len(beams)), beams[bi].Apply(tgt), beams[bi].Apply(noise)})
+				proc{fmt.Sprintf("%d-beam filter-and-sum", len(beams)), apply(beams[bi], tgt), apply(beams[bi], noise)})
 			key := fmt.Sprintf("interferer +%.0f°", off)
 			for _, pr := range procs {
 				for bi, bd := range bands {

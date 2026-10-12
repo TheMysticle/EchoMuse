@@ -1,8 +1,9 @@
 # bf_design — filter-and-sum beams for the 7-mic array, measured
 
-Offline design and measurement tool. **Nothing in the firmware imports it**, and
-the firmware keeps its choice of mic selection over summing (`device/CLAUDE.md`,
-"Beamformer"). It exists to put numbers on that choice against the size of
+Offline measurement tool. It imports the firmware's own beam design
+(`internal/beamformer.DesignBeams`, the code behind the default-off `wakeBeam`
+setting), so it measures what ships, and nothing in the firmware imports it.
+It puts numbers on summing against single-mic selection at the size of
 beamformer Radar's stock AFE runs: 8 beams, 4 taps, 4 mics.
 
 ```bash
@@ -20,9 +21,8 @@ direction over the speed of sound (343 m/s), plus a common offset that makes
 every delay causal, and the delays are summed at weight 1/M. A delay is not a
 whole number of samples at 16 kHz (the 72mm aperture spans 3.4 samples), so
 each mic's delay is an integer shift plus a 4-tap least-squares fractional-delay
-FIR fitted over 100-5000 Hz. A beam's longest filter is 6 samples, 0.15ms of
-latency. Geometry is `internal/beamformer.micAngles` at r=36mm (copied; that
-table is unexported).
+FIR fitted over 100-5000 Hz. A beam's longest filter is 7 samples, and every beam
+shares one 3-sample (0.19ms) latency, so changing beam never changes delay. Geometry is `internal/beamformer.MicPosition` (r=36mm), so there is one copy.
 
 ## Results (7 mics, 8 beams, default scenario)
 

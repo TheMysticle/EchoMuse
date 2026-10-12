@@ -7,33 +7,13 @@ import (
 	"testing"
 )
 
-// The interpolator must be a delay: unit magnitude, phase -w*delay, across
-// the speech band, for every fractional position it is asked for.
-func TestFractionalDelayAccuracy(t *testing.T) {
-	for _, frac := range []float64{0, 0.25, 0.5, 0.75, 0.99} {
-		delay := 1 + frac
-		h := fractionalDelayLS(4, delay, 100, 5000)
-		for _, f := range []float64{200, 500, 1000, 2000, 3000} {
-			w := 2 * math.Pi * f / sampleRate
-			var got complex128
-			for k, c := range h {
-				got += complex(c, 0) * cmplx.Exp(complex(0, -w*float64(k)))
-			}
-			want := cmplx.Exp(complex(0, -w*delay))
-			if e := cmplx.Abs(got - want); e > 0.06 {
-				t.Errorf("frac %.2f at %.0fHz: error %.3f", frac, f, e)
-			}
-		}
-	}
-}
-
 // At the look direction the beam must be unity gain with the common delay
 // removed, wherever the look direction is relative to the mics.
 func TestLookDirectionUnity(t *testing.T) {
 	pos := micPositions("all")
 	for _, b := range Design(pos, 8, 4, 100, 5000) {
 		for _, f := range []float64{250, 1000, 2500} {
-			g := b.lookGain(pos, f)
+			g := lookGain(b, pos, f)
 			if m := 20 * math.Log10(cmplx.Abs(g)); math.Abs(m) > 0.3 {
 				t.Errorf("beam %.0f° at %.0fHz: look gain %.2fdB", b.AzimuthDeg, f, m)
 			}
@@ -82,10 +62,10 @@ func TestApplyMatchesResponse(t *testing.T) {
 	k := int(f / sampleRate * n)
 	src[k], src[n-k] = complex(n/2, 0), complex(n/2, 0)
 	s := Source{src}
-	y := b.Apply(s.AtMics(pos, 40, 0))
+	y := apply(b, s.AtMics(pos, 40, 0))
 	// Mean square of a unit-amplitude cosine is 0.5.
 	got := bandPower(y, 900, 1100) / 0.5
-	r := b.Response(pos, f, 40, 0)
+	r := response(b, pos, f, 40, 0)
 	want := real(r)*real(r) + imag(r)*imag(r)
 	if math.Abs(got-want)/want > 0.02 {
 		t.Errorf("time-domain power %.4f, frequency-domain %.4f", got, want)
@@ -104,7 +84,7 @@ func TestBeamBeatsOmniAboveTwoKilohertz(t *testing.T) {
 	intf := NewSource(rng, n, 1500, 4000, musicShape).AtMics(pos, 180, 0)
 	centre := 6
 	omni := bandPower(tgt[centre], 1500, 4000) / bandPower(intf[centre], 1500, 4000)
-	beam := bandPower(b.Apply(tgt), 1500, 4000) / bandPower(b.Apply(intf), 1500, 4000)
+	beam := bandPower(apply(b, tgt), 1500, 4000) / bandPower(apply(b, intf), 1500, 4000)
 	if db(beam/omni) < 6 {
 		t.Errorf("beam gained only %.1fdB over one mic against a 180° interferer", db(beam/omni))
 	}
