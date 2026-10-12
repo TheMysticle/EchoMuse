@@ -670,12 +670,16 @@ func (c *Canceller) ProcessMicsWithRef(mics [][]byte, active int, ref []byte) []
 }
 
 // CancelMicsWithRef is ProcessMicsWithRef returning every microphone's
-// cancelled audio, for a stage that combines them (the wake beam). all is nil
-// when the hardware path cannot run, and the caller keeps the inputs; a
-// microphone skipped as quiet is returned as it came in, since nothing was
-// playing to remove from it.
-func (c *Canceller) CancelMicsWithRef(mics [][]byte, ref []byte) (all [][]byte) {
-	_, all = c.processMics(mics, 0, ref, true)
+// cancelled audio, for a stage that combines them (the wake beam). active is
+// the microphone the pipeline would otherwise read: it picks the one the
+// telemetry line is about and the one cancelled last, exactly as it does for
+// ProcessMicsWithRef. It was a literal 0 at first, so every line read on=ch0
+// whatever the turn had locked to, and the att figures described ch0.
+// all is nil when the hardware path cannot run, and the caller keeps the
+// inputs; a microphone skipped as quiet is returned as it came in, since
+// nothing was playing to remove from it.
+func (c *Canceller) CancelMicsWithRef(mics [][]byte, active int, ref []byte) (all [][]byte) {
+	_, all = c.processMics(mics, active, ref, true)
 	return all
 }
 

@@ -1454,6 +1454,11 @@ func onWakeCrossing(cc *client.ControlClient, dc *client.DataClient,
 	spk *speaker.PcmSpeaker, srv *server.Server,
 	score, crossed float32, at time.Time) {
 	ageMs := time.Since(at).Milliseconds()
+	// One line for every crossing, whatever becomes of it, carrying what the
+	// wake path was doing at the crossing frame's own instant: the lines
+	// below print up to 640ms later and only some crossings print at all.
+	log.Printf("[wake] crossing score=%.3f bar=%.3f mode=%s age=%dms %s",
+		score, crossed, config.Get().Snapshot().OwwOnDevice, ageMs, dc.WakeBeamAt(at))
 	if config.Get().Snapshot().OwwOnDevice != config.OnDeviceOn {
 		cc.SendOwwShadowCross(score, ageMs)
 		return

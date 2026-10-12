@@ -176,11 +176,17 @@ type Beamformer struct {
 	fbfWant    bool
 	fbfPending chan *wakeBeam
 	fbf        *wakeBeam
+
+	// pathFrom and pathTo are the beam output at the start and end of the
+	// batch WakeBeam last ran on; wtrace is what NoteWakePath kept of them
+	// (waketrace.go).
+	pathFrom, pathTo int
+	wtrace           wakeTrace
 }
 
 // New creates a Beamformer.
 func New() *Beamformer {
-	b := &Beamformer{lockedChannel: -1}
+	b := &Beamformer{lockedChannel: -1, pathFrom: pathNA, pathTo: pathNA}
 	for ci := 0; ci < nDirections; ci++ {
 		b.chanBuf[ci] = make([]float32, periodFrames)
 		b.hfBuf[ci] = make([]float32, periodFrames)

@@ -17,6 +17,7 @@ package beamformer
 // replacement.
 
 import (
+	"fmt"
 	"log"
 	"math"
 	"sync"
@@ -245,6 +246,15 @@ type wakeBeam struct {
 	holdLeft int // blocks before cur may change
 	lowFor   int // consecutive blocks cur has sat under fbfReleaseRatio
 	switches uint64
+
+	// beamChans[b] is the channels beam b actually sums: those with a nonzero
+	// filter. cal is whether any mic's calibration is other than unity.
+	beamChans [fbfBeams][]int
+	cal       bool
+
+	// lastLog and suppressed rate-limit the beam-to-beam switch lines.
+	lastLog    time.Time
+	suppressed int
 }
 
 var (
@@ -263,7 +273,8 @@ func fbfDesign() []Beam {
 			pos[i] = MicPosition(ch)
 		}
 		fbfDesignBeams = DesignSuperdirective(pos, fbfBeams, SDFloorOffsetDB)
-		log.Printf("[beam] designed %d superdirective beams over mics %v in %v", fbfBeams, fbfChannels, time.Since(start).Round(time.Millisecond))
+		log.Printf("[beam] designed %d superdirective beams over mics %v in %v (diffuse field + interference ring %.1fx outside +/-%.0f deg, white-noise-gain floor %+.1fdB on stock's profile; fixed at design time, not a runtime mode)",
+			fbfBeams, fbfChannels, time.Since(start).Round(time.Millisecond), SDRingWeight, SDSectorDeg, SDFloorOffsetDB)
 	})
 	return fbfDesignBeams
 }
@@ -281,11 +292,16 @@ func newWakeBeam() *wakeBeam {
 	}
 	for b, bm := range w.beams {
 		for i, h := range bm.H {
+			used := false
 			for d, c := range h {
 				if c != 0 {
 					w.taps[b] = append(w.taps[b], fbfTap{fbfChannels[i], d, float32(c)})
 					w.maxDelay = max(w.maxDelay, d)
+					used = true
 				}
+			}
+			if used {
+				w.beamChans[b] = append(w.beamChans[b], fbfChannels[i])
 			}
 		}
 	}
@@ -296,6 +312,9 @@ func newWakeBeam() *wakeBeam {
 	gains, note := loadMicCal(micCalDir)
 	for ch := range gains {
 		w.gain[ch] = float32(gains[ch])
+		if gains[ch] != 1 {
+			w.cal = true
+		}
 	}
 	w.calNote = note
 	return w
@@ -439,7 +458,7 @@ func (w *wakeBeam) step(s, e int) {
 	switch {
 	case w.cur == fbfNeutral:
 		if ratio[best] > fbfEngageRatio && ratio[best] > fbfSwitchMargin*ratio[fbfNeutral] {
-			w.pick(best)
+			w.pick(best, ratio[best])
 		}
 	default:
 		if ratio[w.cur] < fbfReleaseRatio {
@@ -449,16 +468,44 @@ func (w *wakeBeam) step(s, e int) {
 		}
 		switch {
 		case w.lowFor >= fbfReleaseBlocks:
-			w.pick(fbfNeutral)
+			w.pick(fbfNeutral, ratio[w.cur])
 		case w.holdLeft == 0 && best != w.cur && ratio[best] > fbfSwitchMargin*ratio[w.cur]:
-			w.pick(best)
+			w.pick(best, ratio[best])
 		}
 	}
 }
 
-func (w *wakeBeam) pick(k int) {
+func (w *wakeBeam) pick(k int, ratio float64) {
+	from := w.cur
 	w.cur, w.holdLeft, w.lowFor = k, fbfHoldBlocks, 0
 	w.switches++
+	w.logSwitch(from, k, ratio)
+}
+
+func (w *wakeBeam) name(k int) string {
+	if k == fbfNeutral {
+		return fmt.Sprintf("centre (ch%d)", centreCh)
+	}
+	return fmt.Sprintf("beam %d (%.0f deg)", k, w.beams[k].AzimuthDeg)
+}
+
+// logSwitch says what the selection did and why (ratio is the onset ratio that
+// decided it). Going to or from the centre mic is always logged; a switch from
+// one beam to another is limited to four a second, and the next line says how
+// many it skipped, so a noisy room cannot flood a RAM-backed log.
+func (w *wakeBeam) logSwitch(from, to int, ratio float64) {
+	now := time.Now()
+	if from != fbfNeutral && to != fbfNeutral && now.Sub(w.lastLog) < 250*time.Millisecond {
+		w.suppressed++
+		return
+	}
+	w.lastLog = now
+	note := ""
+	if w.suppressed > 0 {
+		note = fmt.Sprintf(" (+%d beam switches not logged)", w.suppressed)
+		w.suppressed = 0
+	}
+	log.Printf("[beam] %s -> %s onset ratio %.1f%s", w.name(from), w.name(to), ratio, note)
 }
 
 // SetWakeBeam turns the filter-and-sum wake path on or off. Call from the
@@ -521,7 +568,9 @@ func (b *Beamformer) WakeBeam(mics [][]byte) []byte {
 		}
 	}
 	// The mics arrive with the mic gain already applied, so the sum is at unity.
+	b.pathFrom = b.fbf.outIndex()
 	out, clipped := b.fbf.process(mics, 1, b.lockedChannel >= 0)
+	b.pathTo = b.fbf.outIndex()
 	b.clippedSamples += clipped
 	return out
 }

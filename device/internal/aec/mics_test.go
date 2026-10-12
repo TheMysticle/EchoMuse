@@ -2,8 +2,11 @@ package aec
 
 import (
 	"bytes"
+	"fmt"
+	"log"
 	"math"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -286,5 +289,57 @@ func TestUnusedMicrophonesRestWhileNothingPlays(t *testing.T) {
 	}
 	if att < 12 {
 		t.Fatalf("a rested microphone cancelled %.1fdB in its first frames, want 12dB over the room noise", att)
+	}
+}
+
+// CancelMicsWithRef must do exactly what ProcessMicsWithRef does for the
+// microphone in use, cancel the others as well, and say which one is in use in
+// its telemetry. It passed a literal 0 as the active microphone, so a turn
+// locked to ch3 logged "on=ch0" and the attenuation figures were ch0's.
+func TestCancelMicsWithRefMatchesAndNamesTheActiveMic(t *testing.T) {
+	const frames = 80
+	signal := synth(frames * FrameSize)
+	echoes := sevenEchoes(signal)
+	const active = 3
+
+	var logged bytes.Buffer
+	old := log.Writer()
+	log.SetOutput(&logged)
+	defer log.SetOutput(old)
+
+	a, b := hwCanceller(64), hwCanceller(64)
+	var inOthers, outOthers float64
+	for f := 0; f < frames; f++ {
+		lo, hi := f*FrameSize, (f+1)*FrameSize
+		mics := make([][]byte, NumMics)
+		for ch := range mics {
+			mics[ch] = toBytes(echoes[ch][lo:hi])
+		}
+		ref := toBytes(signal[lo:hi])
+		want := a.ProcessMicsWithRef(mics, active, ref)
+		all := b.CancelMicsWithRef(mics, active, ref)
+		if all == nil {
+			t.Fatal("hardware path declined")
+		}
+		if !bytes.Equal(all[active], want) {
+			t.Fatalf("frame %d: the active microphone differs from ProcessMicsWithRef", f)
+		}
+		if f >= frames-20 {
+			for ch := range all {
+				if ch != active {
+					inOthers += rms(mics[ch])
+					outOthers += rms(all[ch])
+				}
+			}
+		}
+	}
+	if db := 20 * math.Log10(inOthers/outOthers); db < 10 {
+		t.Errorf("the other microphones were cancelled by only %.1fdB", db)
+	}
+	if !strings.Contains(logged.String(), fmt.Sprintf("on=ch%d", active)) {
+		t.Errorf("telemetry does not name ch%d:\n%s", active, logged.String())
+	}
+	if strings.Contains(logged.String(), "on=ch0") {
+		t.Errorf("telemetry still names ch0:\n%s", logged.String())
 	}
 }

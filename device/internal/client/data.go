@@ -438,6 +438,12 @@ func (d *DataClient) SetShadowScorer(s *shadow.Scorer) {
 }
 
 // ShadowScorer returns the active scorer, or nil.
+// WakeBeamAt says what the wake path was doing, beam or single mic, with
+// which mics, at the given instant: the crossing frame's own timestamp.
+func (d *DataClient) WakeBeamAt(at time.Time) beamformer.WakeBeamInfo {
+	return d.beam.WakeBeamAt(at)
+}
+
 func (d *DataClient) ShadowScorer() *shadow.Scorer {
 	d.shadowMu.Lock()
 	defer d.shadowMu.Unlock()
@@ -1247,7 +1253,7 @@ func (d *DataClient) streamMic(conn *websocket.Conn, stopCh <-chan struct{}, loc
 				mics := d.beam.MicChannels(raw, gainLin, sel, mono)
 				var all [][]byte
 				if wakeBeam {
-					all = d.aec.CancelMicsWithRef(mics, echoRef)
+					all = d.aec.CancelMicsWithRef(mics, sel, echoRef)
 				}
 				if all != nil {
 					// Same cancellation as ProcessMicsWithRef, kept for all
@@ -1270,6 +1276,10 @@ func (d *DataClient) streamMic(conn *websocket.Conn, stopCh <-chan struct{}, loc
 				}
 				mono = d.aec.Process(mono)
 			}
+
+			// Keep what the wake path did with this batch, so a wake
+			// crossing can say what it heard through (WakeBeamAt).
+			d.beam.NoteWakePath(time.Now(), d.beam.OutputChannel(beamAngle))
 
 			// ── Processing pipeline ──────────────────────────────────────
 			// VAD on raw beamformed output — pre-NS/AGC so threshold is
