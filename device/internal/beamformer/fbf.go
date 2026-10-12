@@ -391,11 +391,10 @@ var fbfHP = func() [5]float32 {
 }()
 
 // enterOrLeaveTurn handles the edges of a turn that uses the beam. Entering, a
-// beam already engaged by the wake is kept (it was chosen on the SNR of the
-// wake itself); with none engaged the turn starts on the beam nearest the mic
-// the lock picked, since the centre mic is no better than the mic the beam
-// replaces. Leaving, the beam stays and the selection's own release takes it
-// back to the centre mic after a quiet second.
+// group already engaged by the wake is kept for the hold (it was chosen on the
+// SNR of the wake itself); with none engaged the turn starts on the group
+// whose middle beam is nearest the mic the lock picked. Neither edge changes
+// anything else: stock's merger does not know a wake word happened.
 func (w *wakeBeam) enterOrLeaveTurn(mode int) {
 	switch {
 	case mode == modeTurn && !w.inTurn:
@@ -410,7 +409,9 @@ func (w *wakeBeam) enterOrLeaveTurn(mode int) {
 			// The group whose middle beam looks that way.
 			w.cur = (best + fbfBeams - 1) % fbfBeams
 		}
-		w.holdLeft = 1 << 30
+		// The group the wake chose is kept for the hold, then the selection
+		// carries on as it was.
+		w.holdLeft = fbfHoldBlocks
 		log.Printf("[beam] turn on %s", w.name(w.cur))
 	case mode != modeTurn && w.inTurn:
 		w.inTurn = false
@@ -482,11 +483,12 @@ func (w *wakeBeam) process(mics [][]byte, gain float64, mode int) (out []byte, c
 		switch mode {
 		case modeBypass:
 			w.cur, w.holdLeft = fbfNeutral, 0
-		case modeTurn:
-			// The beam chosen for the turn is held: the statistics stay frozen,
-			// as they do for a bypassed turn, because the talker's own voice
-			// must not move the baseline.
 		default:
+			// Listening, and a turn heard through the beam: stock does nothing
+			// different once a wake word is reported (one beamformed ASR stream
+			// serves both, and the group merger keeps scoring), so the talker's
+			// own voice moves the selection as it does before the wake. It cannot
+			// move the noise floor, which is a minimum.
 			w.step(s, e)
 		}
 		for i := s; i < e; i++ {

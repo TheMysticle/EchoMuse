@@ -52,6 +52,7 @@ func main() {
 	flag.Float64Var(&beamformer.SDSectorDeg, "sector", beamformer.SDSectorDeg, "half-width of the look sector the ring leaves alone, degrees")
 	selOn := flag.Bool("sel", false, "drive the real wake path through a living-room scene with a quiet distant talker")
 	selFlags()
+	selTonal := flag.Bool("sel.tonal", false, "with -sel: measure in one run, talker and TV as interleaved tone combs (use for the canceller)")
 	colorOn := flag.Bool("color", false, "how much a talker's spectrum is coloured by the beams, by how far off-axis they are")
 	araOn := flag.Bool("ara", false, "measure the interference canceller after the beams (use with -sd)")
 	araFlags()
@@ -71,6 +72,10 @@ func main() {
 	}
 	pos := micPositions(*mics)
 	beams := newDesignSet(pos, *nBeams, *taps, 100, 5000)
+	if *selOn && *selTonal {
+		selTonalReport(rand.New(rand.NewSource(*seed)))
+		return
+	}
 	if *selOn {
 		selReport(rand.New(rand.NewSource(*seed)))
 		return

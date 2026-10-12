@@ -632,26 +632,11 @@ func lockForTurn(b *Beamformer, az float64) {
 	b.lockedChannel, b.lockAz, b.lockAzOK = 3, az, true
 }
 
-// With the setting off a locked turn is the single mic it always was, and the
-// beam is not what the pipeline reads. This is the default, and the one thing
-// the new setting may not change.
-func TestTurnsAreBypassedByDefault(t *testing.T) {
-	b := New()
-	enableWakeBeam(b)
-	lockForTurn(b, 55)
-	if b.WakeBeamUsable() {
-		t.Fatal("a locked turn read the wake beam with wakeBeamTurns off")
-	}
-	b.WakeBeam(s16(zeros(NumMics, 2560)))
-	if b.WakeBeamIndex() != -1 || b.fbf.inTurn {
-		t.Error("a bypassed turn must park on the centre mic and not enter turn mode")
-	}
-}
-
-// With it on, the turn starts on the beam nearest the mic the lock picked when
-// none is engaged, keeps it for every period of the turn, and leaves the
-// statistics alone.
-func TestTurnHoldsTheBeamForTheWholeTurn(t *testing.T) {
+// A turn heard through the beam starts on the group the wake engaged (or the
+// group nearest the lock's mic if none was), and then goes on as before: the
+// selection keeps scoring through the turn, as stock's does, so a talker who
+// moves is followed.
+func TestTurnStartsOnTheWakeGroupAndThenFollowsTheTalker(t *testing.T) {
 	rng := rand.New(rand.NewSource(11))
 	src := denseTones(rng, 200, 3500, 100)
 	b := New()
@@ -659,26 +644,17 @@ func TestTurnHoldsTheBeamForTheWholeTurn(t *testing.T) {
 	b.SetWakeBeamTurns(true)
 	lockForTurn(b, 55) // beam 6 looks at 55 degrees
 	want := groupAround(nearestBeam(55))
-	var blocks int
-	for k := 0; k < 8; k++ {
-		x := zeros(NumMics, 2560)
-		render(x, src, 120+30*float64(k), k*2560, always) // a source that moves about
-		b.WakeBeam(s16(x))
-		if k == 0 {
-			blocks = b.fbf.blocks
-		}
-		if got := b.WakeBeamIndex(); got != want {
-			t.Fatalf("period %d: beam %d, want %d held for the turn", k, got, want)
-		}
-		if b.fbf.blocks != blocks {
-			t.Fatalf("period %d: the statistics moved during a turn", k)
-		}
+	x := zeros(NumMics, 2560)
+	render(x, src, 55, 0, always)
+	b.WakeBeam(s16(x))
+	if got := b.WakeBeamIndex(); got != want {
+		t.Fatalf("the turn started on group %d, want %d (nearest the lock)", got, want)
 	}
 	if !b.WakeBeamUsable() {
 		t.Error("the turn's audio is not the beam's")
 	}
 
-	// An already engaged beam is kept, whatever the lock pointed at.
+	// An already engaged group is kept, whatever the lock pointed at.
 	b2 := New()
 	enableWakeBeam(b2)
 	b2.SetWakeBeamTurns(true)
@@ -686,14 +662,79 @@ func TestTurnHoldsTheBeamForTheWholeTurn(t *testing.T) {
 	lockForTurn(b2, 55)
 	b2.WakeBeam(s16(zeros(NumMics, 2560)))
 	if b2.WakeBeamIndex() != 1 {
-		t.Errorf("an engaged beam 1 became %d at the lock", b2.WakeBeamIndex())
+		t.Errorf("an engaged group 1 became %d at the lock", b2.WakeBeamIndex())
 	}
 
-	// And after the turn the beam stays until the selection's own release.
+	// Past the warm-up, a talker at 55 degrees and then one at 235 are each
+	// given a group with a beam looking his way: the turn does not freeze the
+	// selection on the wake's group.
+	b3 := New()
+	enableWakeBeam(b3)
+	b3.SetWakeBeamTurns(true)
+	lockForTurn(b3, 55)
+	covers := func(g int, az float64) bool {
+		for _, bm := range groupBeams(g) {
+			if math.Abs(angleDiff(b3.fbf.sd.Azimuths[bm], az)) <= 40 {
+				return true
+			}
+		}
+		return false
+	}
+	// A bed of room noise first, so the noise floor has something to be a floor
+	// of; then speech in bursts (a talker who never paused would be the floor).
+	burst := func(t int) float64 {
+		if math.Mod(float64(t)/sampleRate, 1) < 0.6 {
+			return 1
+		}
+		return 0
+	}
+	at := 0
+	feed := func(az float64, gate func(int) float64) {
+		x := zeros(NumMics, 2560)
+		render(x, src, az, at, gate)
+		for ch := range x {
+			for i := range x[ch] {
+				x[ch][i] += rng.NormFloat64() * 5
+			}
+		}
+		b3.WakeBeam(s16(x))
+		at += 2560
+	}
+	quiet := func(int) float64 { return 0 }
+	// (13s: the noise floor is the slow average for the first 5s, as stock's is,
+	// and a buffer minimum only once that buffer has filled.)
+	for k := 0; k < 80; k++ {
+		feed(55, quiet)
+	}
+	last := [2]int{-1, -1}
+	for phase, az := range []float64{55, 235} {
+		held := map[int]int{}
+		for k := 0; k < 40; k++ {
+			feed(az, burst)
+			if k >= 20 {
+				held[b3.WakeBeamIndex()]++
+			}
+		}
+		// The group the path spent most of the last three seconds on: at any
+		// one instant it may be between two words, when every group scores alike.
+		for g, n := range held {
+			if n > held[last[phase]] {
+				last[phase] = g
+			}
+		}
+		if !covers(last[phase], az) {
+			t.Errorf("after 6.4s of a talker at %.0f deg the turn is on group %d, which has no beam within 40 deg of him", az, last[phase])
+		}
+	}
+	if last[0] == last[1] {
+		t.Errorf("the turn stayed on group %d for talkers on opposite sides", last[0])
+	}
+
+	// After the turn nothing moves.
 	b.lockedChannel, b.lockAzOK = -1, false
 	b.WakeBeam(s16(zeros(NumMics, 2560)))
 	if b.fbf.inTurn || b.WakeBeamIndex() != want {
-		t.Errorf("after the turn: inTurn=%v beam %d, want the beam kept (%d)", b.fbf.inTurn, b.WakeBeamIndex(), want)
+		t.Errorf("after the turn: inTurn=%v group %d, want it kept (%d)", b.fbf.inTurn, b.WakeBeamIndex(), want)
 	}
 }
 
