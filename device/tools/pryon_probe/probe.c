@@ -14,6 +14,7 @@
  *   PryonDecoder_PushAudioEventSamples(id, uint64 timestamp, samples, count)
  *   PryonDecoder_BacklogMsec(id)                                     {err, msec}
  *   PryonApi_SetEnumeratedResultCallback(cb(id, result*))            result[2], result[4] = begin, end sample
+ * Set PRYON_RT=1 to feed audio at real-time speed instead of as fast as the decoder takes it.
  * The decoder drops audio when its backlog grows, so the push loop waits on
  * BacklogMsec; flooding it (as a first version did) silently loses most of a file.
  */
@@ -71,11 +72,13 @@ int main(int argc, char **argv) {
     if (argc < 2) return 0;
     FILE *f = fopen(argv[1], "rb"); if (!f) { printf("no input\n"); return 4; }
     backlog_t BacklogMsec = (backlog_t)dlsym(h, "PryonDecoder_BacklogMsec");
+    int realtime = getenv("PRYON_RT") != NULL;   /* PRYON_RT=1: pace input at real time, to measure steady CPU */
     int16_t buf[160]; uint64_t pos = 0; size_t n;
     while ((n = fread(buf, 2, 160, f)) == 160) {
         /* Real-time-ish: the decoder drops audio when its backlog gets too long, and
            emulation is slower than the Echo, so wait for it instead of flooding it. */
         while (BacklogMsec) { BL b = BacklogMsec("dec"); if (b.err || b.v < 400) break; usleep(20000); }
+        if (realtime) usleep(10000);   /* 160 samples = 10ms: feed at microphone speed */
         int p = PryonDecoder_PushAudioEventSamples("dec", pos, buf, 160);
         if (p) { printf("push rc=%d at %llu\n", p, (unsigned long long)pos); break; }
         pos += 160;
