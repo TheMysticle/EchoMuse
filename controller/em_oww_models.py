@@ -29,13 +29,39 @@ _STEM_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 MAX_MODEL_BYTES = 20 * 1024 * 1024  # stock models are ~1 MB; 20 MB is generous
 
 
+# Models that only a DEVICE can run. The Echo's own wake word decoder is chosen
+# by name (the firmware's pryon engine, internal/wakeword/pryon), not by file, so
+# the controller has nothing to load for it; when the controller itself has to
+# score the same wake word (an Echo set to "on the controller", or a barge-in
+# watch) it uses the open model that stands in for it. The stand-in is the SAME
+# WORD, which is why it is safe: choosing this engine never changes what the Echo
+# answers to, only what listens for it.
+DEVICE_ONLY: dict[str, str] = {"pryon_alexa": "alexa_v0.1"}
+
+
+def is_device_only(model_name: str) -> bool:
+    """Whether owwModel names an engine only the Echo can run."""
+    return (model_name or "").strip() in DEVICE_ONLY
+
+
+def controller_model(model_name: str) -> str:
+    """The model the CONTROLLER loads for this owwModel value: the stand-in for
+    a device-only engine, the value itself for anything else."""
+    name = (model_name or "").strip()
+    return DEVICE_ONLY.get(name, model_name)
+
+
 def prediction_key(model_name: str) -> str:
     """
     The key openwakeword uses in its prediction dict for this owwModel
     value. Stock names ("hey_jarvis_v0.1") key as themselves, but a file
     path keys as the filename stem — scoring a custom model against the
     raw path silently reads 0.0 forever.
+
+    A device-only engine keys as its stand-in: the controller scores with that
+    model, and Home Assistant is told the wake word is "alexa", which it is.
     """
+    model_name = controller_model(model_name)
     if model_name.endswith(".onnx"):
         return Path(model_name).stem
     return model_name

@@ -445,3 +445,14 @@ def test_private_listening_is_negotiated_in_both_directions():
     assert f'"{em_listen.CAPABILITY}" in (self.capabilities' in py
     assert em_listen.CAPABILITY in device_capabilities()
     assert re.search(r'FeatureListenSession\s*=\s*"listen_session"', CONTROL_GO.read_text())
+
+
+def test_wake_pryon_capability_is_surfaced_to_the_dashboard():
+    """The Echo's own decoder is offered only where the firmware reports it has
+    the library and the model on THIS device; a tile that cannot load is worse
+    than none."""
+    assert "wake_pryon" in device_capabilities(), "firmware no longer announces wake_pryon"
+    assert "wake_pryon_capable" in CONTROLLER.read_text()
+    assert "wakePryonCapable" in API.read_text()
+    jsx = (ROOT / "controller" / "static" / "dashboard.jsx").read_text()
+    assert "!!m.engine && !wakePryonCapable" in jsx

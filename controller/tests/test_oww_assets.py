@@ -260,6 +260,13 @@ def test_stock_models_match_what_the_dashboard_offers():
     block = re.search(r"const WW_MODELS = \[(.*?)\];", jsx, re.S)
     assert block, "dashboard.jsx must still define WW_MODELS"
     offered = set(re.findall(r"value:\s*'([^']+)'", block.group(1)))
+    # An engine only the Echo can run has no file to install (it is the Echo's
+    # own decoder); the open model that stands in for it must be one we install.
+    import em_oww_models
+    device_only = {v for v in offered if em_oww_models.is_device_only(v)}
+    for v in device_only:
+        assert em_oww_models.DEVICE_ONLY[v] in A.STOCK_MODELS, v
+    offered -= device_only
     assert offered == set(A.STOCK_MODELS), (
         f"dashboard offers {sorted(offered)}, "
         f"em_oww_assets installs {sorted(A.STOCK_MODELS)}"

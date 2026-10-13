@@ -1143,6 +1143,13 @@ class Device:
         return "wake_beam_stock" in (self.capabilities or [])
 
     @property
+    def wake_pryon_capable(self) -> bool:
+        """Whether this Echo has its own wake word decoder to offer as the
+        on-device engine (owwModel "pryon_alexa"): the firmware announces it only
+        when the library and the model package are on the device."""
+        return "wake_pryon" in (self.capabilities or [])
+
+    @property
     def wake_endpoint_capable(self) -> bool:
         """Whether firmware can end a wake-triggered command when the talker stops."""
         return "wake_endpoint" in (self.capabilities or [])
@@ -1603,6 +1610,9 @@ async def _acquire_wake_model(device: "Device", name: str, speex: bool):
     is NOT reset. Either way the caller's WarmupGate stays un-warmed, which is
     correct for both."""
     loop = asyncio.get_event_loop()
+    # The controller can only load a model it has a file for: a device-only
+    # engine is scored here by the open model that stands in for it.
+    name = em_oww_models.controller_model(name)
     cached = _oww_models.get(device.device_id)
     if cached is not None and cached[0] == name and cached[1] == speex:
         model = cached[2]
@@ -1625,6 +1635,7 @@ async def _acquire_barge_model(device: "Device", name: str):
     entry (#512). The barge watcher resets the model itself after acquiring it,
     so no reset here. The barge watcher is gated by voice_lock (one turn per
     device), so two barge watchers never score one model concurrently."""
+    name = em_oww_models.controller_model(name)  # a device-only engine is watched by its stand-in
     cached = _oww_barge_models.get(device.device_id)
     if cached is not None and cached[0] == name:
         return cached[1]

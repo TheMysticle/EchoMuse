@@ -5411,6 +5411,16 @@ def _hold_back_oww_model(live, effective: dict):
     if not (was_local or now_local):
         return effective, None
 
+    if em_oww_models.is_device_only(new_model):
+        # The Echo's own decoder has no file to install: it either has it or it
+        # does not. One that does not keeps its current wake word, on-device,
+        # rather than being told to use an engine it cannot load and going deaf.
+        if live.wake_pryon_capable:
+            return effective, None
+        held = dict(effective)
+        held["owwModel"] = live.oww_model
+        return held, None
+
     held = dict(effective)
     held["owwModel"] = live.oww_model
     return held, new_model
@@ -7320,6 +7330,7 @@ def _merge_device(row, boot: dict | None = None) -> dict:
         "wakeBeamTurnsCapable": getattr(live, "wake_beam_turns_capable", False) if live else False,
         "wakeBeamStockCapable": getattr(live, "wake_beam_stock_capable", False) if live else False,
         "wakeEndpointCapable": getattr(live, "wake_endpoint_capable", False) if live else False,
+        "wakePryonCapable": getattr(live, "wake_pryon_capable", False) if live else False,
         "remoteVolumeArcCapable": getattr(live, "remote_volume_arc_capable", False) if live else False,
         "responseLevelCapable": getattr(live, "response_level_capable", False) if live else False,
         # Sendspin player (#89): whether the firmware has one, and its status

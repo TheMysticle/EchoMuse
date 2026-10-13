@@ -152,7 +152,10 @@ def classifier_source(oww_model: str,
     and the file we send are the same by construction rather than by
     convention.
     """
-    name = (oww_model or "").strip()
+    # A device-only engine (the Echo's own decoder) has no file; the open model
+    # that stands in for it does, and is what the controller and the asset
+    # check both look at.
+    name = em_oww_models.controller_model((oww_model or "").strip())
     if not name:
         return None
     if name.endswith(".onnx"):

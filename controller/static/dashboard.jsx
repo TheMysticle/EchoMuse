@@ -184,6 +184,7 @@ const API = {
 // file paths ("/app/data/oww_models/hey_clara.onnx") both prettify.
 function wwModelLabel(v) {
   if (!v) return '—';
+  if (v === 'pryon_alexa') return "Alexa (Echo's own)";
   if (v.endsWith('.onnx')) v = v.split('/').pop().replace(/\.onnx$/, '');
   return v.replace(/_v[\d.]+$/, '').replace(/_/g, ' ');
 }
@@ -2468,6 +2469,7 @@ function Detail({ device, token, onClose, onApprove, isAdmin, globalConfig, onDe
                 wakeBeamTurnsCapable={!device.connected || !!device.wakeBeamTurnsCapable}
                 wakeBeamStockCapable={!device.connected || !!device.wakeBeamStockCapable}
                 wakeEndpointCapable={!device.connected || !!device.wakeEndpointCapable}
+                wakePryonCapable={!device.connected || !!device.wakePryonCapable}
                 sendspinCapable={!device.connected || !!device.sendspinCapable}
                 sendspinPanel={device.connected && device.sendspinCapable
                   ? <SendspinPairing deviceId={device.device_id} status={device.sendspin} isAdmin={isAdmin}/>
@@ -9548,6 +9550,7 @@ function DeviceConfigForm({ config, onChange, disabled, sections, onScopeChange,
                             wakeBeamTurnsCapable = true,
                             wakeBeamStockCapable = true,
                             wakeEndpointCapable = true,
+                            wakePryonCapable = true,
                             sendspinCapable = true, sendspinPanel = null,
                             spotifyCapable = true, spotifyPanel = null,
                             bleConnectCapable = true, blePanel = null,
@@ -9624,6 +9627,13 @@ function DeviceConfigForm({ config, onChange, disabled, sections, onScopeChange,
     { value: 'alexa_v0.1',        label: 'Alexa'         },
     { value: 'hey_mycroft_v0.1',  label: 'Hey Mycroft'   },
     { value: 'hey_rhasspy_v0.1',  label: 'Hey Rhasspy'   },
+    // The Echo's own decoder, from its stock firmware: the same word, a
+    // different engine, only on the Echo. Offered only where the Echo reports it
+    // has the library and the model. While the wake word runs on the controller
+    // the open Alexa model listens instead (em_oww_models.DEVICE_ONLY).
+    { value: 'pryon_alexa', label: "Alexa (Echo's own)", engine: true,
+      sub: "the Echo's own detector",
+      tip: "Uses the decoder from the Echo's own firmware, on this Echo. When the wake word runs on the controller the open Alexa model is used instead." },
   ];
 
   // Custom models discovered in the controller's data volume (oww_forge
@@ -9879,20 +9889,25 @@ function DeviceConfigForm({ config, onChange, disabled, sections, onScopeChange,
         scope={scopeEl('wakeword')} dim={secStyle('wakeword')}>
         <div className="em-grid2" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24, alignItems: 'start' }}>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, ...inputStyle }}>
-            {WW_MODELS.map(m => (
-              <div key={m.value} onClick={() => set('owwModel', m.value)} style={{
+            {WW_MODELS.map(m => {
+              const off = !!m.engine && !wakePryonCapable;
+              return (
+              <div key={m.value} title={off ? "needs the Echo's own wake word decoder, which this Echo does not report having" : m.tip}
+                onClick={() => { if (!off) set('owwModel', m.value); }} style={{
+                opacity: off ? 0.45 : 1,
                 background: config.owwModel === m.value
                   ? 'linear-gradient(160deg,var(--accent-tint),var(--accent-line))'
                   : 'linear-gradient(160deg,var(--raised),var(--surface))',
                 border: `1px solid ${config.owwModel === m.value ? 'var(--accent)' : 'var(--border-soft)'}`,
                 borderRadius: 8, padding: '8px 10px',
-                cursor: disabled ? 'default' : 'pointer',
+                cursor: (disabled || off) ? 'default' : 'pointer',
                 transition: 'border-color 0.15s, background 0.15s',
               }}>
                 <div title={m.label} style={{ fontFamily: "'DM Sans',sans-serif", fontSize: 12, fontWeight: 600, color: 'var(--text)', ..._ROW_TEXT, display: 'block' }}>{m.label}</div>
-                <div title={m.value} style={{ fontFamily: mono, fontSize: 9, color: 'var(--text2)', marginTop: 2, ..._ROW_TEXT, display: 'block' }}>{m.value}</div>
+                <div title={m.value} style={{ fontFamily: mono, fontSize: 9, color: 'var(--text2)', marginTop: 2, ..._ROW_TEXT, display: 'block' }}>{m.sub || m.value}</div>
               </div>
-            ))}
+              );
+            })}
             {[...customModels, ...(orphanModel ? [orphanModel] : [])].map(m => (
               <div key={m.path} onClick={() => set('owwModel', m.path)} style={{
                 background: config.owwModel === m.path
