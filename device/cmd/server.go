@@ -1359,6 +1359,17 @@ func applyShadowConfig(dc *client.DataClient, cc *client.ControlClient,
 	if snap.BargeInEnabled != nil && *snap.BargeInEnabled {
 		bargeNote = fmt.Sprintf("barge-in bar %.2f", snap.BargeInThreshold)
 	}
+	if pryon.IsModel(model) {
+		// Its bars are the model's own: owwThreshold and bargeInThreshold are not
+		// read, and printing them here read as if they were.
+		playNote := "playback bar off"
+		if snap.BargeInEnabled != nil && *snap.BargeInEnabled {
+			playNote = "playback bar on"
+		}
+		log.Printf("[shadow] on-device wake word scoring (%s; the model's own bars, %s) — %s",
+			sc.Info(), playNote, actsOnCrossings(mode))
+		return
+	}
 	log.Printf("[shadow] on-device wake word scoring (%s, threshold %.2f, %s) — %s",
 		sc.Info(), threshold, bargeNote, actsOnCrossings(mode))
 }
