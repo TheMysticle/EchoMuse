@@ -73,7 +73,7 @@ def test_every_effect_makes_a_spec_the_firmware_knows():
     # The animator's patterns (internal/server/animator.go); anything else
     # clears the ring, so an effect added here must be one of them.
     known = {"solid", "spin", "rotate", "pulse"}
-    for name in R.EFFECT_NAMES:
+    for name in R.EFFECTS:
         a = R.to_anim(R.RingLight(on=True, effect=name, red=0.0, green=1.0, blue=0.0))
         assert a["pattern"] in known, name
         assert a["periodMs"] > 0
