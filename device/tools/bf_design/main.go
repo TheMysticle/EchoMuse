@@ -58,6 +58,7 @@ func main() {
 	bankFB := flag.String("bank.fb", "", "coefs_FilterBank_AnalysisSynthesis_768cvxGLow.cfg")
 	bankTable := flag.String("bank.table", "", "coefs_FBFV2_4micsSq_8beams_idnr_m15_lowLatency.cfg")
 	sweepRaw := flag.String("sweep", "", "a raw capture: every combination of the wake path's switches, scored on the voice")
+	flag.StringVar(&dumpDir, "dump.dir", "", "with -sweep: directory to write each path's output to as raw 16kHz int16")
 	rawFrom := flag.Float64("raw.from", 0, "start of the window in the capture, seconds")
 	flag.Float64Var(&rawHotDB, "raw.hot", 8, "dB over the median for a 250ms block to count as speech in -raw")
 	rawTo := flag.Float64("raw.to", 0, "end of the window, seconds (0 = the end)")

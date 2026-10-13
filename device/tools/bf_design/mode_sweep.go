@@ -10,11 +10,32 @@ package main
 // score every path.
 
 import (
+	"encoding/binary"
 	"fmt"
 	"math"
+	"os"
+	"path/filepath"
 
 	"github.com/wilbowes/EchoMuse/internal/beamformer"
 )
+
+// dumpDir, when set, receives each path's scored (second-pass) output as raw
+// 16kHz int16 mono, so other detectors can be run over exactly what the wake
+// path produced (-dump).
+var dumpDir string
+
+func dumpRaw(name string, x []float64) {
+	if dumpDir == "" {
+		return
+	}
+	b := make([]byte, 2*len(x))
+	for i, v := range x {
+		binary.LittleEndian.PutUint16(b[2*i:], uint16(int16(math.Max(-32768, math.Min(32767, v)))))
+	}
+	if err := os.WriteFile(filepath.Join(dumpDir, name+".raw"), b, 0o644); err != nil {
+		fmt.Println("dump:", err)
+	}
+}
 
 func modeSweep(path string) {
 	bufs, err := readRaw(path)
@@ -53,6 +74,7 @@ func modeSweep(path string) {
 		}
 		fmt.Println("beams from stock's table")
 	}
+	dumpRaw("centre", per[6])
 	vb, tilt := score(per[6])
 	fmt.Printf("%-52s voice/bg %+5.1f  tilt %+5.1f\n", "centre mic (no beam)", vb, tilt)
 	for _, rule := range []string{"mean", "stock"} {
@@ -81,6 +103,12 @@ func modeSweep(path string) {
 						}
 						out = append(out, s16Floats(o)...)
 					}
+				}
+				if rule == "stock" && ara == "on kmax40" && shape {
+					dumpRaw("beam_stock_ara", out)
+				}
+				if rule == "stock" && ara == "off" && shape {
+					dumpRaw("beam_stock", out)
 				}
 				vb, tilt := score(out)
 				name := fmt.Sprintf("beam, %s rules, ARA %s, shaping %v", rule, ara, map[bool]string{true: "on", false: "off"}[shape])
