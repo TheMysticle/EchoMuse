@@ -34,9 +34,15 @@ def test_unknown_effect_is_not_stored():
     assert out.effect == R.NO_EFFECT
 
 
-def test_empty_effect_clears_it():
-    out = R.apply_command(R.RingLight(on=True, effect="Spin"), cmd(has_effect=True, effect=""))
+@pytest.mark.parametrize("name", ["", "None", "none"])
+def test_none_or_empty_clears_the_effect(name):
+    out = R.apply_command(R.RingLight(on=True, effect="Spin"), cmd(has_effect=True, effect=name))
     assert out.effect == R.NO_EFFECT
+
+
+def test_the_list_leads_with_none_as_an_esphome_light_does():
+    assert R.EFFECT_NAMES[0] == "None"
+    assert R.EFFECT_NAMES[1:] == list(R.EFFECTS)
 
 
 @pytest.mark.parametrize("v", [-1.0, 2.5, 7.0])

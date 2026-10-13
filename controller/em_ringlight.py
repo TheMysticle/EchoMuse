@@ -30,10 +30,12 @@ EFFECTS: dict[str, tuple[str, int]] = {
     "Fast pulse": ("pulse", 500),
     "Spin":       ("spin", 70),
 }
-EFFECT_NAMES = list(EFFECTS)
 
-# HA shows "None" when no effect is active; ESPHome sends an empty string.
-NO_EFFECT = ""
+# "None" is how an ESPHome light says "no effect" and how HA's effect picker
+# clears one (the device adds it to its own list), so the list leads with it
+# and the state reports it. Anything not in EFFECTS reads as it.
+NO_EFFECT = "None"
+EFFECT_NAMES = [NO_EFFECT] + list(EFFECTS)
 
 # The spin's trail is the head colour at this fraction.
 TRAIL = 0.25
