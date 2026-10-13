@@ -93,6 +93,35 @@ type Stats struct {
 	MaxGapMs   uint32
 }
 
+// Engine is what the firmware needs from an on-device wake word scorer, so the
+// open-source models in this package and the Echo's own decoder (package
+// pryon) can be chosen between without the callers knowing which is running.
+// Every method keeps the rule at the top of this file: nothing here may block
+// the mic goroutine, and Close must be safe while frames are still arriving.
+type Engine interface {
+	// PushBytesAt queues one chunk of little-endian S16 16kHz mono, stamped with
+	// when it was captured. Never blocks; drops and counts when behind.
+	PushBytesAt(b []byte, at time.Time)
+	// Reset clears streaming state at a stream boundary.
+	Reset()
+	// Ready is whether the engine can score yet.
+	Ready() bool
+	// Drain returns and clears the counters since the last call.
+	Drain() Stats
+	// TakeBargeWindow returns and clears what was seen at the barge-in bar.
+	TakeBargeWindow() (peak, bar float32, frames uint64)
+	// SetThreshold is the controller's owwThreshold. An engine with bars of its
+	// own may ignore it.
+	SetThreshold(t float32)
+	// SetBargeThreshold and the predicate say when the lower bar applies.
+	SetBargeThreshold(t float32, active func() bool)
+	// Info describes the loaded engine for the log.
+	Info() string
+	Close()
+}
+
+var _ Engine = (*Scorer)(nil)
+
 // Scorer runs a Detector over pushed audio on its own goroutine.
 type Scorer struct {
 	det       *wakeword.Detector

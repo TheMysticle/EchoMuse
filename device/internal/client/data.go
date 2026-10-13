@@ -246,7 +246,7 @@ type DataClient struct {
 	// a config push swaps it from the control goroutine while the mic
 	// goroutine is pushing frames into it.
 	shadowMu     sync.Mutex
-	shadowScorer *shadow.Scorer
+	shadowScorer shadow.Engine
 
 	// listenGate decides what of the wake stream may leave the device when
 	// listenState is ListenLocal. Always present; idle in the other states.
@@ -438,7 +438,7 @@ func (d *DataClient) noteEchoRef(ref []byte) bool {
 //
 // Returns the scorer it replaced, already closed, purely so callers can log the
 // transition.
-func (d *DataClient) SetShadowScorer(s *shadow.Scorer) {
+func (d *DataClient) SetShadowScorer(s shadow.Engine) {
 	d.shadowMu.Lock()
 	old := d.shadowScorer
 	d.shadowScorer = s
@@ -455,7 +455,7 @@ func (d *DataClient) WakeBeamAt(at time.Time) beamformer.WakeBeamInfo {
 	return d.beam.WakeBeamAt(at)
 }
 
-func (d *DataClient) ShadowScorer() *shadow.Scorer {
+func (d *DataClient) ShadowScorer() shadow.Engine {
 	d.shadowMu.Lock()
 	defer d.shadowMu.Unlock()
 	return d.shadowScorer

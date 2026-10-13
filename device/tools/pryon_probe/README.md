@@ -27,3 +27,18 @@ when its backlog grows, so the probe waits on `PryonDecoder_BacklogMsec`.
 
 `bf_design -sweep ... -dump.dir DIR` writes the wake path's output as raw
 16kHz int16, which is what this expects.
+
+## The firmware's own package against the real library
+
+`internal/wakeword/pryon` has a live test (`live_test.go`, tag `pryonlive`) that opens the
+real library through the same cgo shim the firmware uses. Cross-build it for Android and run
+it in the same namespace the probe uses:
+
+```bash
+T=$ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64/bin
+CGO_ENABLED=1 GOOS=android GOARCH=arm GOARM=7 CC=$T/armv7a-linux-androideabi22-clang \
+  CGO_LDFLAGS="-Wl,--hash-style=both" go test -c -tags pryonlive -o pryon.test ./internal/wakeword/pryon
+# then run pryon.test under run.sh's bwrap/qemu setup with EM_PRYON_TEST_RAW=<file.raw>
+# and EM_PRYON_TEST_WANT=<how many wake words it holds>
+```
+Measured: 4 crossings, scores identical to the probe's, no dropped frames at microphone speed.

@@ -26,6 +26,7 @@ import (
 	"github.com/wilbowes/EchoMuse/internal/config"
 	"github.com/wilbowes/EchoMuse/internal/discovery"
 	"github.com/wilbowes/EchoMuse/internal/platform"
+	"github.com/wilbowes/EchoMuse/internal/wakeword/pryon"
 	"github.com/wilbowes/EchoMuse/pkg/board"
 	"github.com/wilbowes/EchoMuse/pkg/buttons"
 	"github.com/wilbowes/EchoMuse/pkg/led"
@@ -1344,6 +1345,14 @@ func capabilities() []string {
 		"wake_word_off", "sendspin", "ble_connect"}
 	if als.Present() {
 		caps = append(caps, "ambient_light")
+	}
+	// "wake_pryon": the Echo's own wake word decoder can be chosen as the on-device
+	// engine (owwModel "pryon_alexa", internal/wakeword/pryon). Announced only
+	// when the library and the model package are on THIS device, the way
+	// ambient_light waits for a readable sensor: a board without Radar's
+	// userspace must show the choice disabled, not offer one that cannot load.
+	if pryon.Available() {
+		caps = append(caps, "wake_pryon")
 	}
 	// "spotify": the Connect engine (internal/spotify), emOS only because
 	// the engine binary is musl-static and installed by the controller.

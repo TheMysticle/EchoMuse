@@ -36,6 +36,7 @@ import (
 	"github.com/wilbowes/EchoMuse/internal/platform"
 	"github.com/wilbowes/EchoMuse/internal/server"
 	"github.com/wilbowes/EchoMuse/internal/wakeword"
+	"github.com/wilbowes/EchoMuse/internal/wakeword/pryon"
 	"github.com/wilbowes/EchoMuse/internal/wakeword/shadow"
 	"github.com/wilbowes/EchoMuse/internal/wifi"
 	"github.com/wilbowes/EchoMuse/pkg/board"
@@ -1331,7 +1332,7 @@ func applyShadowConfig(dc *client.DataClient, cc *client.ControlClient,
 	// between "shadow" and "on" costs nothing: the scorer is identical in
 	// both and rebuilding it would reload a 12MB runtime and open a fresh
 	// ~1.28s not-ready window every time someone changed their mind.
-	sc, err := shadow.Open(model, threshold, func(score, crossed float32, at time.Time) {
+	sc, err := openEngine(model, threshold, func(score, crossed float32, at time.Time) {
 		onWakeCrossing(cc, dc, spk, srv, score, crossed, at)
 	})
 	if err != nil {
@@ -1349,8 +1350,8 @@ func applyShadowConfig(dc *client.DataClient, cc *client.ControlClient,
 	if snap.BargeInEnabled != nil && *snap.BargeInEnabled && spk != nil {
 		sc.SetBargeThreshold(float32(snap.BargeInThreshold), speakerPlaying(spk))
 	}
-	if spk != nil && benchScorer != nil {
-		benchScorer(sc, spk)
+	if o, ok := sc.(*shadow.Scorer); ok && spk != nil && benchScorer != nil {
+		benchScorer(o, spk)
 	}
 	dc.SetShadowScorer(sc)
 	shadowState.mode, shadowState.model, shadowState.lastErr = mode, model, ""
@@ -1360,6 +1361,25 @@ func applyShadowConfig(dc *client.DataClient, cc *client.ControlClient,
 	}
 	log.Printf("[shadow] on-device wake word scoring (%s, threshold %.2f, %s) — %s",
 		sc.Info(), threshold, bargeNote, actsOnCrossings(mode))
+}
+
+// openEngine builds the on-device wake word engine the model setting names: the
+// Echo's own decoder for pryon.ModelName, the open-source scorer for anything
+// else. It returns a nil interface on error, never a typed nil, because the
+// caller stores the result and checks it against nil.
+func openEngine(model string, threshold float32, onCross func(score, threshold float32, at time.Time)) (shadow.Engine, error) {
+	if pryon.IsModel(model) {
+		p, err := pryon.Open(onCross)
+		if err != nil {
+			return nil, err
+		}
+		return p, nil
+	}
+	o, err := shadow.Open(model, threshold, onCross)
+	if err != nil {
+		return nil, err
+	}
+	return o, nil
 }
 
 // speakerPlaying is when the wake bar drops to bargeInThreshold: a response,
