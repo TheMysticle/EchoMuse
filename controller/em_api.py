@@ -34,6 +34,7 @@ is in em_state, which both import by name.
 import asyncio
 import logging
 import posixpath as _posixpath
+from pathlib import Path
 from shlex import quote as _sh_quote
 from typing import Optional
 
