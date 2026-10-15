@@ -12,6 +12,7 @@ does without.
 - Entity keys are append-only: HA keys its registry on them.
 """
 
+import _sources
 import re
 from pathlib import Path
 
@@ -54,7 +55,8 @@ def test_the_button_mute_is_read_only():
                     "isinstance(msg, api_pb2.MediaPlayerCommandRequest)"):
         block = _block(src, handler, "\n        if isinstance(msg, ")
         assert "MIC_MUTED_KEY" not in block
-    assert src.count("MIC_MUTED_KEY") == 3, "defined, advertised, reported — nothing else"
+    assert _sources.all_code().count("MIC_MUTED_KEY") == 3, \
+        "defined, advertised, reported — nothing else"
 
 
 def test_subscribing_to_states_reports_the_mute():
@@ -144,15 +146,13 @@ def test_deleting_a_device_forgets_its_choice():
 
 
 def test_the_controller_reports_the_button_mute_to_ha():
-    src = CONTROLLER.read_text()
-    handler = _block(src, 'msg_type == "mute_state"', 'msg_type == "volume_state"')
+    handler = _sources.def_source("_on_mute_state")
     assert "esphome.update_mic_muted(" in handler
 
 
 def test_the_button_does_not_move_the_wake_word():
     """`mute_state` may read HA's choice but never assign it."""
-    src = CONTROLLER.read_text()
-    handler = _block(src, 'msg_type == "mute_state"', 'msg_type == "volume_state"')
+    handler = _sources.def_source("_on_mute_state")
     assert "em_wakeword.on_mic_mute(" in handler
     assert not re.search(r"\.wake_word_enabled\s*=", handler)
     assert "esphome.update_wake_word(" not in handler
@@ -161,8 +161,7 @@ def test_the_button_does_not_move_the_wake_word():
 
 def test_unmuting_with_the_wake_word_off_takes_the_stream_back_down():
     """The device restarts its wake stream on unmute; with the wake word off it goes back down."""
-    src = CONTROLLER.read_text()
-    handler = _block(src, 'msg_type == "mute_state"', 'msg_type == "volume_state"')
+    handler = _sources.def_source("_on_mute_state")
     branch = _block(handler, "em_wakeword.on_mic_mute(", "if device.muted and")
     assert "mic_stop()" in branch
 
@@ -185,7 +184,7 @@ def test_the_wake_stream_does_not_come_up_with_the_wake_word_off():
 
 def test_the_api_readout_is_the_stored_choice():
     """Read from the DB, not defaulted off `live`, so an offline device reports HA's choice."""
-    src = (ROOT / "controller" / "em_api.py").read_text()
+    src = _sources.def_source("merge_device")
     lines = [ln for ln in src.splitlines() if '"wake_word":' in ln]
     assert len(lines) == 1, lines
     assert "db.get_wake_word_enabled(" in lines[0], lines[0].strip()

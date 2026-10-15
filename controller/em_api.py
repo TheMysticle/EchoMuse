@@ -20,333 +20,55 @@ em_controller.py — aiohttp handles /api/* and /, websockets handles
 
 Usage (from em_controller.py main()):
     import em_api
-    runner = await em_api.create_runner(devices_ref)
+    runner = await em_api.create_runner()
     await runner.setup()
     site = web.TCPSite(runner, host, port + 1)   # or same port via middleware
     await site.start()
     ...
     await runner.cleanup()
 
-The _devices dict reference is passed in so the API can merge live
-state with persisted DB state without coupling to a global.
+Live state shared with em_controller (the device registry, shell sessions)
+is in em_state, which both import by name.
 """
 
 import asyncio
-import contextlib
-import hashlib
-import html as _html
-import json
-import secrets
 import logging
-import os
-import platform
 import posixpath as _posixpath
-import re
 from shlex import quote as _sh_quote
-import shutil
-import sqlite3 as _sqlite3
-import sys
-import tempfile
-import time
-from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
-import aiohttp
 from aiohttp import web
 import websockets
 
 import em_db as db
-import em_health
+import em_events
+import em_shell
+import em_ota
+import em_http
+import em_state
 import em_auth as auth
-import em_ble_proxy
-import em_broadcast
-import em_config_sections as sections_mod
-import em_config_types
-import em_dbwriter
 import em_tasks
-import em_console_pw
 import em_tcp
-import em_labels
-import em_crashlog
-import em_emos_build
-import em_emos_update
 import em_firmware
 import em_ingressauth
-import em_oww_assets
-import em_oww_models
+import em_routes_activity
+import em_routes_auth
+import em_routes_config
+import em_routes_devices
+import em_routes_events
+import em_routes_link
+import em_routes_oww
+import em_routes_provision
+import em_routes_shell
+import em_routes_static
+import em_routes_system
+import em_routes_updates
 import em_pairing
-import em_pki
-import em_player
-import em_recordings
-import em_wake_samples
-import em_volume
-import em_wifi
-import em_endpoints
-import em_scenes
-import em_shadow
-import em_support
-from version import VERSION as CONTROLLER_VERSION
-from version import compare as _compare_versions
-from version import parse as _parse_version
-from version import choose_firmware_release as _choose_firmware_release
-from version import firmware_update as _firmware_update
-from version import offers_ea_firmware as _offers_ea_firmware
 
 log = logging.getLogger("echomuse.api")
 
-# Import time, which is startup: em_controller imports this module before it
-# serves anything. Close enough to process start for "how long has it been up",
-# and it needs no procfs.
-_PROCESS_START = time.time()
-
-# CPU over 1m/5m/1h, fed by the event-loop lag monitor (see sample_cpu). The
-# ring is bounded by its longest window; nothing here runs per request.
-_cpu_history = em_support.CpuHistory()
-CPU_SAMPLE_INTERVAL_S = em_support.CpuHistory.INTERVAL_S
-
-# The controller's own recent log, kept in memory for support bundles. Every
-# line that would have explained #62 goes to stdout, and stdout was not in
-# the bundle at all.
-_log_ring = em_support.LogRing()
-
-
-def install_log_ring(fmt: str) -> None:
-    """
-    Attach the in-memory log ring to the root logger.
-
-    Called from em_controller once logging is configured, with the same
-    format string, so a bundle reads exactly like the console does.
-    """
-    _log_ring.setFormatter(logging.Formatter(fmt))
-    logging.getLogger().addHandler(_log_ring)
-
-
-def sample_cpu() -> None:
-    """
-    Take one CPU sample. Called from em_controller's existing 1s ticker, not
-    on a task of its own — the cost is one os.times() every INTERVAL_S.
-    """
-    _cpu_history.add(time.monotonic(), sum(os.times()[:2]))
-
-# ─── Config ───────────────────────────────────────────────────────────────────
-
-STATIC_DIR = Path(__file__).parent / "static"
-# Set when running as a Home Assistant add-on (config.yaml's `environment`
-# block) — gates the ingress-only middleware below. Unset for every other
-# deployment (docker-compose, bare python), which keeps serving the
-# dashboard directly exactly as before.
-INGRESS_ONLY = os.environ.get("ECHOMUSE_HOME_ASSISTANT_INGRESS") == "true"
-# Home Assistant Supervisor's ingress reverse proxy always calls in from this
-# fixed address on the internal hassio Docker network.
-INGRESS_GATEWAY_IP = "172.30.32.2"
-# List endpoint, not /releases/latest: device firmware releases (v* tags with
-# a `server` asset) share the repo with controller releases (controller-v*
-# tags, GHCR image only). /releases/latest returns whichever was published
-# most recently — _fetch_latest_release filters the list for the newest
-# release that is actually a device firmware release.
-GITHUB_API_URL = "https://api.github.com/repos/{repo}/releases?per_page=10"
-
-# How long to cache GitHub release info in memory (seconds).
-# DB is the persistent cache; this avoids hitting the DB on every
-# /api/releases/latest request.
-_release_cache: dict = {}
-_release_cache_ts: float = 0.0
-RELEASE_CACHE_TTL = 60  # seconds
-
-# Controller releases are `controller-v*` TAGS with no GitHub Release behind
-# them — controller-release.yml publishes a GHCR image and nothing else (see
-# "Versioning / releases" in CLAUDE.md). So the notes come from the tag's own
-# annotation: matching-refs lists the tags, and an annotated tag's object
-# carries the message.
-#
-# Deliberately NOT solved by publishing GitHub Releases for controller tags.
-# The releases list is the DEVICE firmware's update feed and
-# _fetch_latest_release scans it for the newest v* tag carrying a `server`
-# asset; adding controller rows puts non-firmware entries in front of that
-# scan for no gain, when the annotation we already write says the same thing.
-GITHUB_TAGS_URL = (
-    "https://api.github.com/repos/{repo}/git/matching-refs/tags/controller-v"
-)
-GITHUB_TAG_OBJECT_URL = "https://api.github.com/repos/{repo}/git/tags/{sha}"
-
-_controller_cache: dict = {}
-_controller_cache_ts: float = 0.0
-
-# Reference to the live devices dict from em_controller — set by init().
-_devices: dict = {}
-
-# Device-link TLS material directory — set by em_controller.main() once
-# em_pki.ensure_pki() succeeds. None = TLS listener not running (no
-# cryptography package / setup failure); credential endpoints then 503.
-_tls_dir: str | None = None
-
-
-def set_tls_dir(tls_dir: str) -> None:
-    global _tls_dir
-    _tls_dir = tls_dir
-
-
-# This controller's own address and device ports: the defaults for an entry
-# in controllerEndpoints, and what the dashboard offers to fill in.
-# tls_port is 0 when the wss listener is not running.
-_link = {"ip": "", "port": 8767, "tls_port": 0}
-
-
-def set_link_ports(ip: str, port: int, tls_port: int) -> None:
-    _link.update(ip=ip or "", port=port, tls_port=tls_port)
-
-# Set of connected /api/events WebSocket clients.
-_event_clients: set[web.WebSocketResponse] = set()
-
-# Track in-progress OTA updates per device_id to enforce one-at-a-time.
-_updates_in_progress: set[str] = set()
-
-# Firmware updates are SERIALISED across the whole controller, not just per
-# device. Three concurrent OTAs stalled the event loop for 11.1 seconds on
-# 2026-09-02 — measured, in the `[loop] event loop stalled` warnings — and
-# that loop is what sends speaker periods and LED frames, so a device mid
-# response pays for a device being updated. The transfer is base64 over the
-# shell plane and CPU-bound in this process; the fix is to stop doing several
-# at once, not to make one cheaper.
-#
-# A device-level guard cannot do this: `_updates_in_progress` stops one device
-# being updated twice, and says nothing about two devices being updated at
-# once. So the lock is global and BOTH entry points go through it — the fleet
-# deploy and a hand-clicked single update, which collide identically.
-#
-# A failure does NOT stop the queue. Wil's call, 2026-09-02: mark it, carry on,
-# report at the end — one device that will not come back should not strand the
-# rest of a fleet update behind it.
-_ota_lock = asyncio.Lock()
-
-# Longest one device may hold the OTA queue. A real update is a ~10MB transfer,
-# a reboot and a 90s reconnect watch, so this is a deadlock cap rather than a
-# performance budget: it exists because serialising made one wedged device able
-# to block the whole fleet's updates until the controller restarted.
-OTA_MAX_HOLD_S = 300.0
-
-# Devices waiting on `_ota_lock`. Reported separately from
-# `update_in_progress` so the dashboard says "queued" rather than claiming
-# work that has not started — the same rule as everywhere else here: a control
-# that cannot act must say so rather than appear to work.
-_updates_queued: set[str] = set()
-
-# Last OTA failure per device, surfaced as `update_error` in /api/devices so
-# the dashboard (fleet deploy modal + per-device update log) can show *why* a
-# tile stopped progressing instead of sitting at "updating…" forever. Set by
-# _update_failed on every _run_update/_run_rollback failure path; cleared when
-# a new update starts and on confirmed success. In-memory by design — a
-# controller restart clears stale errors along with the update tasks
-# themselves.
-_update_errors: dict[str, str] = {}
-
-# Pending local binary uploads — keyed by UUID token, expire after 10 minutes.
-_pending_uploads: dict[str, bytes] = {}
-
-# emOS updates (#573, em_emos_update). Their own sets rather than the firmware
-# ones above: the dashboard shows the two side by side, and a shared flag
-# would put "updating…" on the firmware panel while emOS is being flashed.
-# Both endpoints refuse while EITHER is running on a device.
-_emos_updates_in_progress: set[str] = set()
-_emos_updates_queued: set[str] = set()
-_emos_update_errors: dict[str, str] = {}
-# The step an update is on, for the panel. Cleared when it ends.
-_emos_update_stage: dict[str, str] = {}
-# Uploaded payload bundles (the dev path), token -> (files, version).
-_pending_emos_uploads: dict[str, tuple] = {}
-# The newest emOS release's tag, as last seen. `_emos_latest_version` falls
-# back to the stored copy, so a restart does not blank the Updates tab.
-_emos_latest: str = ""
-
-# An emOS update holds the queue through the reboot and, when the new image
-# fails, through init's whole trial and rollback.
-EMOS_OTA_MAX_HOLD_S = em_emos_update.WATCH_S + 600.0
-
-# Largest firmware binary /api/releases/upload will accept. Roughly 5x the
-# current ~10.7 MB build, so it bounds memory (the upload is held in RAM until
-# deployed or expired) without needing revision every release. The aiohttp
-# transport limit is set ABOVE this in create_app so this is the ceiling a
-# user actually meets, with a message that names it.
-UPLOAD_MAX_BYTES = 50 * 1024 * 1024
-
-# WiFi change state per device_id — {"pending": {...}|None, "last_result":
-# {...}|None}. Deliberately NOT on the live Device object: the connection
-# (and with it the Device) dies when the network switches, and the outcome
-# arrives on the replacement connection. In-memory only — a controller
-# restart mid-change just means the result event is lost, not the change
-# itself (the device self-manages commit/rollback).
-_wifi_states: dict[str, dict] = {}
-
-# A change whose result never arrived (device bricked its network AND
-# rollback failed, or controller restarted) must not block retries forever.
-_WIFI_PENDING_TTL = 240  # device gates total ≤ ~135s + margin
-
-
-def wifi_state(device_id: str) -> dict:
-    """Current wifi change state for a device, with stale pending expiry."""
-    st = _wifi_states.setdefault(device_id, {"pending": None, "last_result": None})
-    pending = st.get("pending")
-    if pending and time.time() - pending["started_at"] > _WIFI_PENDING_TTL:
-        st["pending"] = None
-        st["last_result"] = {
-            "ok": False, "ssid": pending["ssid"],
-            "error": "no result from device — change timed out (device may "
-                     "be offline, or its rollback failed)",
-            "at": time.time(),
-        }
-    return st
-
-
-def wifi_record_result(device_id: str, ok: bool, ssid: str, error: str
-                       ) -> tuple[dict, bool]:
-    """
-    Store a wifi_result reported by the device.
-
-    Returns (state, duplicate). The device re-sends its result until the
-    wifi_commit ack lands, so re-arrivals of the same outcome are flagged
-    (duplicate=True) and don't refresh the timestamp — callers ack every
-    arrival but log/record only the first.
-    """
-    st = wifi_state(device_id)
-    last = st.get("last_result")
-    if (last and last.get("ok") == ok and last.get("ssid") == ssid
-            and last.get("error") == error and st.get("pending") is None):
-        return st, True
-    st["pending"] = None
-    st["last_result"] = {"ok": ok, "ssid": ssid, "error": error, "at": time.time()}
-    return st, False
 
 # ─── Initialisation ───────────────────────────────────────────────────────────
-
-_shell_pending:   dict = {}
-_shell_dashboard: dict = {}
-_shell_ws:        dict = {}   # device_id → live ws for programmatic sessions
-_shell_lock:      dict = {}   # device_id → asyncio.Lock (one session at a time)
-# device_id → the asyncio Task that actually holds _shell_lock.
-#
-# `Lock.locked()` answers "is anyone holding this", never "am I", and the
-# cleanup paths used it as though it meant the second. So a caller that gave
-# up WAITING for the lock ran the same cleanup as one that had it, and
-# released the lock out from under the transfer still using it — two shell
-# sessions on one device, which is the exact thing the lock exists to stop.
-# Seen end to end on EFF 2026-09-04: a debloat push hung for 108s, the wake
-# word reconcile behind it timed out and released the debloat's lock, and the
-# slot detect that followed then failed with `Lock is not acquired` and
-# reported an empty result — surfacing to the operator as "could not
-# determine active slot", three steps from anything to do with locking.
-_shell_owner:     dict = {}   # device_id → task holding _shell_lock
-
-def init(devices_ref: dict, shell_pending_ref: dict, shell_dashboard_ref: dict) -> None:
-    """
-    Bind live shared state from em_controller.
-
-    Must be called before create_app().
-    """
-    global _devices, _shell_pending, _shell_dashboard
-    _devices         = devices_ref
-    _shell_pending   = shell_pending_ref
-    _shell_dashboard = shell_dashboard_ref
-
 
 async def create_app() -> web.Application:
     """
@@ -380,113 +102,42 @@ async def create_app() -> web.Application:
     # is unreachable by construction.
     app = web.Application(
         middlewares=[_ingress_only_middleware, _error_middleware],
-        client_max_size=UPLOAD_MAX_BYTES + 8 * 1024 * 1024,
+        client_max_size=em_routes_updates.UPLOAD_MAX_BYTES + 8 * 1024 * 1024,
     )
 
     # Static / setup
-    app.router.add_get("/",           _serve_spa)
-    # /setup predates the state-aware landing page — / now shows the
-    # first-run form itself when setup is pending, so just send people there.
-    app.router.add_get("/setup",      _redirect_root)
-    app.router.add_get("/dashboard",  _serve_dashboard)
-    app.router.add_static("/static",  STATIC_DIR)
-    app.router.add_post("/api/setup", _post_setup)
-    # Public (pre-auth) — the landing page needs to know which form to show.
-    # Exposes only the boolean; the bootstrap token itself stays in the logs.
-    app.router.add_get("/api/system/setup-state", _get_setup_state)
+    em_routes_static.register(app)
 
-    # Auth
-    app.router.add_post("/api/auth/login",           _post_login)
-    # Public: decides for itself whether the request is a genuine ingress
-    # request. Requiring a session here would defeat the purpose.
-    app.router.add_post("/api/auth/ingress",          _post_ingress_login)
-    app.router.add_post("/api/auth/logout",          _post_logout)
-    app.router.add_get("/api/auth/me",               _get_me)
-    app.router.add_post("/api/auth/change-password", _post_change_password)
+    em_routes_auth.register(app)
 
-    # Users — roles. There was no way to change one at all until 2026-08-14,
-    # which only became load-bearing when ingress started provisioning
-    # accounts the operator never created.
-    app.router.add_get("/api/users",        _get_users)
-    app.router.add_patch("/api/users/{id}", _patch_user)
+    # Devices, then the Activity tab's routes under /api/devices/{id}
+    em_routes_devices.register(app)
+    em_routes_activity.register(app)
 
-    # Devices — order matters: specific paths before parameterised ones
-    app.router.add_get("/api/devices",                    _get_devices)
-    app.router.add_get("/api/devices/pending",            _get_pending)
-    app.router.add_get("/api/devices/{id}",               _get_device)
-    app.router.add_patch("/api/devices/{id}",             _patch_device)
-    app.router.add_delete("/api/devices/{id}",            _delete_device)
-    app.router.add_post("/api/devices/{id}/approve",      _post_approve)
-    app.router.add_get("/api/devices/{id}/config",        _get_device_config)
-    app.router.add_get("/api/devices/{id}/sendspin/token", _get_sendspin_token)
-    app.router.add_get("/api/devices/{id}/ble_proxy/key", _get_ble_proxy_key)
-    app.router.add_post("/api/devices/{id}/config",       _post_device_config)
-    app.router.add_get("/api/devices/{id}/logs",          _get_device_logs)
-    app.router.add_get("/api/devices/{id}/turns",         _get_device_turns)
-    app.router.add_get("/api/devices/{id}/activity",      _get_device_activity)
-    app.router.add_get("/api/devices/{id}/turns/{turn}/audio", _get_turn_audio)
-    app.router.add_get("/api/devices/{id}/wake-samples", _get_wake_samples)
-    app.router.add_patch("/api/devices/{id}/wake-samples/{sample}", _patch_wake_sample)
-    app.router.add_delete("/api/devices/{id}/wake-samples/{sample}", _delete_wake_sample)
-    app.router.add_get("/api/devices/{id}/wake-samples/{sample}/audio", _get_wake_sample_audio)
-    app.router.add_post("/api/devices/{id}/wifi",         _post_device_wifi)
-    app.router.add_post("/api/devices/{id}/wifi/scan",    _post_device_wifi_scan)
-    app.router.add_post("/api/devices/{id}/update",       _post_device_update)
-    app.router.add_post("/api/devices/{id}/emos_update",  _post_device_emos_update)
-    app.router.add_post("/api/emos/upload",               _post_emos_upload)
-    app.router.add_post("/api/devices/{id}/rollback",     _post_device_rollback)
-    app.router.add_post("/api/releases/upload",           _post_upload_binary)
+    em_routes_oww.register(app)
+    em_routes_shell.register(app)
 
-    # Custom wake-word models (oww_forge output → data/oww_models/)
-    app.router.add_get("/api/oww_models",             _get_oww_models)
-    app.router.add_post("/api/oww_models/upload",     _post_oww_model_upload)
-    app.router.add_delete("/api/oww_models/{file}",   _delete_oww_model)
-    app.router.add_get("/api/devices/{id}/shell",         _ws_shell)
-    app.router.add_get("/api/devices/{id}/oww_assets",    _get_oww_assets)
-    app.router.add_post("/api/devices/{id}/oww_assets",   _post_oww_assets)
-
-    # Releases
-    app.router.add_get("/api/releases/latest",   _get_latest_release)
-    app.router.add_get("/api/releases/controller", _get_controller_release)
-    app.router.add_post("/api/releases/check",   _post_check_release)
-    app.router.add_post("/api/releases/deploy",  _post_deploy_all)
+    # Updates: firmware, emOS, releases, the controller release notice
+    em_routes_updates.register(app)
 
     # Global device config
-    app.router.add_get("/api/global/config",   _get_global_config)
-    app.router.add_post("/api/global/config",  _post_global_config)
+    em_routes_config.register(app)
 
     # System
-    app.router.add_get("/api/support/bundle",  _get_support_bundle)
-    app.router.add_get("/api/system/status",    _get_system_status)
-    app.router.add_get("/api/system/config",    _get_system_config)
-    app.router.add_patch("/api/system/config",  _patch_system_config)
+    em_routes_system.register(app)
 
     # Provisioning
-    app.router.add_get("/api/provision/start_script", _get_provision_start_script)
-    app.router.add_get("/api/provision/debloat_script",   _get_provision_debloat_script)
-    app.router.add_get("/api/provision/debloat_packages", _get_provision_debloat_packages)
-    app.router.add_get("/api/provision/magisk_db",    _get_provision_magisk_db)
-    app.router.add_get("/api/provision/latest_binary", _get_provision_latest_binary)
-    app.router.add_get("/api/provision/oww_assets",    _get_provision_oww_manifest)
-    app.router.add_get("/api/provision/oww_asset/{name}", _get_provision_oww_asset)
-    app.router.add_post("/api/provision/tls_credentials", _post_provision_tls_credentials)
-    app.router.add_get("/api/provision/controller_endpoints", _get_provision_controller_endpoints)
-    app.router.add_post("/api/provision/diagnostics",     _post_provision_diagnostics)
-    app.router.add_get("/api/provision/emos_init",     _get_provision_emos_init)
-    app.router.add_post("/api/provision/emos_image",   _post_provision_emos_image)
-    app.router.add_post("/api/devices/{id}/pair",         _post_pair)
-    app.router.add_post("/api/devices/{id}/debloat",      _post_debloat)
+    em_routes_provision.register(app)
+    em_routes_link.register(app)
 
     # Live events WebSocket
-    app.router.add_get("/api/events", _ws_events)
+    em_routes_events.register(app)
 
     return app
 
 
-async def create_runner(devices_ref: dict, shell_pending_ref: dict,
-                        shell_dashboard_ref: dict) -> web.AppRunner:
-    """Convenience wrapper — init + create_app + AppRunner."""
-    init(devices_ref, shell_pending_ref, shell_dashboard_ref)
+async def create_runner() -> web.AppRunner:
+    """Convenience wrapper — create_app + AppRunner."""
     app = await create_app()
     return web.AppRunner(app)
 
@@ -501,7 +152,8 @@ async def _ingress_only_middleware(request: web.Request, handler):
     auth in front of it on the LAN otherwise. No-op (INGRESS_ONLY unset)
     for every deployment that isn't the add-on.
     """
-    if INGRESS_ONLY and request.remote != INGRESS_GATEWAY_IP:
+    if (em_ingressauth.INGRESS_ONLY
+            and request.remote != em_ingressauth.INGRESS_GATEWAY_IP):
         log.warning("Rejected non-ingress request from %s", request.remote)
         raise web.HTTPForbidden(text="Home Assistant Ingress is required")
     return await handler(request)
@@ -523,7 +175,7 @@ async def _error_middleware(request: web.Request, handler):
         raise  # let aiohttp handle its own HTTP exceptions normally
     except Exception as e:
         log.exception(f"Unhandled error in {request.method} {request.path}")
-        return _error("internal_error", "An internal error occurred", 500)
+        return em_http.error("internal_error", "An internal error occurred", 500)
 
 
 # ─── Static / setup ───────────────────────────────────────────────────────────
@@ -6255,48 +5907,6 @@ async def _fetch_binary(download_url: str,
 
 # ─── Periodic background tasks ────────────────────────────────────────────────
 
-async def release_poll_loop() -> None:
-    """
-    Periodically poll GitHub for new releases.
-
-    Runs as an asyncio task started from em_controller.main().
-    Interval is read from system_config each iteration so it can be
-    changed at runtime without restart.
-    """
-    # Initial delay — let the controller finish starting up
-    await asyncio.sleep(30)
-
-    while True:
-        interval = _update_check_interval()
-        if interval <= 0:
-            # Disabled (#159): no fetch, no outbound connection. Re-read
-            # after a fixed park so re-enabling from the dashboard takes
-            # effect without a restart.
-            await asyncio.sleep(60)
-            continue
-
-        try:
-            await _fetch_latest_release()
-        except Exception as e:
-            log.error(f"[api] Release poll loop error: {e}")
-
-        # Same cadence, separate failure domain: a GitHub hiccup on one must
-        # not cost the other its poll.
-        try:
-            await _fetch_controller_release(force=True)
-        except Exception as e:
-            log.error(f"[api] Controller release poll error: {e}")
-
-        try:
-            await _fetch_latest_emos_release()
-        except Exception as e:
-            log.error(f"[api] emOS release poll error: {e}")
-
-        # Floor of 1s so even an absurd tiny positive interval cannot spin
-        # the loop faster than the event loop allows.
-        await asyncio.sleep(max(interval, 1))
-
-
 async def session_prune_loop() -> None:
     """Prune expired sessions hourly."""
     while True:
@@ -6309,11 +5919,6 @@ async def session_prune_loop() -> None:
 
 
 # ─── Helpers shared across em_controller ─────────────────────────────────────
-
-# Devices whose last update failed and whose supervisor log has not yet been
-# collected. The fetch cannot happen at failure time — the device is gone,
-# which is the whole problem — so it waits for the next connect.
-_supervisor_log_wanted: set[str] = set()
 
 # Supervisor decisions kept on the device, surviving the reboot that /tmp does
 # not. Must match SUP_LOG in device_payloads/start_server.sh.
@@ -6335,18 +5940,18 @@ async def _collect_supervisor_log(device_id: str) -> None:
     so the evidence arrives where someone would look, instead of sitting in a
     file nobody knows to read.
     """
-    live = _devices.get(device_id)
+    live = em_state.devices.get(device_id)
     if live is None:
         return
-    out = await _shell_run(live, f"busybox tail -c 4096 {SUPERVISOR_LOG}", timeout=30.0)
+    out = await em_shell.run(live, f"busybox tail -c 4096 {SUPERVISOR_LOG}", timeout=30.0)
     text = (out or "").strip()
     if not text:
-        await _push_log_event(device_id, "warn", "controller",
+        await em_events.push_log(device_id, "warn", "controller",
             "Update failed, and the device has no supervisor log — firmware "
             "predating it, or start_server.sh has not been synced yet "
             "(it takes effect on the next device reboot).")
         return
-    await _push_log_event(device_id, "warn", "controller",
+    await em_events.push_log(device_id, "warn", "controller",
         "Supervisor log from the failed update:\n" + text)
 
 
@@ -6371,14 +5976,14 @@ async def notify_device_connected(device_id: str, version: str | None = None) ->
         row = await loop.run_in_executor(None, db.get_device, device_id)
         if row:
             event["firmware_ver"] = row["firmware_ver"]
-    await _push_event(event)
+    await em_events.push(event)
 
     # Owed an explanation from a failed update? Collect it now the device is
     # reachable again. Removed from the set on the way in, so a flapping
     # device cannot queue repeated fetches, and scheduled rather than awaited
     # so a slow shell never delays the connect path.
-    if device_id in _supervisor_log_wanted:
-        _supervisor_log_wanted.discard(device_id)
+    if device_id in em_ota.supervisor_log_wanted:
+        em_ota.supervisor_log_wanted.discard(device_id)
 
         async def _collect_soon(_id=device_id):
             # The device has just registered; give its shell plane a moment
@@ -6394,21 +5999,21 @@ async def notify_device_connected(device_id: str, version: str | None = None) ->
 
 async def notify_device_disconnected(device_id: str) -> None:
     """Called by em_controller when a device disconnects."""
-    await _push_event({"type": "device_disconnected", "device_id": device_id})
+    await em_events.push({"type": "device_disconnected", "device_id": device_id})
 
 
 async def notify_pair_request(device_id: str, via: str) -> None:
     """A device asked to pair; the dashboard offers Approve pairing."""
     if em_pairing.request(device_id, via):
         log.info(f"[api] {device_id} asked to pair ({via})")
-        await _push_log_event(device_id, "info", "controller",
+        await em_events.push_log(device_id, "info", "controller",
                               "Asked to pair — approve it in the dashboard")
-        await _push_event({"type": "device_pair_request", "device_id": device_id})
+        await em_events.push({"type": "device_pair_request", "device_id": device_id})
 
 
 async def notify_device_pending(device_id: str, ip: str) -> None:
     """Called by em_controller when an unapproved device attempts connection."""
-    await _push_event({
+    await em_events.push({
         "type":      "device_pending",
         "device_id": device_id,
         "ip":        ip,
