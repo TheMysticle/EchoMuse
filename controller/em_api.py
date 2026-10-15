@@ -65,6 +65,7 @@ import em_routes_static
 import em_routes_system
 import em_routes_updates
 import em_pairing
+import em_emos_build
 
 log = logging.getLogger("echomuse.api")
 
