@@ -1,15 +1,10 @@
 {
  "files": {
-  "em_api.py": 6352,
   "em_controller.py": 6148,
   "em_db.py": 3362,
   "em_esphome.py": 3618
  },
  "functions": {
-  "em_api._merge_device": 188,
-  "em_api._post_provision_emos_image": 216,
-  "em_api._run_update_locked": 212,
-  "em_api._stream_file_to_device": 239,
   "em_controller.Device.__init__": 391,
   "em_controller._barge_watcher": 289,
   "em_controller._run_post_turn_playback": 172,
