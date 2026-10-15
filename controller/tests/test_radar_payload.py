@@ -1,5 +1,6 @@
 """A Radar wizard upload must build a Radar image with the right init and
 stamp emos.board=radar and emos.system on the cmdline."""
+import asyncio
 import json
 
 import pytest
@@ -8,9 +9,8 @@ import em_emos_ota
 import em_routes_provision
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize('missing', [False, True])
-async def test_uploaded_radar_bundle_includes_wifi_and_stamps_board(missing, monkeypatch):
+def test_uploaded_radar_bundle_includes_wifi_and_stamps_board(missing, monkeypatch):
     monkeypatch.setattr(eb, "radar_initramfs_kernel", lambda kernel: kernel)
     import struct
     from test_emos_build import make_reference, fake_init
@@ -32,7 +32,8 @@ async def test_uploaded_radar_bundle_includes_wifi_and_stamps_board(missing, mon
             return Field(*pair) if pair else None
     class Request:
         async def multipart(self): return Reader()
-    response = await em_routes_provision._post_provision_emos_image.__wrapped__(Request())
+    response = asyncio.run(
+        em_routes_provision._post_provision_emos_image.__wrapped__(Request()))
     if missing:
         assert response.status == 400
         assert 'Wi-Fi tools' in response.text
