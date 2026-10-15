@@ -10,7 +10,7 @@
 # add-on build on a kvm64 host died here ("NumPy was built with baseline
 # optimizations: (X86_V2)"), while CI's v2-capable runners never saw it. The
 # output hash is unchanged with 2.3.5 (checked on linux/amd64).
-FROM python:3.12-slim@sha256:02108f5d322dd89f1c9e552442c25acb0543dfdbc455693a5599624f20d9155d AS silero
+FROM python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1 AS silero
 COPY tools/silero_typed.py /tmp/
 RUN pip install --no-cache-dir --root-user-action=ignore onnx==1.20.1 numpy==2.3.5 && \
     python -c "import urllib.request; urllib.request.urlretrieve('https://github.com/dscripka/openWakeWord/releases/download/v0.5.1/silero_vad.onnx', '/tmp/in.onnx')" && \
@@ -20,7 +20,7 @@ RUN pip install --no-cache-dir --root-user-action=ignore onnx==1.20.1 numpy==2.3
 
 # Base pinned by the multi-arch index digest, so every build of a given commit
 # starts from the same bytes; Dependabot moves the digest weekly with the tag.
-FROM python:3.12-slim@sha256:02108f5d322dd89f1c9e552442c25acb0543dfdbc455693a5599624f20d9155d
+FROM python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1
 # Links the GHCR package page back to the repo (and lets the package inherit
 # the repo's public visibility once connected).
 LABEL org.opencontainers.image.source="https://github.com/wilbowes/EchoMuse" \
@@ -127,6 +127,22 @@ COPY em_wav.py .
 COPY em_pki.py .
 COPY em_hostip.py .
 COPY em_ingressauth.py .
+COPY em_routes_activity.py .
+COPY em_routes_auth.py .
+COPY em_routes_config.py .
+COPY em_routes_devices.py .
+COPY em_routes_events.py .
+COPY em_routes_link.py .
+COPY em_routes_oww.py .
+COPY em_routes_provision.py .
+COPY em_routes_shell.py .
+COPY em_routes_static.py .
+COPY em_routes_system.py .
+COPY em_routes_updates.py .
+COPY em_process_stats.py .
+COPY em_device_view.py .
+COPY em_device_config.py .
+COPY em_credentials.py .
 COPY em_linkauth.py .
 COPY em_tcp.py .
 COPY em_pacing.py .
@@ -142,11 +158,22 @@ COPY em_ble_gatt.py .
 COPY em_ble_proxy.py .
 COPY em_broadcast.py .
 COPY em_oww_assets.py  ./
+COPY em_oww_check.py   ./
 COPY em_oww_models.py .
 COPY em_pairing.py .
 COPY em_oww_metadata.py .
 COPY em_oww_warmup.py .
 COPY em_arbiter.py .
+COPY em_state.py .
+COPY em_http.py .
+COPY em_events.py .
+COPY em_shell.py .
+COPY em_releases.py .
+COPY em_payloads.py .
+COPY em_ota.py .
+COPY em_oww_sync.py .
+COPY em_emos_ota.py .
+COPY em_reconcile.py .
 COPY em_listen.py .
 COPY em_wakelevel.py .
 COPY em_endpoints.py .

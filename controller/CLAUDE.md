@@ -160,7 +160,7 @@ One publish path, channel taken from the tag: `controller-v2.20.0` →
 **EA never moves `:latest`** — that is what `docker-compose.deploy.yml` pulls,
 so an EA build touching it would push a prerelease to every standalone
 container on the next `docker compose pull`. The prefixes are distinct rather
-than one scheme with a suffix because `_fetch_controller_release` lists tags
+than one scheme with a suffix because `em_releases.fetch_controller` lists tags
 by **prefix match** on `controller-v`, which excludes `controller-ea-v*` from
 the dashboard's update notice for free.
 
@@ -294,6 +294,25 @@ every HA-side refusal into the activity stats as a silent user.
 Note this makes turns end in **milliseconds**, so the ring needs an explicit
 `ack_anim` cue or it flashes and reads as a glitch; it previously stayed lit
 only because the turn was hung.
+
+**A `RUN_END` after `STT_END` and before `INTENT_END` is HA cancelling its own
+run, and it ends the turn (#506, 2026-10-12).** `ask_question`, `announce` and
+`start_conversation` all open with `_cancel_running_pipeline()` (read in HA
+2026.9.4's `assist_satellite/entity.py`). When the turn's own intent is what
+asked — a sentence-triggered automation calling `ask_question` on the Echo
+that heard it — the run cancelled is that turn's, and the question arrives
+2ms later. The premature `RUN_END` the guard above exists for arrives before
+`STT_START`, so `_stt_ended` tells the two apart. Ignored, the turn held the
+voice lock for the whole reply wait and the question's listening turn queued
+behind it: measured on 15LE, wake turn `timeout` at 33.1s, listening turn
+`no_speech`, no answer to the script; with the fix `superseded` at 3.3s,
+listening 2ms after the question, `answered`. Two things the turn must do
+with `_ha_ended_early`: record `superseded`, not `no_tts`; and NOT send its
+closing `AnnounceFinished`, which HA would take as the reply to the question
+it has just sent. No abort is sent, because HA has already ended the run and
+a `start=False` then would land on the question's. #794 (@forming) found the
+deadlock and proposed superseding from the announce side; the run-end
+handling made that unnecessary.
 
 **The protocol has NO run identifier, and HA does not serialise runs.**
 `VoiceAssistantEventResponse` is an event type plus a name/value list and
@@ -1215,14 +1234,16 @@ single written ladder. `docs/audio-states.md` §2 is the nearest thing.
 | File | Role |
 |------|------|
 | `em_controller.py` | WebSocket server, `Device` registry, voice pipeline, mDNS |
-| `em_api.py` | aiohttp HTTP API + dashboard SPA, OTA, shell proxy |
+| `em_api.py` | The aiohttp app: `create_app` registers every `em_routes_*` module, the two middlewares, session pruning, and the hooks em_controller calls (`notify_*`). Split by area in #907–#940; `docs/controller-modules.md` maps every old em_api name to where it lives now |
+| `em_routes_*.py` | One module per route area (auth, devices, activity, config, updates, provision, link, system, static, shell, events, oww), each with `register(app)`. Shared pieces sit below them: `em_http`, `em_events`, `em_shell`, `em_device_view`, `em_device_config`, `em_ota`, `em_emos_ota`, `em_oww_sync`, `em_reconcile`, `em_payloads`, `em_releases`, `em_process_stats` |
+| `em_state.py` | Process-wide live state: the device registry, shell session coordination, the OWW model caches, the wake arbiter, the loop lag peak. **Its own module because em_controller runs as `__main__`**, so anything importing em_controller by name gets a second copy with empty state (#306). Every reader and writer imports em_state by name; no aiohttp or openwakeword, so the suite imports it unstubbed |
 | `em_emos_update.py` | Updating emOS in place: the checks, the device commands and the sequence, against an `io` the tests can stand in for. Pure |
 | `em_db.py` | SQLite persistence (devices, config, logs, users) |
 | `em_auth.py` | Session auth with bcrypt |
 | `em_eq.py` | Parametric EQ applied to TTS and music before playback; also hosts the chain, calling the guard and limiter in order |
 | `em_mbc.py` | Dynamic bass guard — drops low frequencies the driver cannot deliver. Pure, unit-tested; parameters measured off stock |
 | `em_limiter.py` | Look-ahead peak limiter — stops the EQ clipping what it boosts. Pure, unit-tested |
-| `em_oww_assets.py` | On-device wake word asset distribution — plans what a device needs (runtime + shared models + classifiers), what to push and what to evict. Pure logic; the two transports live in `em_api.py` |
+| `em_oww_assets.py` | On-device wake word asset distribution — plans what a device needs (runtime + shared models + classifiers), what to push and what to evict. Pure logic; the two transports are `em_oww_sync` (shell plane) and the wizard (ADB) |
 | `em_shadow.py` | On-device wake word shadow mode — correlates device-reported threshold crossings with the controller's own detections (clock domains, match window, consume-on-match) |
 | `em_scenes.py` | LED ring scenes — resolves `ledScene`/`ledListenColor`/`ledThinkColor` config into render-ready listening/spinner frames |
 | `em_esphome.py` | ESPHome-mode satellite servers (`EchoMuseSatellite`, `DeviceESPhomeServer`) |
@@ -1264,7 +1285,7 @@ Three invariants, each guarded by `tests/test_config_sections.py`:
 - **`dashboard.jsx`'s `CONFIG_SECTIONS` mirror must match Python** — it is parsed as JSON out of the file, so keep it comment-free and double-quoted. Drift puts a control under a toggle that does not govern it.
 - **`STATE_KEYS` (`startupVolume`) are never section-scoped** — persisted device state, always taken from the device, never fleet-inherited.
 
-Reverting a section **discards** its stored values (`set_device_config_sections` prunes), so no shadow values resurrect on a later re-override. Both config write paths push the **effective** config via the shared `_apply_live_config`, never the request body — with per-section scoping a body is partial by design, and the fleet endpoint now pushes every connected device rather than only fully-inheriting ones.
+Reverting a section **discards** its stored values (`set_device_config_sections` prunes), so no shadow values resurrect on a later re-override. Both config write paths push the **effective** config via the shared `em_device_config.apply_live_config`, never the request body — with per-section scoping a body is partial by design, and the fleet endpoint now pushes every connected device rather than only fully-inheriting ones.
 
 **A fleet edit to a section a device overrides silently does nothing to that
 device, and the dashboard reports success.** It is the merge working as
@@ -1286,7 +1307,7 @@ act must say so rather than appear to work.
 **Every controller-consumed key needs mirroring in BOTH places, and a test
 enforces it.** Config reaches the running controller as attributes on `Device`,
 set in `em_controller.handle_control` when a device registers AND in
-`em_api._apply_live_config` when someone saves. A key in the first but not the
+`em_device_config.apply_live_config` when someone saves. A key in the first but not the
 second reads as working: the database is written, the device is sent a value it
 discards, and the setting takes effect at the next reconnect — which is exactly
 what someone does before investigating further. That happened to all five
@@ -1307,7 +1328,7 @@ for `saveUtterances` means recording. Both config POSTs now refuse a value of
 the wrong type with `bad_config_value`, judging only values the write CHANGES
 so a read-modify-write carrying a value stored before the check still saves.
 Every full-config push drops stored bad values first (`drop_invalid` at
-registration, `_well_typed` for the three pushes in `em_api`), and a dropped
+registration, `em_config_types.well_typed` for every other full push), and a dropped
 key reads as absent at both ends. `tests/test_config_types.py` holds `KINDS`
 against `config.go`, makes every `DEFAULT_DEVICE_CONFIG` key either listed or
 named as read defensively elsewhere, and fails if a push skips the filter —
@@ -1319,7 +1340,7 @@ Every voice turn is persisted to SQLite at completion (`turns` table, `db.insert
 
 **`vad_start_ms` and `vad_end_ms` are a PAIR and only mean something together** (schema v22). An end with no start is a turn Home Assistant's VAD never engaged on — it ran to HA's 15s cap and reported that as an ordinary endpoint, which is the fault described under the voice backend. Storing only the end is why 3.2% of turns were doing this for months in plain sight. `-1` is "never engaged" and NULL is "row predates the column": the sentinel is deliberately not NULL, because an old row and a stalled VAD want opposite conclusions and this is precisely the "absence stores as NULL, not 0" rule seen from the other side.
 
-**Delivery instrumentation (schema v7, firmware v2.9.6+).** Underruns are rare and binary; these measure the *margin* on every stream so degradation is visible before it's audible. Device-reported in `playback_stats`: `min_depth` (fewest periods left in the device buffer mid-stream — the headline number), `prime_wait_ms`, `recv_span_ms` (first→last frame arrival; longer than the audio duration means delivery was slower than realtime), `max_gap_ms`, `bytes_recv`. Controller-measured: `send_ms`, `delivery_ms` (first frame sent → device's `playback_stats` arrival), `eq_ms`. **`send_ms` is a socket-write time and completes near-instantly however slow the link is — never read it as delivery; that mistake cost a whole investigation on 2026-07-20.** `device_metrics` gained link context (`link_speed_last/min`, `wifi_freq_last`, `wifi_bssid_last`, tx/rx byte and error sums) — band and BSSID matter because one SSID spanning 2.4/5GHz lets a device silently re-associate to a much slower radio. `event_loop_lag_monitor` tracks controller-side stalls (peak on `/api/system/status` as `loop_lag_peak_ms`); anything blocking the loop also delays speaker frames. **That peak reads 0 under the add-on and always has — #306.** `em_start.py` execs `em_controller.py`, so the running module is `__main__`, while `/api/system/status` and the support bundle both `import em_controller` and get a SECOND module object whose global is still the initial 0.0. The logged warnings are correct; the reported peak is not, so read the log line and not the field until that is fixed. It resolves correctly under docker-compose, which is why it survived — the deployment most users run is the one where it lies. The underrun count arrives asynchronously — the device reports `playback_stats` (periods + underruns) once per completed speaker stream, and the controller attaches it to `device.last_turn_id` (consumed on use so an announcement's report can't overwrite a turn's stats; NULL underruns = never reported, e.g. pre-v2.9 firmware). Two hourly rollup tables ride alongside: `wake_counters` (near-miss counts/max score, flushed through the existing 2s-rate-limited near-miss path; plus non-turn underruns) and `device_metrics` (CPU/RAM/storage/RSSI sums+extremes upserted per ~30s device stats report — averages computed at read). `Device.turn_history` is hydrated from `turns` on connect, so the dashboard Activity tab survives restarts. Read APIs: `/api/devices/{id}/turns` (raw, `limit`/`since`) and `/api/devices/{id}/activity?days=N` (per-day aggregates, per-wake-model rollups, counters, metrics — plot-ready). Keep instrumentation at this cost class: one insert per turn, one upsert per 30s/2s — nothing per audio frame. The v7 device counters honour this: per-period work is one `len(chan)` compare plus one `time.Now()` on a single-writer path (no locks, no allocation, no logging), all of it emitted on the *existing* `playback_stats` message. `wpa_cli` is the one exception that costs a process spawn, so `linkInfo()` caches it for 2 minutes rather than running per stats tick.
+**Delivery instrumentation (schema v7, firmware v2.9.6+).** Underruns are rare and binary; these measure the *margin* on every stream so degradation is visible before it's audible. Device-reported in `playback_stats`: `min_depth` (fewest periods left in the device buffer mid-stream — the headline number), `prime_wait_ms`, `recv_span_ms` (first→last frame arrival; longer than the audio duration means delivery was slower than realtime), `max_gap_ms`, `bytes_recv`. Controller-measured: `send_ms`, `delivery_ms` (first frame sent → device's `playback_stats` arrival), `eq_ms`. **`send_ms` is a socket-write time and completes near-instantly however slow the link is — never read it as delivery; that mistake cost a whole investigation on 2026-07-20.** `device_metrics` gained link context (`link_speed_last/min`, `wifi_freq_last`, `wifi_bssid_last`, tx/rx byte and error sums) — band and BSSID matter because one SSID spanning 2.4/5GHz lets a device silently re-associate to a much slower radio. `event_loop_lag_monitor` tracks controller-side stalls (peak on `/api/system/status` as `loop_lag_peak_ms`); anything blocking the loop also delays speaker frames. **It read 0 under the add-on for months (#306)**: `em_start.py` execs `em_controller.py`, so the running module is `__main__`, and a reader doing `import em_controller` gets a SECOND module object whose globals are all defaults. The peak now lives in `em_state` with the rest of the process-wide state, and `tests/test_loop_lag_reader.py` fails if any module imports `em_controller` by name. The underrun count arrives asynchronously — the device reports `playback_stats` (periods + underruns) once per completed speaker stream, and the controller attaches it to `device.last_turn_id` (consumed on use so an announcement's report can't overwrite a turn's stats; NULL underruns = never reported, e.g. pre-v2.9 firmware). Two hourly rollup tables ride alongside: `wake_counters` (near-miss counts/max score, flushed through the existing 2s-rate-limited near-miss path; plus non-turn underruns) and `device_metrics` (CPU/RAM/storage/RSSI sums+extremes upserted per ~30s device stats report — averages computed at read). `Device.turn_history` is hydrated from `turns` on connect, so the dashboard Activity tab survives restarts. Read APIs: `/api/devices/{id}/turns` (raw, `limit`/`since`) and `/api/devices/{id}/activity?days=N` (per-day aggregates, per-wake-model rollups, counters, metrics — plot-ready). Keep instrumentation at this cost class: one insert per turn, one upsert per 30s/2s — nothing per audio frame. The v7 device counters honour this: per-period work is one `len(chan)` compare plus one `time.Now()` on a single-writer path (no locks, no allocation, no logging), all of it emitted on the *existing* `playback_stats` message. `wpa_cli` is the one exception that costs a process spawn, so `linkInfo()` caches it for 2 minutes rather than running per stats tick.
 
 **Control-plane RTT (schema v9/v10).** The RF layer is OPAQUE on this hardware and its counters are worthless: the MTK driver leaves retry/discard/missed-beacon at zero in `/proc/net/wireless` whatever the link is doing, reports `NOISE=9999`, and there is no `iw` binary — so `tx_errors`/`tx_dropped`/`rx_crc` are STRUCTURALLY zero and `get_device_metrics` deliberately does not surface them (a zero there reads as "healthy link" and is not). RTT is the latency signal that works: the controller stamps each control-plane `ping` with a sequence id (every `PING_INTERVAL_SEC`=5s), the device echoes it, and RTT is computed against one monotonic clock — the device never stamps its own, because Echos boot with bogus clocks pre-NTP. Unsolicited keepalive pongs carry no id and are ignored rather than paired with whatever ping is outstanding. Samples aggregate in memory (`Device.record_rtt`/`drain_rtt`) and flush on the existing ~30s stats report, so the DB cost is unchanged; note this means **adding an RTT field needs `drain_rtt` updated as well as `record_device_stats`** — the relay guard in `tests/test_db_instrumentation.py` covers both sources. Excursions (≥`RTT_EXCURSION_MS`=200) are split by whether the device was busy at SEND time, and `rtt_samples_idle` is the denominator that makes the split meaningful: without it "every excursion was idle" is vacuous, since almost every sample is idle. Read API exposes per-state RATES, never raw counts. **ROOT-CAUSED 2026-08-11 (#139): the link is fast and LOSSY, and the
 excursions are TCP retransmission delays rather than latency.** ICMP from the
@@ -1576,7 +1597,7 @@ it into the device's log events. Takes effect on the next device reboot after
 the script syncs.
 
 **A kernel crash on emOS is collected the same way** (`em_crashlog`,
-`_collect_crash_log`, 2026-09-17). emOS init copies the ram console to
+`em_reconcile._collect_crash_log`, 2026-09-17). emOS init copies the ram console to
 `/data/emos/last_kmsg.prev` on every boot, and nothing read it — a crash was
 found only if someone opened a USB console before the next reboot. On connect,
 before the reconcile debounce, the controller md5s that copy and compares it
@@ -1605,25 +1626,25 @@ bounded.** Three concurrent OTAs stalled the event loop for 11.1 seconds
 loop stalled` warnings — the reliable source, since the reported peak reads 0
 under the add-on, #306). That loop sends speaker periods and LED frames, so a
 device answering someone pays for a device being updated.
-`_updates_in_progress` could never have prevented it: it stops ONE device
-being updated twice and says nothing about two at once. So `_ota_lock` is
+`em_ota.in_progress` could never have prevented it: it stops ONE device
+being updated twice and says nothing about two at once. So `em_ota.queue` is
 global and both entry points go through it — the fleet deploy and a
 hand-clicked single update collide identically, and only the first was ever
 going to be noticed.
 
-- **Wake word asset installs take the same lock** (`_sync_oww_assets`, 2026-09-22). Every device carries the full asset set whatever its mode, so an upgrade that adds an asset has the whole fleet reconnect and push at once — ~14MB each for a device on the controller's wake word that never had the runtime, which is most of an existing fleet. Same transport, same stall; same queue, same `OTA_MAX_HOLD_S` cap. A test pins that only the wrapper reaches `_sync_oww_assets_locked`.
+- **Wake word asset installs take the same lock** (`em_oww_sync.sync`, 2026-09-22). Every device carries the full asset set whatever its mode, so an upgrade that adds an asset has the whole fleet reconnect and push at once — ~14MB each for a device on the controller's wake word that never had the runtime, which is most of an existing fleet. Same transport, same stall; same queue, same `em_ota.MAX_HOLD_S` cap. A test pins that only the wrapper reaches `em_oww_sync._sync_locked`.
 - **The binary is fetched inside the lock**, so a queued device holds nothing
   but its place in line, and the lock is released in a `finally` — an update
   that raises would otherwise hold it for the life of the process and no
   device could be updated again without a restart.
 - **A failure does not stop the queue.** Mark it, carry on, report at the end:
   one device that will not come back must not strand a fleet update behind it.
-- **`OTA_MAX_HOLD_S` (300s) caps the hold**, because serialising turns a
+- **`em_ota.MAX_HOLD_S` (300s) caps the hold**, because serialising turns a
   device-local stall into a fleet-wide one. Every `recv` in
-  `_stream_file_to_device` is `wait_for`-bounded but `await ws.send(line)` in
+  `em_shell.stream_file` is `wait_for`-bounded but `await ws.send(line)` in
   the base64 loop is not, and a device that stops reading applies backpressure
-  and can hang there. `_run_update` is a thin wrapper around
-  `_run_update_locked` so the whole of the update sits under one timeout.
+  and can hang there. `em_ota.run_update` is a thin wrapper around
+  `em_ota._run_update_locked` so the whole of the update sits under one timeout.
 - **Queued is reported separately from in-progress** (`update_queued`), and
   rendered as "queued": a device that has been started and not yet touched is
   not having a transfer, and claiming otherwise is the same failure as any
@@ -1631,8 +1652,8 @@ going to be noticed.
 
 **Every payload reconciles on OTA or on a click, and nothing reconciles on
 CONNECT — which is the wrong trigger and is why devices drift.**
-`_sync_start_script` and `_sync_debloat` run inside `_run_update_locked` and
-from the Maintenance button; `reconcile_oww_assets` does run on connect but
+`em_payloads.sync_start_script` and `em_payloads.sync_debloat` run inside `em_ota._run_update_locked` and
+from the Maintenance button; `em_oww_sync.reconcile` does run on connect but
 returns early unless `owwOnDevice` is on, and then checks only the SELECTED
 classifier. So a device can sit for weeks missing three of the four stock wake
 words — measured on Office 2026-09-02, provisioned 17 Aug with `hey_jarvis`
@@ -1640,21 +1661,21 @@ alone — while every panel reports it healthy. A device arriving is exactly the
 moment we know what it has. Wil's call, same day: reconcile all three payloads
 on connect, debounced per device.
 
-**The shell lock is released by its OWNER, never by whoever happens to be cleaning up.** `Lock.locked()` answers "is anyone holding this", not "am I", and both cleanup paths used it as though it meant the second — so a caller that merely timed out WAITING ran the same cleanup as one that held the lock, closing the websocket and releasing the lock belonging to a transfer still using them. `_shell_owner` records the task, and every cleanup path is gated on being it. Seen end to end on EFF 2026-09-04: a debloat push hung 108s, the wake word reconcile behind it timed out and released the debloat's lock, and the slot detect that followed died with `Lock is not acquired` and returned `""` — surfacing to the operator as "could not determine active slot", three steps from anything to do with locking.
+**The shell lock is released by its OWNER, never by whoever happens to be cleaning up.** `Lock.locked()` answers "is anyone holding this", not "am I", and both cleanup paths used it as though it meant the second — so a caller that merely timed out WAITING ran the same cleanup as one that held the lock, closing the websocket and releasing the lock belonging to a transfer still using them. `em_shell.owners` records the task, and every cleanup path is gated on being it. Seen end to end on EFF 2026-09-04: a debloat push hung 108s, the wake word reconcile behind it timed out and released the debloat's lock, and the slot detect that followed died with `Lock is not acquired` and returned `""` — surfacing to the operator as "could not determine active slot", three steps from anything to do with locking.
 
 **A transfer probes that the destination DIRECTORY exists before sending.** The heredoc writes with `>`, so a write into a directory that is not there fails, the trailing `echo TRANSFER_OK` never runs, and the transfer waits out its whole 120s timeout holding the device's shell lock. The probe rides the round trip that already detects the base64 decoder and the md5 tool, so it costs nothing, and it is checked BEFORE the decoder because "nowhere to put the file" is the more specific answer. The case that found it: the debloat payload targets Magisk's `/sbin/.core` overlay, which a device without Magisk has no daemon to create.
 
-**Android-only payloads are gated on `Device.android_userspace`** (`em_platform`, pure and tested), which is False only for a device that has POSITIVELY reported `base_os: emos`. Old firmware, a device that has not registered, and any unrecognised value all keep today's behaviour — the two ways of being wrong are not equal. `_post_debloat` refuses server-side rather than relying on the greyed-out control, since it is a plain POST with a session token; the endpoint and the dashboard read the same derived `androidUserspace` so they cannot disagree. **All THREE call sites must check, and for a while only two did.** `reconcile_on_connect` gates on `android_userspace` and `_post_debloat` refuses `not_android`, but the OTA path in `_run_update_locked` called `_sync_debloat` unconditionally until #480. Found in the field 2026-09-07 on EFF's first OTA after it moved to emOS: the transfer targeted `/sbin/.core/img/.core/service.d/` on a device with no Magisk daemon to have created it. It cost only a wasted shell round trip because the destination-directory probe above caught it — **the probe is the backstop, not the gate**, and without it this is the 240s stall measured on the same device on 2026-09-04. `tests/test_deploy.py` now asserts per call site rather than by counting, so a fourth has to answer too.
+**Android-only payloads are gated on `Device.android_userspace`** (`em_platform`, pure and tested), which is False only for a device that has POSITIVELY reported `base_os: emos`. Old firmware, a device that has not registered, and any unrecognised value all keep today's behaviour — the two ways of being wrong are not equal. `_post_debloat` refuses server-side rather than relying on the greyed-out control, since it is a plain POST with a session token; the endpoint and the dashboard read the same derived `androidUserspace` so they cannot disagree. **All THREE call sites must check, and for a while only two did.** `em_reconcile.on_connect` gates on `android_userspace` and `_post_debloat` refuses `not_android`, but the OTA path in `em_ota._run_update_locked` called `em_payloads.sync_debloat` unconditionally until #480. Found in the field 2026-09-07 on EFF's first OTA after it moved to emOS: the transfer targeted `/sbin/.core/img/.core/service.d/` on a device with no Magisk daemon to have created it. It cost only a wasted shell round trip because the destination-directory probe above caught it — **the probe is the backstop, not the gate**, and without it this is the 240s stall measured on the same device on 2026-09-04. `tests/test_deploy.py` now asserts per call site rather than by counting, so a fourth has to answer too.
 
-Worth noting HOW it was missed, because this exact line was already documented as special: the reconcile debounce does NOT cover it either — `_sync_debloat` is called directly inside `_run_update_locked`, so every OTA pushes it regardless of the stamp. Somebody reasoned about one guard this call site bypasses and stopped there. **A call site documented as an exception to one rule is worth checking against every rule its siblings follow.**
+Worth noting HOW it was missed, because this exact line was already documented as special: the reconcile debounce does NOT cover it either — `em_payloads.sync_debloat` is called directly inside `em_ota._run_update_locked`, so every OTA pushes it regardless of the stamp. Somebody reasoned about one guard this call site bypasses and stopped there. **A call site documented as an exception to one rule is worth checking against every rule its siblings follow.**
 
-`_sync_start_script` beside it is deliberately NOT gated: emOS runs that same script — its init supervises `/system/bin/sh /data/local/bin/start_server.sh` (`emos/init/init.c`) because the script owns the A/B slot symlink and the fast-exit backoff, which both bases need. Gating it by symmetry would strand every emOS device on whatever script it was provisioned with.
+`em_payloads.sync_start_script` beside it is deliberately NOT gated: emOS runs that same script — its init supervises `/system/bin/sh /data/local/bin/start_server.sh` (`emos/init/init.c`) because the script owns the A/B slot symlink and the fast-exit backoff, which both bases need. Gating it by symmetry would strand every emOS device on whatever script it was provisioned with.
 
 **md5 decides whether a transfer succeeded, not the shell's exit status.**
 `TRANSFER_OK` only ever proved that the base64 decode pipeline and `chmod`
 exited 0 — never that the bytes on the device match the bytes sent. Bytes
 therefore land in `{dest}.part` and are renamed only on an md5 match
-(`_stream_file_to_device`), the same discipline the asset path has always
+(`em_shell.stream_file`), the same discipline the asset path has always
 had. **The point is the ordering, not the error message**: a corrupt binary
 and a genuinely broken one produce the *same* observable — three fast exits,
 a symlink flip, a device back on its old version — so an unverified transfer
@@ -1714,7 +1735,7 @@ twice — was the one case nothing guarded, and it took a person doing it
 (2026-09-03) to find that.
 
 Both endpoints now read the binary's own version via
-`_extract_binary_version`. Three rules:
+`em_ota.extract_binary_version`. Three rules:
 
 - **The single-device path REFUSES** (`already_running`) rather than skipping
   silently: someone pressed a button, and a no-op reported as success is how
@@ -1733,7 +1754,7 @@ sends `force` when they say yes. That check is a convenience — the server
 refuses either way.
 
 **The release binary is cached on disk** (`em_firmware.py`, `firmware/` beside
-the DB). `_fetch_binary` used to re-download the whole ~10MB asset per call, so
+the DB). `em_releases.download` used to re-download the whole ~10MB asset per call, so
 a fleet update pulled it once per device and the provisioning wizard again per
 device set up; a published tag never changes what it points at. Two rules, both
 of which read as over-caution until they are not:
@@ -1755,18 +1776,18 @@ it: a tag contains dots, so pathlib reads `server-v2.11.0` as stem
 digest filename that never matches its payload — every read a miss, the cache
 doing nothing, and nothing saying so.
 
-Device-side payloads the controller distributes (`start_server.sh` via `/api/provision/start_script`; the debloat pair `debloat_packages.txt`/`echomuse-debloat.sh` via `/api/provision/debloat_packages`+`debloat_script`, applied by the wizard's Debloat step — pm hide list + Magisk service.d daemon stops) live canonically in `controller/device_payloads/` and are read from disk per request — never embed copies in `em_api.py` or `dashboard.jsx`. `device/scripts/start_server.sh` is a symlink into that directory. Every firmware OTA also syncs the device's `/data/local/bin/start_server.sh` against the canonical payload (`_sync_start_script` — md5 compare, heredoc push, rename into place; takes effect on next device reboot), so script drift heals fleet-wide without a separate update path.
+Device-side payloads the controller distributes (`start_server.sh` via `/api/provision/start_script`; the debloat pair `debloat_packages.txt`/`echomuse-debloat.sh` via `/api/provision/debloat_packages`+`debloat_script`, applied by the wizard's Debloat step — pm hide list + Magisk service.d daemon stops) live canonically in `controller/device_payloads/` and are read from disk per request — never embed copies in Python or `dashboard.jsx`. `device/scripts/start_server.sh` is a symlink into that directory. Every firmware OTA also syncs the device's `/data/local/bin/start_server.sh` against the canonical payload (`em_payloads.sync_start_script` — md5 compare, heredoc push, rename into place; takes effect on next device reboot), so script drift heals fleet-wide without a separate update path.
 
-**All three payloads reconcile when the device CONNECTS** (`em_api.reconcile_on_connect`, called from the register handler). A device arriving is the one moment we know what it has, and until 2026-09-02 nothing used it: the wake word assets reconciled here but returned early unless the device scored locally and then checked only the selected classifier, while `_sync_start_script` and `_sync_debloat` ran **only** inside an OTA or from the Maintenance button. So a device already on the latest firmware never received a payload change at all — Office sat without three of the four stock classifiers for a fortnight with every panel calling it healthy. Four rules:
+**All three payloads reconcile when the device CONNECTS** (`em_reconcile.on_connect`, called from the register handler). A device arriving is the one moment we know what it has, and until 2026-09-02 nothing used it: the wake word assets reconciled here but returned early unless the device scored locally and then checked only the selected classifier, while `em_payloads.sync_start_script` and `em_payloads.sync_debloat` ran **only** inside an OTA or from the Maintenance button. So a device already on the latest firmware never received a payload change at all — Office sat without three of the four stock classifiers for a fortnight with every panel calling it healthy. Four rules:
 
 - **Sequential, never gathered.** All three talk to one device over one shell plane; concurrency contends for a single session and none of them is on the critical path of anything.
 - **One failure must not skip the other two.** Unrelated payloads — a device with a stale debloat list should still get its wake word models — so each step is caught individually, not the loop.
-- **Debounced per device** (`RECONCILE_DEBOUNCE_S`, 15 min), because reconnects are routine on this fleet and the payloads are not; they change when someone deploys or edits a config, which is minutes to days apart. The stamp is claimed **before** the work, so a device reconnecting mid-run cannot start a second one against the same shell plane. `_delete_device` calls `forget_reconcile` — a re-added device is the one whose payloads are least likely to be right.
-- **A silent device is not a missing file.** `_shell_run` swallows every exception and returns `""`, so an absent md5 and a device that never answered were the same string — and the syncs read empty as out-of-date. That was harmless while they only ran mid-OTA against a shell already proven; seconds after connect the shell plane is very likely **not up yet**, so it meant a pointless push and a user-visible "out of date" event that was untrue. Both syncs now append `_SHELL_OK` to the probe and return untouched without it. Same shape as `reconcile_oww_assets`'s "failure to LOOK is not evidence of absence".
+- **Debounced per device** (`em_reconcile.DEBOUNCE_S`, 15 min), because reconnects are routine on this fleet and the payloads are not; they change when someone deploys or edits a config, which is minutes to days apart. The stamp is claimed **before** the work, so a device reconnecting mid-run cannot start a second one against the same shell plane. `_delete_device` calls `forget_reconcile` — a re-added device is the one whose payloads are least likely to be right.
+- **A silent device is not a missing file.** `em_shell.run` swallows every exception and returns `""`, so an absent md5 and a device that never answered were the same string — and the syncs read empty as out-of-date. That was harmless while they only ran mid-OTA against a shell already proven; seconds after connect the shell plane is very likely **not up yet**, so it meant a pointless push and a user-visible "out of date" event that was untrue. Both syncs now append `em_shell.OK_MARK` to the probe and return untouched without it. Same shape as `em_oww_sync.reconcile`'s "failure to LOOK is not evidence of absence".
 
 **The wake word MODE does not gate the assets reconcile — every device carries the full set** (Wil, 2026-09-22: "either could be switched to the other mode and should be already in a state to accommodate the switch — consistency across the devices is key"). It used to return early under `owwOnDevice=off` on the grounds that such a device scores nothing and the 12.3MB runtime is irrelevant. Two things made that wrong: the speech gate's `silero_vad.onnx` is used in BOTH modes, so a controller-scoring device was left on the RMS gate; and a device that must install 14MB before it can switch mode is the "enabled it and nothing happened" this whole system exists to remove. The mode now decides one thing only, in `em_oww_assets.reconcile_action` (pure, tested): a device scoring LOCALLY whose selected classifier is missing is deaf, so it is warned about and sent its config again once repaired; any other gap is a quiet repair. **The mode itself is never changed** — no device is moved to the controller's wake word because a model is missing, and there is no opt-in for it (Wil, 2026-09-22: "the button still works regardless"); `effective_mode` takes no readiness, and an AST test fails if the reconcile ever assigns the mode. Only firmware that cannot load a runtime at all (`oww_shadow` absent) is skipped. An AST test fails if a `MODE_OFF` early return reappears. The other two payloads are md5 compares and run regardless.
 
-**Every payload needs an update path, and `tests/test_deploy.py` enforces it** (a file in `device_payloads/` unreferenced by `em_api.py` fails CI). The debloat pair had none until 2026-07-30 and every fielded device needed a manual push. `_sync_debloat` also rides the OTA and reconciles **both** halves — the boot script by md5, and the `pm hide` list by asking the device which listed packages are still visible — because round 2 added a *package* and a script-only sync would have looked like it worked while changing nothing. It is additionally exposed as `POST /api/devices/{id}/debloat` (Updates tab → Maintenance), which is **required, not a convenience**: the OTA path cannot reach a device already on the latest firmware. Two traps in that reconcile, both of which produced confident wrong answers: match package names with `grep -qx` (whole line) — an unanchored `*package:$p*` also matches `package:$p.client` — and never treat `pm list packages -u` minus `pm list packages` as the hidden count, since it includes uninstalled packages.
+**Every payload needs an update path, and `tests/test_deploy.py` enforces it** (a file in `device_payloads/` that no sync function in `em_payloads.py` names fails CI). The debloat pair had none until 2026-07-30 and every fielded device needed a manual push. `em_payloads.sync_debloat` also rides the OTA and reconciles **both** halves — the boot script by md5, and the `pm hide` list by asking the device which listed packages are still visible — because round 2 added a *package* and a script-only sync would have looked like it worked while changing nothing. It is additionally exposed as `POST /api/devices/{id}/debloat` (Updates tab → Maintenance), which is **required, not a convenience**: the OTA path cannot reach a device already on the latest firmware. Two traps in that reconcile, both of which produced confident wrong answers: match package names with `grep -qx` (whole line) — an unanchored `*package:$p*` also matches `package:$p.client` — and never treat `pm list packages -u` minus `pm list packages` as the hidden count, since it includes uninstalled packages.
 
 `com.amazon.whad` is `PERSISTENT`: `pm disable` is ignored, **`am force-stop` is a no-op**, and `pm hide` does not stop a running instance — it stays until the next reboot, which is why the log line says so. Note RSS overstates the win ~6x (shared zygote pages): the measured recovery is ~20-35MB per device by `memUsedMb`, not the 62MB RSS suggests.
 
@@ -1778,7 +1799,7 @@ The controller reads the running image off `mmcblk0p10` over the shell plane,
 keeps its kernel, load addresses and cmdline byte for byte, swaps the ramdisk
 for one built from the release's init, and writes it back. Offered per device
 on the Updates tab (`emosUpdateAvailable`, decided server-side), queued behind
-`_ota_lock` like firmware, `POST /api/devices/{id}/emos_update`.
+`em_ota.queue` like firmware, `POST /api/devices/{id}/emos_update`.
 
 **amonet 1 and 2 take the same path**, and that is the point of rebuilding from
 the running image rather than from stock: the kernel architecture and the
@@ -1787,7 +1808,7 @@ carried across untouched. Nothing asks which amonet a device has.
 
 `em_emos_update.run_update(io)` is the whole sequence, written against a small
 `io` so it runs in `tests/test_emos_update_flow.py` against a simulated device
-whose commands are executed by a REAL shell with busybox. `em_api._EmosIO` is
+whose commands are executed by a REAL shell with busybox. `em_emos_ota._EmosIO` is
 the real carrier and decides nothing. That test found two things no reading
 would have: `dd` without `conv=notrunc`, and that not every busybox has
 `base64` (Ubuntu's does not), which is why preflight probes each tool by
@@ -1828,7 +1849,7 @@ controller that is down through that window costs a good update its place** —
 it is rolled back and has to be retried. That was chosen over promoting an
 image nobody could reach (Wil, 2026-10-02).
 
-**Confirmation is stateless on purpose.** `_emos_status_on_connect` runs for
+**Confirmation is stateless on purpose.** `em_emos_ota.status_on_connect` runs for
 every emOS connect, not debounced: the mark carries the build it was written
 for, so a controller that restarted mid-update still confirms. It also stores
 `emos_version`/`emos_build` (schema v30) — read over the shell plane rather
@@ -2022,14 +2043,14 @@ throughout — so the rules below are all one rule seen from different angles.
   discarded returns the same empty string for "the symlink is gone" and for
   "`su` is not working", and the install step logged `Cleared.` after every
   command had failed. Probes carry a sentinel (`echo _CLEARCHK`) so the two
-  answers are distinguishable — the same fix `_sync_start_script` needed for
-  `_SHELL_OK`, in a different file. Patch Boot Image and Pre-seed Root DB
+  answers are distinguishable — the same fix `em_payloads.sync_start_script` needed for
+  `em_shell.OK_MARK`, in a different file. Patch Boot Image and Pre-seed Root DB
   read their artifact back the same way (#723, @forming: `_magiskbootVerdict`
   with `_MBCHK`, `_preseedVerdict` with `_DBCHK`). **The size probe relies on
   `wc`, and that is only safe where the step runs**: TWRP on a Dot 2 is
   BusyBox 1.22.1 and prints `DB=36864` unpadded (run on VVV, 2026-10-08),
   while FireOS 5's own shell has no `wc` at all and prints `DB=` for a file
-  that exists. A probe moved to another shell needs running there first.
+  that exists. A probe moved to another shell needs running there first. Step 1's own `lk_a` probe is one that was not (#903): it pipes through `od -An`, which TWRP 3.2.3's BusyBox 1.22.1 rejects, so on amonet 1 it reads nothing and the step falls back on the TWRP version. The emOS gate decodes the bytes in the browser and is unaffected (VVV, 2026-10-15).
 - **Verify the bytes you wrote, not the block that contains them.** The flash
   step read back whole megabytes and compared against the image zero-padded to
   match, so 425,984 bytes of the PREVIOUS boot image were checked against zeros
@@ -2061,10 +2082,25 @@ throughout — so the rules below are all one rule seen from different angles.
   10 Sep 2026) writes a newer preloader, LK and TrustZone, FireOS 5 does not
   boot on them, and neither does emOS, which runs the FireOS 5 kernel — so
   without this the emOS flow would escrow, build and flash an image that
-  cannot boot. Any one of three signs refuses: an MTK image header
-  (`88168858`) at the start of `expdb`, where v2's preloader exploit loads LK
-  from (amonet-koboreru's `LK_PART_NAME`); TWRP 3.7 or later (v2 ships
-  3.7.0_9-0, v1 3.2.3-0); or Android 6+ as the release that matters. A probe
+  cannot boot. Any one of three signs refuses: amonet 2's LK in `lk_a`
+  (`_amonetLk`, below); TWRP 3.7 or later (v2 ships 3.7.0_9-0, v1 3.2.3-0,
+  and firebreak's 3.7.0_9-bboeN on v1 is the exception, never evidence); or
+  Android 6+ as the release that matters. **The LK replaced a check on
+  `expdb` on 2026-10-12 (#845, #846, @bboe).** v2's preloader exploit loads
+  LK from `expdb` (amonet-koboreru's `LK_PART_NAME`), so an MTK image header
+  (`88168858`) at its start was read as v2. But nothing clears `expdb` when
+  amonet 1 is written over amonet 2, so a Dot taken v2 then v1 kept the
+  payload and was refused as an unlock that "does not add up", on a correct
+  amonet 1 install. Each amonet release writes its own LK to both LK slots,
+  so `lk_a` says which one RUNS, where `expdb` only says v2 was once there.
+  `_amonetLk` reads the first eight bytes: the MTK magic, then the image
+  length from the header, `8816885824790500` (358,692) for amonet 1 and
+  `88168858407b0500` (359,232) for v2.0.0. v1.0.0 and v1.1.0 ship a
+  byte-identical `lk.bin` and firebreak's `v1.1.0-bboe` writes it unchanged,
+  so that is the only amonet 1 value; read on VVV, C95 and a contributor's
+  `v1-bboe` Dot, and v2's on 15LE (whose `expdb` starts `8816885870b20300`).
+  `lk_a` is found by the kernel's GPT name ONLY at this step: under both
+  amonet TWRPs the by-name `lk_a` is a decoy file in tmpfs. A probe
   that could not run yields empty strings, and empty is NOT evidence — the
   error that must not happen is refusing a working v1.1.0 device because `od`
   was missing. The absence of `boot_[ab]_amonet` is deliberately not one of
@@ -2094,9 +2130,9 @@ throughout — so the rules below are all one rule seen from different angles.
 - **Before the escrow reads anything for the build, the unlock, the recovery,
   the system partitions the image depends on and every stock kernel must be
   READ and must agree on one FireOS generation** (`donorVerdict`, #619).
-  amonet 2 = expdb holds its bootloader + TWRP 3.7.0 + the v2 partition layout
+  amonet 2 = its LK in `lk_a` + TWRP 3.7.0 + the v2 partition layout
   + FireOS 6 (7.1, system-as-root) in BOTH system slots + 32-bit stock
-  kernels; amonet 1 = expdb without it (`00000000` on C95) + TWRP 3.2.3 + the
+  kernels; amonet 1 = its LK in `lk_a` + TWRP 3.2.3 or 3.7.0_9-bboeN + the
   v1 layout + FireOS 5 (5.1.1, root layout) in `system_a` at `mmcblk0p13` +
   a 64-bit kernel. **Which system slots must pass is one question asked the
   same way everywhere — does the image, or its way back, depend on it?** Both
@@ -2107,8 +2143,12 @@ throughout — so the rules below are all one rule seen from different angles.
   beside a working FireOS 5 `system_a`, and refusing it would have made the
   outcome depend on a partition emOS never touches. Partitions are found by the
   kernel's GPT name (`PARTNAME` in sysfs) before TWRP's by-name map, and
-  expdb's bytes are read in the browser, because amonet 1's TWRP 3.2.3 read
-  expdb as unreadable through by-name + `od`. Every file emOS runs from
+  `lk_a`'s bytes are read in the browser, because amonet 1's TWRP 3.2.3 read
+  expdb as unreadable through by-name + `od` when that was the partition
+  checked. **An LK that is neither amonet's is refused here**, where the
+  expdb check read anything without v2's header as amonet 1: a later amonet
+  release needs its constant added to `_amonetLk` before the wizard accepts
+  it, and the refusal writes nothing. Every file emOS runs from
   `/system` must be non-empty (`_emosSystemFiles`, pinned against `init.c`).
   #619 was amonet 2 with a FireOS 6 flash that never finished: expdb and TWRP
   said amonet 2, `boot_b` and `system_b` said FireOS 5, and every check

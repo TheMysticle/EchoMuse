@@ -4,6 +4,7 @@ way (#438): what a picker write means, that the button never moves the wake
 word, and the one stream re-stop an unmute needs.
 """
 
+import _sources
 import ast
 import inspect
 import os
@@ -246,22 +247,7 @@ def test_the_stored_rule_runs_where_the_device_reports_listening():
     """On the listen_state report, not at registration: syncListenState is sent
     after the ack, so at connect time listen_reported is still None and a check
     there reads "not private" for a private Echo."""
-    tree = ast.parse((CONTROLLER / "em_controller.py").read_text())
-    handler = next(n for n in ast.walk(tree)
-                   if isinstance(n, ast.AsyncFunctionDef) and n.name == "handle_control")
-
-    # Find the branch that handles listen_state, and ask whether the rule is
-    # reached inside it. Walking the tree rather than searching text: this
-    # function is 1000+ lines and its formatting is not a contract.
-    branch = None
-    for node in ast.walk(handler):
-        if not isinstance(node, ast.If):
-            continue
-        test = ast.unparse(node.test)
-        if "listen_state" in test and "msg_type" in test:
-            branch = node
-            break
-    assert branch is not None, "no listen_state branch in handle_control"
+    _, branch = _sources.find_def("_on_listen_state")
 
     assert any("stored_off_unsupported" in ast.unparse(n)
                for n in ast.walk(branch)), (
