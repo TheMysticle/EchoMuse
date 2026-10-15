@@ -178,6 +178,9 @@ def merge_device(row, boot: dict | None = None) -> dict:
         "ble_proxy_port":     row["ble_proxy_port"],
         # Live — defaults when device is not connected
         "connected":        live is not None,
+        # Board identity is live registration state, used by the dashboard
+        # to offer Radar-only playback controls. Unknown/offline stays None.
+        "boardId":          getattr(live, "board_id", None) if live else None,
         "speaking":         live.speaking  if live else False,
         "muted":            getattr(live, "muted",     False) if live else False,
         # Stored, not live (#286): an offline device reports HA's last choice.
