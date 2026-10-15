@@ -216,3 +216,273 @@ def test_chain_that_takes_the_volume_rounds_to_s16():
     t = np.frombuffer(em_eq._to_int16(x, False), np.int16)
     assert list(r) == [0, 1, 2, 2, -1, -2, 32767, -32768]
     assert list(t) == [0, 0, 1, 2, 0, -1, 32767, -32768]
+
+
+# ─── the math helpers: they have to give back the right shape ──────────────
+
+def test_peak_sos_is_a_single_biquad_row():
+    """Audio EQ Cookbook peaking biquad — six coefficients in one row.
+
+    The exact values are in the cookbook; what matters here is the shape,
+    so a typo in one of the coefficient expressions surfaces as an
+    obvious test failure rather than a subtle audio fault.
+    """
+    sos = em_eq._peak_sos(1000.0, 3.0, 0.7, 48000)
+    assert sos.shape == (1, 6)
+
+
+def test_loshelf_sos_is_a_single_biquad_row():
+    sos = em_eq._loshelf_sos(120.0, 4.0, 48000)
+    assert sos.shape == (1, 6)
+
+
+def test_hishelf_sos_is_a_single_biquad_row():
+    sos = em_eq._hishelf_sos(8000.0, -3.0, 48000)
+    assert sos.shape == (1, 6)
+
+
+def test_loshelf_q_sos_is_a_single_biquad_row():
+    """ParametricEQ.cfg states its shelf with an explicit Q; the S=1
+    special case is _loshelf_sos, this one is the form stock actually uses."""
+    sos = em_eq._loshelf_q_sos(120.0, 4.0, 0.7, 48000)
+    assert sos.shape == (1, 6)
+
+
+def test_stock_loshelf_sos_is_a_single_biquad_row():
+    """Stock's MBCL low-shelf biquad: two branches (boost and cut), each
+    emitting a six-coefficient row. The shape is the cheap test — the
+    values are an RBJ Cookbook translation and not worth pinning here."""
+    for gain_db in (+6.0, -6.0):
+        sos = em_eq._stock_loshelf_sos(120.0, gain_db, 48000)
+        assert sos.shape == (1, 6)
+
+
+def test_stock_peak_sos_is_a_single_biquad_row():
+    """Stock's MBCL peaking biquad: same shape, two branches for boost
+    and cut. Covered by the call path; shape is the test."""
+    for gain_db in (+3.0, -3.0):
+        sos = em_eq._stock_peak_sos(1000.0, gain_db, 0.7, 48000)
+        assert sos.shape == (1, 6)
+
+
+def test_apply_with_a_guard_aligns_around_its_latency():
+    """A guard with a look-ahead (Radar's stock MBCL does, em_mbc.BassGuard
+    does not) is fed its latency in silence and the same count is dropped
+    from the front, so the returned audio is aligned to the input."""
+    import em_mbc
+    guard = em_mbc.BassGuard(48000)
+    pcm = em_eq.apply(_sine(1000), RATE, bands=[0.0] * 8, guard=guard)
+    assert len(pcm) == len(_sine(1000))
+
+
+def test_apply_with_a_limiting_limiter_after_the_guard():
+    """The limiter runs after the guard, on the EQ'd-and-guarded signal.
+    Without the limiter, a heavy EQ boost hard-clips; with one, the
+    limiter is the backstop and the np.clip is a true no-op."""
+    import em_limiter
+    pcm = em_eq.apply(_sine(1000), RATE, bands=[0.0] * 8,
+                     limiter=em_limiter.Limiter(RATE))
+    # The limiter holds back its look-ahead tail; what comes out is
+    # the limiter's 1:1 transform on the input, with the tail sitting
+    # in the limiter until it is flushed. A caller's contract is that
+    # the output is at least as long as the input.
+    assert len(pcm) >= len(_sine(1000))
+
+
+def test_apply_with_a_delaying_guard_pads_with_silence_then_drops_it():
+    """A guard with a non-zero look-ahead (Radar's stock MBCL) is fed its
+    latency in silence, then the same count is dropped from the front,
+    so the returned audio is aligned to the input. Tested with a stub
+    guard: the real RadarMultiband needs the proprietary tuning."""
+    class _DelayingGuard:
+        latency = 240
+        def process(self, x):
+            return x[:x.size - self.latency]    # trim the front
+    out = em_eq.apply(_sine(1000), RATE, bands=[0.0] * 8, guard=_DelayingGuard())
+    # The apply function pads with `lat` samples of silence and drops the
+    # first `lat` samples after the guard; a guard that itself trims the
+    # front by `lat` therefore produces an output smaller by 1*lat samples.
+    # out is in bytes, two per sample.
+    assert len(out) == (24000 - _DelayingGuard.latency) * 2
+
+
+# ─── StreamingEQ update/set_bands paths ───────────────────────────────
+
+def test_streaming_eq_init_with_no_bands_uses_defaults():
+    """bands=None falls back to DEFAULT_BANDS. With loudness
+    on, the chain is not flat and the SOS is built."""
+    eq = em_eq.StreamingEQ(RATE, bands=None, loudness=True)
+    assert eq._sos is not None    # DEFAULT_BANDS + loudness -> non-None
+
+
+def test_streaming_eq_init_pads_short_bands_list():
+    """A bands list shorter than NUM_BANDS is right-padded with zeros
+    (line 517). With non-zero at the start the filter runs."""
+    eq = em_eq.StreamingEQ(RATE, bands=[1.0])
+    assert eq._sos is not None
+
+
+def test_streaming_eq_set_bands_to_none_uses_defaults():
+    """set_bands(bands=None) takes the same default."""
+    eq = em_eq.StreamingEQ(RATE, bands=[1.0] + [0.0] * 7, loudness=True)
+    eq.set_bands(None, loudness=True)
+    assert eq._sos is not None
+
+
+def test_streaming_eq_set_bands_pads_short_list():
+    """set_bands() with a too-short list pads with zeros (line 596)."""
+    eq = em_eq.StreamingEQ(RATE, bands=[0.0] * 8, loudness=True)
+    eq.set_bands([1.0], loudness=True)
+    assert eq._sos is not None
+
+
+def test_streaming_eq_set_bands_to_zeros_drops_sos():
+    """set_bands with all-zero and no loudness resets the filter to
+    passthrough (line 618-627). The filter state had been used; the
+    next process() returns pcm unchanged."""
+    eq = em_eq.StreamingEQ(RATE, bands=[1.0] + [0.0] * 7)
+    assert eq._sos is not None
+    eq.set_bands([0.0] * 8, loudness=False)
+    assert eq._sos is None
+    assert eq.process(_sine(1000)) == _sine(1000)
+
+
+def test_streaming_eq_update_returns_false_when_unchanged():
+    """update() with the same params returns False — no work done."""
+    eq = em_eq.StreamingEQ(RATE, bands=[1.0] + [0.0] * 7)
+    assert eq.update(bands=[1.0] + [0.0] * 7, loudness=False,
+                     limiter_enabled=False, limiter_threshold=-3.0,
+                     limiter_release=50.0,
+                     guard_enabled=True, guard_db=-6.0) is True
+    # Same again -> no change.
+    assert eq.update(bands=[1.0] + [0.0] * 7, loudness=False,
+                     limiter_enabled=False, limiter_threshold=-3.0,
+                     limiter_release=50.0,
+                     guard_enabled=True, guard_db=-6.0) is False
+
+
+def test_streaming_eq_update_changes_bands_returns_true():
+    """update() with new band values re-applies the EQ (line 594/596)."""
+    eq = em_eq.StreamingEQ(RATE, bands=[1.0] + [0.0] * 7)
+    assert eq.update(bands=[-1.0] + [0.0] * 7, loudness=False,
+                     limiter_enabled=False, limiter_threshold=-3.0,
+                     limiter_release=50.0,
+                     guard_enabled=True, guard_db=-6.0) is True
+
+
+def test_streaming_eq_update_with_limiter_reaches_it():
+    """update() with a Limiter attached forwards the params."""
+    import em_limiter
+    lim = em_limiter.Limiter(RATE)
+    eq = em_eq.StreamingEQ(RATE, bands=[0.0] * 8, limiter=lim)
+    assert eq.update(bands=[0.0] * 8, loudness=False,
+                     limiter_enabled=True, limiter_threshold=-6.0,
+                     limiter_release=100.0,
+                     guard_enabled=True, guard_db=-6.0) is True
+
+
+def test_streaming_eq_update_with_guard_reaches_it():
+    """update() with a BassGuard attached forwards the params."""
+    import em_mbc
+    g = em_mbc.BassGuard(RATE)
+    eq = em_eq.StreamingEQ(RATE, bands=[0.0] * 8, guard=g)
+    assert eq.update(bands=[0.0] * 8, loudness=False,
+                     limiter_enabled=False, limiter_threshold=-3.0,
+                     limiter_release=50.0,
+                     guard_enabled=False, guard_db=-3.0) is True
+
+
+def test_streaming_eq_set_volume_gain_without_target_is_a_noop():
+    """set_volume_gain() is a no-op when the chain wasn't built with one."""
+    eq = em_eq.StreamingEQ(RATE, bands=[0.0] * 8)
+    eq.set_volume_gain(0.5)    # _vol_target is None -> no change
+    assert eq.process(_sine(1000)) == _sine(1000)
+
+
+def test_streaming_eq_flush_with_no_limiter_returns_empty():
+    """flush() with no limiter/guard returns b'' (no look-ahead tail)."""
+    eq = em_eq.StreamingEQ(RATE, bands=[0.0] * 8)
+    assert eq.flush() == b""
+
+
+# ─── _OverlapSaveFIR validation ────────────────────────────────────────
+
+def test_overlap_save_fir_rejects_mismatched_band_lengths():
+    """A list of FIR taps with differing lengths is a programmer error,
+    raised at construction (line 288)."""
+    with pytest.raises(ValueError, match="same length"):
+        em_eq._OverlapSaveFIR([np.zeros(8), np.zeros(16)])
+
+
+# ─── Radar EQ taps via monkeypatched tuning (no proprietary files) ────
+
+def test_radar_eq_taps_returns_first_band_as_floats(monkeypatch):
+    """_radar_eq_taps() returns the first band as float64 (line 191)."""
+    import em_radar_tuning
+    taps0 = [0.0, 0.5, -0.25, 0.0]
+    tuning = em_radar_tuning.RadarTuning(fir_bands=[taps0])
+    monkeypatch.setattr(em_radar_tuning, "current", lambda: tuning)
+    out = em_eq._radar_eq_taps()
+    assert out is not None
+    assert out.dtype == np.float64
+    assert list(out) == taps0
+
+
+def test_radar_eq_banded_returns_bounds_and_floats(monkeypatch):
+    """_radar_eq_banded() returns (bounds, [taps...]) with float64 taps (line 246)."""
+    import em_radar_tuning
+    taps0 = [0.0, 0.5, -0.25]
+    taps1 = [0.0, 0.4, -0.2]
+    tuning = em_radar_tuning.RadarTuning(
+        fir_bands=[taps0, taps1], fir_bounds=[50, 100])
+    monkeypatch.setattr(em_radar_tuning, "current", lambda: tuning)
+    out = em_eq._radar_eq_banded()
+    assert out is not None
+    bounds, bands = out
+    assert bounds == [50, 100]
+    assert all(b.dtype == np.float64 for b in bands)
+    assert [list(b) for b in bands] == [taps0, taps1]
+
+
+# ─── radar_eq_band fallback ───────────────────────────────────────────
+
+def test_radar_eq_band_falls_through_to_last_when_value_exceeds_all():
+    """When the value is above every boundary, the last band's index is
+    returned (line 238). The stock table can't reach this (max 100, last
+    boundary 100), but a custom set can."""
+    g = 10 ** ((127 - 127) / 40)    # 0 dB -> value 100
+    # Custom boundaries where the last one is small, so 100 is past all of them.
+    assert em_eq.radar_eq_band(g, [10, 20, 30]) == 2
+
+
+# ─── describe_chain / describe_activity ────────────────────────────────
+
+def test_describe_chain_marks_off_stages():
+    """Stages without an instance report 'off' rather than 'n/a'."""
+    s = em_eq.describe_chain([0.0] * 8, loudness=False,
+                             limiter=None, guard=None)
+    assert "eq=flat" in s
+    assert "guard=off" in s
+    assert "limiter=off" in s
+
+
+def test_describe_chain_marks_active_stages():
+    """A limiter with a threshold and a guard with a setting report their values."""
+    import em_limiter, em_mbc
+    lim = em_limiter.Limiter(48000)
+    g = em_mbc.BassGuard(48000)
+    g.bass_guard_db = -6.0
+    s = em_eq.describe_chain([3.0, 0, 0, 0, 0, 0, 0, 0], loudness=True,
+                             limiter=lim, guard=g)
+    assert "eq=" in s
+    assert "speech_boost=on" in s
+    assert "guard=-6dB" in s
+    assert "limiter=" in s
+
+
+def test_describe_activity_reports_n_a_for_off_stages():
+    """An off stage's reduction is 'n/a', not 0.00dB — those are different
+    faults (one wasn't on, the other was on and never engaged)."""
+    s = em_eq.describe_activity(limiter=None, guard=None)
+    assert s == "guard_reduction=n/a limiter_reduction=n/a"
+

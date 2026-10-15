@@ -362,3 +362,143 @@ def test_raw_max_reduction_db_matches_rounded_for_both_classes(radar_tuning):
     for guard in (M.BassGuard(FS), M.RadarMultiband(FS, radar_tuning.mbcl)):
         guard.process(_sine(80.0, seconds=1.0, amp=0.8))
         assert round(guard.raw_max_reduction_db, 2) == guard.max_reduction_db
+
+
+# ─── RadarMultiband with a stub tuning (CI has no ECHOMUSE_RADAR_TUNING) ───
+
+def _stub_radar_tuning(monkeypatch):
+    """A RadarTuning with one Mbcl per band, enough to drive RadarMultiband.
+
+    The values are not stock's; the test is exercising the code paths
+    that branch on the tuning being loaded, not validating the tuning.
+    Returns the Mbcl so callers can also use it directly.
+    """
+    import em_radar_tuning
+    band = em_radar_tuning.MbclBand(
+        comp_in_vol_db=0.0, comp_ratio=4.0, comp_threshold_db=-20.0,
+        comp_floor_db=-12.0, lim_in_vol_db=0.0, lim_threshold_db=-3.0,
+        lim_release_ms=200.0)
+    mbcl = em_radar_tuning.Mbcl(
+        in_vol_db=0.0,
+        crossovers_hz=(200.0, 800.0, 3000.0),
+        bands=(band, band, band, band),
+        full_band_in_vol_db=0.0,
+        full_band_threshold_db=-3.0,
+        full_band_release_ms=200.0)
+    monkeypatch.setattr(em_radar_tuning, "current",
+                        lambda: em_radar_tuning.RadarTuning(mbcl=mbcl))
+    return mbcl
+
+
+def test_radar_multiband_processes_audio_with_a_stub_tuning(monkeypatch):
+    """Radar's full 4-band chain, runnable without the proprietary tuning.
+
+    Without this, the codecov floor on em_mbc is unreachable in any
+    environment that does not have ECHOMUSE_RADAR_TUNING set.
+    """
+    mbcl = _stub_radar_tuning(monkeypatch)
+    mb = M.RadarMultiband(FS, mbcl)
+    out = mb.process(_sine(80.0, seconds=0.1, amp=0.5))
+    assert out.size > 0
+
+
+def test_radar_multiband_disabled_passes_audio_through(monkeypatch):
+    mbcl = _stub_radar_tuning(monkeypatch)
+    mb = M.RadarMultiband(FS, mbcl, enabled=False)
+    assert mb.process(_sine(80.0, seconds=0.1, amp=0.5)).size > 0
+
+
+def test_radar_multiband_set_params_updates_band_one_floor_only(monkeypatch):
+    mbcl = _stub_radar_tuning(monkeypatch)
+    mb = M.RadarMultiband(FS, mbcl, bass_guard_db=-30.0, enabled=True)
+    assert mb._comp[0].floor_db == -30.0
+    mb.set_params(bass_guard_db=-10.0)
+    assert mb._comp[0].floor_db == -10.0
+
+
+def test_radar_multiband_set_params_with_enabled_propagates(monkeypatch):
+    """Disabling the multiband while playing must reach every band
+    compressor and every band limiter, not just the first one."""
+    mbcl = _stub_radar_tuning(monkeypatch)
+    mb = M.RadarMultiband(FS, mbcl, enabled=True)
+    mb.set_params(enabled=False)
+    assert all(c.enabled is False for c in mb._comp)
+    assert all(lim.enabled is False for lim in mb._lim)
+
+
+def test_radar_multiband_max_reduction_db_returns_finite(monkeypatch):
+    mbcl = _stub_radar_tuning(monkeypatch)
+    mb = M.RadarMultiband(FS, mbcl)
+    mb.process(_sine(80.0, seconds=0.1, amp=2.0))
+    assert mb.max_reduction_db >= 0.0
+
+
+def test_four_band_flatness_with_a_stub_tuning():
+    """four_band_flatness_db takes a crossovers tuple directly, no
+    tuning required."""
+    db = M.four_band_flatness_db((200.0, 800.0, 3000.0))
+    assert 0.0 <= db < 1.0, \
+        "the LR4 cascade with allpass compensation must sum flat to within 1dB"
+
+
+# ─── StockCompressor: MBCL's per-band compressor, testable without tuning ──
+
+def test_stock_compressor_engages_on_a_hot_signal():
+    """A signal above the threshold must pull the gain down at the
+    configured ratio. Testable without ECHOMUSE_RADAR_TUNING."""
+    sc = M.StockCompressor(FS, ratio=4.0, threshold_db=-20.0, floor_db=-12.0)
+    sc.process(_sine(1000.0, seconds=0.5, amp=0.5))
+    assert sc.min_gain < 1.0, "a 4:1 compressor above threshold must reduce"
+    assert sc.max_reduction_db > 0.0
+
+
+def test_stock_compressor_bypass_passes_audio_through_unchanged():
+    """Bypass keeps the delay but freezes dynamics — so the chain stays
+    aligned but the audio is not compressed. Same contract as
+    Limiter/StockLimiter."""
+    sc = M.StockCompressor(FS, ratio=4.0, threshold_db=-20.0, floor_db=-12.0,
+                           enabled=False)
+    sc.process(_sine(1000.0, seconds=0.5, amp=0.5))
+    assert sc.min_gain == 1.0, "bypassed compressor must not reduce"
+
+
+def test_stock_compressor_process_is_1_to_1():
+    """Streaming adds one block of latency but the output count must match
+    the input count, so callers do not see short reads."""
+    sc = M.StockCompressor(FS, ratio=4.0, threshold_db=-20.0, floor_db=-12.0)
+    for chunk in np.array_split(_sine(1000.0, seconds=0.5, amp=0.5), 11):
+        assert sc.process(chunk).size == chunk.size
+
+
+def test_stock_compressor_set_floor_clamps_out_of_range_values():
+    """Stock's -40..0 dB clamp is the live range; out-of-range inputs are
+    clamped rather than raised, so a bad config degrades to safe behaviour
+    instead of killing playback (same shape as Limiter's threshold)."""
+    sc = M.StockCompressor(FS, ratio=4.0, threshold_db=-20.0, floor_db=-12.0)
+    sc.set_floor_db(-100.0)
+    assert sc.floor_db == -40.0
+    sc.set_floor_db(6.0)
+    assert sc.floor_db == 0.0
+
+
+def test_stock_compressor_below_threshold_does_not_reduce():
+    """A signal under the threshold must pass through with no gain
+    reduction — the branch in _block that returns g=1.0 untouched."""
+    sc = M.StockCompressor(FS, ratio=4.0, threshold_db=-20.0, floor_db=-12.0)
+    sc.process(_sine(1000.0, seconds=0.5, amp=0.01))    # well under threshold
+    assert sc.min_gain == 1.0, "quiet audio must not engage the compressor"
+
+
+def test_stock_compressor_floor_caps_the_gain_reduction():
+    """A signal loud enough to demand more reduction than the floor
+    allows must land on the floor, not under it. The floor is the
+    guard against silence; without it, a panic loud could mute the
+    chain entirely."""
+    sc = M.StockCompressor(FS, ratio=4.0, threshold_db=-10.0, floor_db=-6.0)
+    # 10s is long enough for the ~650ms smoother to converge on the
+    # floor; shorter inputs leave the smoother mid-attack and the gain
+    # above the floor.
+    sc.process(_sine(80.0, seconds=10.0, amp=4.0))
+    floor_linear = 10 ** (-6.0 / 20.0)
+    assert abs(sc._gain - floor_linear) < 1e-3, \
+        f"the floor must hold — got {sc._gain}, expected {floor_linear}"
