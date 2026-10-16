@@ -1267,6 +1267,9 @@ var shadowState struct {
 	mode    string
 	model   string
 	lastErr string
+	// streamSig is the streaming embedding file the running scorer was
+	// built beside (shadow.StreamFileSig), so one installed later is noticed.
+	streamSig string
 }
 
 // applyShadowConfig starts, stops or re-points on-device wake word scoring from
@@ -1293,7 +1296,12 @@ func applyShadowConfig(dc *client.DataClient, cc *client.ControlClient,
 	}
 
 	// Already running for this model: thresholds and the mode change live.
-	if sc := dc.ShadowScorer(); sc != nil && shadowState.model == model {
+	// Unless the streaming embedding model has appeared or changed since the
+	// scorer was built (#893): the controller installs it after connect and
+	// then pushes the config, and this is where that takes effect.
+	streamSig := shadow.StreamFileSig()
+	if sc := dc.ShadowScorer(); sc != nil && shadowState.model == model &&
+		shadowState.streamSig == streamSig {
 		sc.SetThreshold(threshold)
 		if snap.BargeInEnabled != nil && *snap.BargeInEnabled && spk != nil {
 			sc.SetBargeThreshold(float32(snap.BargeInThreshold), speakerPlaying(spk))
@@ -1334,6 +1342,7 @@ func applyShadowConfig(dc *client.DataClient, cc *client.ControlClient,
 	}
 	dc.SetShadowScorer(sc)
 	shadowState.mode, shadowState.model, shadowState.lastErr = mode, model, ""
+	shadowState.streamSig = streamSig
 	bargeNote := "barge-in off"
 	if snap.BargeInEnabled != nil && *snap.BargeInEnabled {
 		bargeNote = fmt.Sprintf("barge-in bar %.2f", snap.BargeInThreshold)

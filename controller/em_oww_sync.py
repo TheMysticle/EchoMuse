@@ -283,10 +283,15 @@ async def reconcile(device_id: str, live) -> None:
                         f"the missing assets ({result.get('error')})")
         return
 
-    if action == "deaf":
-        # The device builds its scorer from the config push, so it needs telling
-        # the model is now there — same mechanism install_then_switch relies on.
+    # The device builds its scorer from the config push, so it needs telling
+    # when what it builds from has changed: a classifier it was deaf without
+    # (the mechanism install_then_switch relies on), or the streaming
+    # embedding model, which a running scorer otherwise only picks up at the
+    # next restart (#893).
+    stream_arrived = em_oww_assets.STREAM_NAME in (result.get("pushed") or [])
+    if action == "deaf" or stream_arrived:
         await live.send_control({"type": "config", **em_config_types.well_typed(device_id, effective)})
+    if action == "deaf":
         await em_events.push_log(
             device_id, "info", "controller",
             f"Wake word model {missing} installed — listening for its wake word again"
@@ -406,7 +411,7 @@ async def _sync_locked(live, device_id: str, progress=None) -> dict:
 
     # Only the wake word needs a restart: the scorer is built once, while the
     # speech gate's model is picked up by the next turn.
-    restart = any(a.kind != "vad" for a in plan.push)
+    restart = any(a.kind not in ("vad", "stream") for a in plan.push)
     await say("info", f"installed {len(pushed)} file(s)"
                       + (" — restart the device to start scoring" if restart else ""))
     return {"ok": True, "pushed": pushed, "pruned": plan.prune, "problems": problems}
