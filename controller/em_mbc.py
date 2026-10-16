@@ -474,7 +474,7 @@ def four_band_flatness_db(crossovers_hz: tuple[float, float, float],
     f = np.geomspace(5.0, fs * 0.4999, 8192)
 
     def resp(fc, kind):
-        _, h = sosfreqz(_lr4(fc, fs, kind), worN=f, fs=fs)
+        _, h = _signal().sosfreqz(_lr4(fc, fs, kind), worN=f, fs=fs)
         return h
 
     lp1, hp1 = resp(fc1, "low"), resp(fc1, "high")
@@ -600,7 +600,7 @@ class RadarMultiband:
                 lim.set_params(enabled=self.enabled)
 
     def _filt(self, sos: np.ndarray, key: str, x: np.ndarray) -> np.ndarray:
-        y, self._z[key] = sosfilt(sos, x, zi=self._z[key])
+        y, self._z[key] = _signal().sosfilt(sos, x, zi=self._z[key])
         return y
 
     def process(self, samples: np.ndarray) -> np.ndarray:

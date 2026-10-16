@@ -655,7 +655,7 @@ class StreamingEQ:
         if self._fir is not None:
             samples = self._fir.process(samples)
             if self._peq_sos is not None:
-                samples, self._peq_zi = sosfilt(self._peq_sos, samples, zi=self._peq_zi)
+                samples, self._peq_zi = _signal().sosfilt(self._peq_sos, samples, zi=self._peq_zi)
         if self._sos is not None:
             samples, self._zi = _signal().sosfilt(self._sos, samples, zi=self._zi)
         if self._guard is not None:
