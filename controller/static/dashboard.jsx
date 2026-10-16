@@ -9923,7 +9923,7 @@ function DeviceConfigForm({ config, onChange, disabled, sections, onScopeChange,
               <Toggle label="Speech boost" sub="presence boost for voice" value={config.eqLoudness ?? false} onChange={v => set('eqLoudness', v)}/>
             </div>
             {radarCapable && (
-              <div style={{ marginTop: 8, ...inputStyle }}>
+              <div style={{ marginTop: 'var(--space-4)', ...inputStyle }}>
                 <Toggle label="Radar's own stock EQ curve"
                   sub="Amazon's real tuning for this speaker, layered under the bands above"
                   value={config.eqStockCurve ?? true} onChange={v => set('eqStockCurve', v)}/>
