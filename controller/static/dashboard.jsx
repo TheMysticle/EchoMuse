@@ -3463,10 +3463,8 @@ const _provisionBoard = (model = '', name = '') => {
 };
 
 const _unlockVerdict = ({ release = '', lk = '', twrp = '', board = 'biscuit' }) => {
-  // Radar goes through a different unlocker (TheMysticle's) and never carries
-  // an amonet LK, so the biscuit evidence rules cannot say it is v2 — and
-  // _provisionBoard has already picked out the board by stock identity, so
-  // there is nothing else for this function to decide on radar.
+  // Radar has its own unlock and LK. Biscuit's amonet signatures must not be
+  // used to infer Radar's unlock generation.
   if (board !== 'biscuit') return { v2: false, evidence: [] };
   const evidence = [];
   if (_amonetLk(lk) === 2) evidence.push('amonet 2\'s LK in lk_a');
@@ -5396,7 +5394,7 @@ function ProvisionWizard({ token, onClose, knownDevices }) {
   // actually depend on? Those refuse; any other is reported as a warning and
   // cannot block, so a device's outcome never depends on a slot it does not
   // use.
-  //   amonet 2: BOTH. The slot plan may build from either, and the stock
+  //   Radar / amonet 2: BOTH. The slot plan may build from either, and the stock
   //     image kept in B boots against system_b (#619).
   //   amonet 1: system_a, which must be mmcblk0p13 — an amonet 1 image
   //     carries no emos.system= stamp, so emOS mounts SYSTEM_PART_DEFAULT
@@ -5410,15 +5408,26 @@ function ProvisionWizard({ token, onClose, knownDevices }) {
         + 'trusted yet. Nothing has been written. Check the cable and try this step again.' };
     }
     const amonet = _amonetLk(probe.lk);
-    const lkSays = amonet ? `lk_a holds amonet ${amonet}'s LK` : 'lk_a holds neither amonet\'s LK';
+    const radarLk = probe.lk.toLowerCase() === '88168858f86f0500';
+    const lkSays = board === 'radar'
+      ? (radarLk ? 'lk_a holds the amonet-radar LK' : 'lk_a does not match amonet-radar v1.0.0')
+      : (amonet ? `lk_a holds amonet ${amonet}'s LK` : 'lk_a holds neither amonet\'s LK');
     const tw = probe.twrp;
     let gen = 0, unreadable = false;
     if (!probe.lk) {
       unreadable = true;
-      why.push('the wizard could not read the lk_a partition, so it cannot tell amonet 1 from amonet 2');
+      why.push(board === 'radar'
+        ? 'the wizard could not read the lk_a partition, so it cannot confirm the Radar unlock'
+        : 'the wizard could not read the lk_a partition, so it cannot tell amonet 1 from amonet 2');
     } else if (!tw) {
       unreadable = true;
       why.push('the wizard could not read the TWRP version');
+    } else if (board === 'radar' && radarLk
+               && /^3\.7\.0(?![0-9])(?!_9-bboe)/.test(tw) && layout === 'v2') {
+      gen = 6;
+    } else if (board === 'radar') {
+      why.push(`the Radar unlock does not add up: ${lkSays}, TWRP is ${tw}, and the boot partitions `
+        + `are laid out for ${layout === 'v2' ? 'the expected Radar layout' : 'an unexpected layout'}`);
     } else if (amonet === 2 && /^3\.7\.0(?![0-9])(?!_9-bboe)/.test(tw) && layout === 'v2') {
       gen = 6;
     } else if (amonet === 1 && /^3\.2\.3(?![0-9])|^3\.7\.0_9-bboe\d+$/.test(tw) && layout === 'v1') {
@@ -5429,11 +5438,8 @@ function ProvisionWizard({ token, onClose, knownDevices }) {
         + 'amonet 2 means TWRP 3.7.0 and FireOS 6)');
     }
     if (gen) {
-      // Radar goes through a different unlocker, so naming it "amonet N"
-      // would be wrong; the board label distinguishes it. Both branches
-      // use lkSays for the LK part — radar carries no amonet LK, so
-      // lkSays reads "lk_a holds neither amonet's LK", which is the
-      // honest answer.
+      // Radar and Biscuit use different LK images, so label the board-specific
+      // unlock accurately instead of calling Radar amonet-biscuit v2.
       seen.push(`${board === 'radar' ? 'Radar unlock' : `amonet ${gen === 6 ? 2 : 1}`}: ${lkSays}, TWRP ${tw}`);
       const want = gen === 6
         ? { layout: 'nested', release: '7.', arch: 'arm', label: 'FireOS 6' }
@@ -5477,8 +5483,14 @@ function ProvisionWizard({ token, onClose, knownDevices }) {
       }
     }
     if (!why.length) return { ok: true, gen, confirmed: seen, notes };
-    const fix = gen === 6
-      ? ' amonet 2 needs FireOS 6 in BOTH slots. If the FireOS 6 flash from the unlock '
+    const fix = unreadable
+      ? ' The Echo is unlocked, since it is in TWRP; this is the wizard failing to read it. '
+        + 'Try this step again, and if it repeats, use Download diagnostics and attach the '
+        + 'file to an issue.'
+      : board === 'radar' && gen === 0
+        ? ' Radar needs the matching amonet-radar LK, TWRP 3.7.0, and FireOS 6 in both slots.'
+      : gen === 6
+      ? ` ${board === 'radar' ? 'Radar' : 'amonet 2'} needs FireOS 6 in BOTH slots. If the FireOS 6 flash from the unlock `
         + 'instructions did not complete for both, finish it, then run this step again.'
       : gen === 5
         ? ' amonet 1 needs FireOS 5 in system_a (mmcblk0p13) and a FireOS 5 kernel to build from.'
