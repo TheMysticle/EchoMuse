@@ -1,0 +1,224 @@
+language: en
+intents:
+  # Add only the missing shorthand; preserve HA's existing sentence matcher.
+  HassSetVolume:
+    data:
+    - sentences:
+      - '[the] volume [to] {volume:volume_level}[([ ]%)| percent]'
+      requires_context: {area: {slot: true}}
+      response: default
+  HassMediaPause:
+    data:
+    - sentences:
+      - stop stop
+      - stop stop stop
+      requires_context: {area: {slot: true}}
+      response: default
+  EchoMuseCreate:
+    data:
+    - sentences:
+      - (set|start|create)[ a| my| the] timer
+      - (set|start|create)[ a| my| the] timer[ for] {em_request:request}
+      - (set|start|create)[ a| my| the] {em_request:request} timer
+      - '(a|an) {em_request:request} timer'
+      slots:
+        kind: timer
+    - sentences:
+      - (set|start|create)[ an| my| the] alarm
+      - (set|start|create)[ an| my| the] alarm for {em_request:request}
+      - (set|start|create)[ an| my| the] alarm {em_time_intro:when}[ {em_request:request}]
+      - (set|start|create) (a|an) {em_request:request} alarm
+      - '(a|an) {em_request:request} alarm'
+      slots:
+        kind: alarm
+    - sentences:
+      - (set|start|create)[ a| my| the] {em_target:target} timer for {em_request:request}
+      slots:
+        kind: timer
+    - sentences:
+      - remind me
+      - remind me {em_request:request}
+      - (set|create)[ a| my| the] reminder[ to] {em_request:request}
+      slots:
+        kind: reminder
+    - sentences:
+      - '{em_time_intro:when}[ {em_prefix:prefix}] remind me {em_request:request}'
+      slots:
+        kind: reminder
+    - sentences:
+      - wake me[ up] {em_request:request}
+      slots:
+        kind: alarm
+  EchoMuseList:
+    data:
+    - sentences:
+      - (list|read)[ aloud][ my| the] timer[s]
+      - what timer[s] do I have
+      - what are my timer[s]
+      slots:
+        kind: timer
+        action: list
+    - sentences:
+      - (list|read)[ aloud][ my| the] alarm[s]
+      - what alarm[s] do I have
+      - what are my alarm[s]
+      slots:
+        kind: alarm
+        action: list
+    - sentences:
+      - (list|read)[ aloud][ my| the] reminder[s]
+      - what reminder[s] do I have
+      - what are my reminder[s]
+      slots:
+        kind: reminder
+        action: list
+    - sentences:
+      - (what|when) is[ my| the] next alarm
+      slots:
+        kind: alarm
+        target: next
+        action: list
+    - sentences:
+      - (what|when) is[ my| the] next reminder
+      slots:
+        kind: reminder
+        target: next
+        action: list
+  EchoMuseAction:
+    data:
+    - sentences:
+      - (cancel|delete|remove)[ the| my] {em_target:target} timer
+      - (cancel|delete|remove)[ the| my] timer[ called| named] {em_target:target}
+      - (cancel|delete|remove)[ the| my] timer
+      slots:
+        kind: timer
+        action: cancel
+    - sentences:
+      - (cancel|delete|remove) all[ my| the] timers
+      slots:
+        kind: timer
+        action: cancel_all
+    - sentences:
+      - (stop|dismiss)[ the| my] timer
+      - (stop|dismiss)[ the| my] {em_target:target} timer
+      slots:
+        kind: timer
+        action: dismiss
+    - sentences:
+      - disable[ the| my] {em_target:target} timer
+      slots:
+        kind: timer
+        action: disable
+    - sentences:
+      - enable[ the| my] {em_target:target} timer
+      slots:
+        kind: timer
+        action: enable
+    - sentences:
+      - (cancel|delete|remove)[ the| my] {em_target:target} alarm
+      - (cancel|delete|remove)[ the| my] alarm[ called| named] {em_target:target}
+      - (cancel|delete|remove)[ the| my] alarm
+      slots:
+        kind: alarm
+        action: cancel
+    - sentences:
+      - (cancel|delete|remove) all[ my| the] alarms
+      slots:
+        kind: alarm
+        action: cancel_all
+    - sentences:
+      - (stop|dismiss)[ the| my] alarm
+      - (stop|dismiss)[ the| my] {em_target:target} alarm
+      slots:
+        kind: alarm
+        action: dismiss
+    - sentences:
+      - disable[ the| my] {em_target:target} alarm
+      slots:
+        kind: alarm
+        action: disable
+    - sentences:
+      - enable[ the| my] {em_target:target} alarm
+      slots:
+        kind: alarm
+        action: enable
+    - sentences:
+      - (cancel|delete|remove)[ the| my] {em_target:target} reminder
+      - (cancel|delete|remove)[ the| my] reminder[ called| named] {em_target:target}
+      - (cancel|delete|remove)[ the| my] reminder
+      slots:
+        kind: reminder
+        action: cancel
+    - sentences:
+      - (cancel|delete|remove) all[ my| the] reminders
+      slots:
+        kind: reminder
+        action: cancel_all
+    - sentences:
+      - (stop|dismiss)[ the| my] reminder
+      - (stop|dismiss)[ the| my] {em_target:target} reminder
+      slots:
+        kind: reminder
+        action: dismiss
+    - sentences:
+      - disable[ the| my] {em_target:target} reminder
+      slots:
+        kind: reminder
+        action: disable
+    - sentences:
+      - enable[ the| my] {em_target:target} reminder
+      slots:
+        kind: reminder
+        action: enable
+    - sentences:
+      - snooze[ it| that| the alarm]
+      - snooze[ it| that| the alarm] for {em_request:request}
+      - give me {em_request:request} more
+      - remind me again in {em_request:request}
+      slots:
+        action: snooze
+    - sentences:
+      - stop ringing
+      - dismiss that
+      slots:
+        action: dismiss
+    - sentences:
+      - pause[ my| the] timer
+      - pause[ my| the] {em_target:target} timer
+      slots:
+        kind: timer
+        action: pause
+    - sentences:
+      - (resume|continue)[ my| the] timer
+      - (resume|continue)[ my| the] {em_target:target} timer
+      slots:
+        kind: timer
+        action: resume
+    - sentences:
+      - give me {em_request:request} more minutes
+      slots:
+        action: snooze
+        unit: minutes
+    - sentences:
+      - I've done that reminder
+      - I have done that reminder
+      slots:
+        kind: reminder
+        action: complete
+lists:
+  em_time_intro:
+    values:
+    - at
+    - in
+    - after
+    - 'on'
+    - today
+    - tomorrow
+    - every
+    - each
+  em_request:
+    wildcard: true
+  em_target:
+    wildcard: true
+  em_prefix:
+    wildcard: true

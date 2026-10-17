@@ -1,0 +1,40 @@
+{
+  "title": "EchoMuse Scheduler",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Device-owned EchoMuse schedules",
+        "description": "Open the satellite in the EchoMuse controller \u2192 Schedules \u2192 Home Assistant connection and generate a connection key. Enter the direct controller address (for the HA add-on: http://<HA-IP>:8768), the key and satellite serial. No controller username or password is needed. The satellite must be online with compatible firmware.",
+        "data": {
+          "url": "Controller URL",
+          "satellite": "Satellite serial",
+          "tts_engine": "TTS entity (optional)",
+          "api_key": "Satellite connection key"
+        }
+      },
+      "reconfigure": {
+        "title": "Update the controller connection",
+        "description": "Open the satellite in the EchoMuse controller \u2192 Schedules \u2192 Home Assistant connection and generate a connection key. Enter the direct controller address (for the HA add-on: http://<HA-IP>:8768), the key and satellite serial. No controller username or password is needed. The satellite must be online with compatible firmware.",
+        "data": {
+          "url": "Controller URL",
+          "satellite": "Satellite serial",
+          "tts_engine": "TTS entity (optional)",
+          "api_key": "Satellite connection key"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Could not reach the scheduler. Check the controller address, connection key and satellite serial, and confirm the satellite is online."
+    },
+    "abort": {
+      "already_configured": "Satellite already configured",
+      "wrong_satellite": "The connection belongs to a different satellite"
+    }
+  },
+  "issues": {
+    "intent_conflict": {
+      "title": "Scheduler voice routing conflict",
+      "description": "Another integration replaced EchoMuse timer handlers. Remove the competing override and reload EchoMuse Scheduler before relying on voice timers."
+    }
+  }
+}

@@ -1,0 +1,15 @@
+command:
+  name: Manage satellite schedule
+  description: Send a validated command to one device. Returns only after its durable acknowledgment.
+  fields:
+    entry_id:
+      name: Satellite integration entry ID
+      required: true
+      selector:
+        text:
+    command:
+      name: Schedule command
+      description: Create/edit/list/cancel/cancel_all/pause/resume/adjust/snooze/dismiss/enable/disable/settings. See docs/local-schedules.md.
+      required: true
+      selector:
+        object:

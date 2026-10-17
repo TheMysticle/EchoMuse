@@ -1,0 +1,17 @@
+{
+  "domain": "echomuse_schedule",
+  "name": "EchoMuse Scheduler",
+  "version": "0.1.10",
+  "config_flow": true,
+  "dependencies": [
+    "intent",
+    "conversation",
+    "tts",
+    "assist_satellite",
+    "media_player"
+  ],
+  "documentation": "https://github.com/wilbowes/EchoMuse",
+  "iot_class": "local_polling",
+  "requirements": [],
+  "codeowners": []
+}
