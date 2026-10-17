@@ -433,8 +433,50 @@ async def resume_interrupted(device_id: str) -> None:
         await s.resume()
 
 
+# A local clarification spans several independent HA pipelines/announcements.
+# Keep one extra speaker owner until the dialogue ends, with an expiry in case
+# HA disconnects before sending its release.
+_dialogue_holds = {}
+# The check for an existing hold and the insert of the new one are separated by
+# an await (interrupt), so two requests for the same key could both pass the
+# check and the second would overwrite the first's task, leaking it.
+_dialogue_lock = asyncio.Lock()
+
+
+async def dialogue_hold(device_id: str, token: str, on: bool) -> None:
+    key = (device_id, token)
+    async with _dialogue_lock:
+        if not on:
+            task = _dialogue_holds.pop(key, None)
+            if task is not None:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+            return
+        if key in _dialogue_holds:
+            return
+        if sum(device == device_id for device, _ in _dialogue_holds) >= 4:
+            raise ValueError("Too many active clarifications")
+        await interrupt(device_id)
+        session = _sessions.get(device_id)
+
+        async def expire():
+            try:
+                await asyncio.sleep(190)
+            finally:
+                _dialogue_holds.pop(key, None)
+                if _sessions.get(device_id) is session:
+                    await resume_interrupted(device_id)
+
+        _dialogue_holds[key] = asyncio.create_task(expire())
+        await asyncio.sleep(0)  # enter the cleanup scope before a release can cancel it
+
+
 def device_gone(device_id: str) -> None:
     """Device disconnected — kill any session without touching the wire."""
+    for key, task in list(_dialogue_holds.items()):
+        if key[0] == device_id:
+            _dialogue_holds.pop(key, None)
+            task.cancel()
     s = _sessions.pop(device_id, None)
     if s is not None:
         s.abandon()

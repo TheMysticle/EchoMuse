@@ -114,6 +114,7 @@ import em_volume
 import em_speechgate
 import em_ringlight
 import em_timers
+import em_schedule
 import em_loglevel
 
 _LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s — %(message)s"
@@ -446,6 +447,7 @@ class Device:
         self.spotify: dict | None = None
         # Outstanding spotify_cmd requests by id, answered by spotify_reply.
         self.spotify_waiters: dict[str, asyncio.Future] = {}
+        self.schedule = em_schedule.Bridge(device_id)
         # Set from the register message; None on firmware that predates it.
         self.ambient_light_status: dict | None = None
         # Which userspace the device booted, from its register message.
@@ -5279,6 +5281,9 @@ async def handle_control(ws: WebSocketServerProtocol, secure: bool = False):
                             "type": "device_update", "device_id": device_id,
                             "state": {"spotify": device.spotify},
                         })
+
+                    elif msg_type in ("schedule_reply", "schedule_state"):
+                        device.schedule.receive(msg)
 
                     elif msg_type == "spotify_reply":
                         waiter = device.spotify_waiters.get(msg.get("id"))

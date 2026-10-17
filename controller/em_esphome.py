@@ -557,6 +557,8 @@ class EchoMuseSatellite(SatelliteServerProtocol):
         the one that is conditional.
         """
         flags = VOICE_ASSISTANT_FLAGS
+        if self._device_has("local_schedule"):
+            flags &= ~VoiceAssistantFeature.TIMERS
         if self._device_has("mic"):
             flags |= VOICE_ASSISTANT_CONVERSATION_FLAG
         return flags
@@ -868,6 +870,9 @@ class EchoMuseSatellite(SatelliteServerProtocol):
             return
 
         if isinstance(msg, api_pb2.VoiceAssistantTimerEventResponse):
+            if self._device_has("local_schedule"):
+                yield _HANDLED
+                return
             # HA owns the countdown; we only track live timers and ring on
             # FINISHED. Fire-and-forget to the owning server so a slow ring
             # (which plays audio) never blocks the protocol read loop.

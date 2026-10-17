@@ -34,8 +34,9 @@ jobs:
       # real shell, with busybox as the device has it. Without one the test
       # would skip, so it fails under CI instead — a skipped check of what is
       # written to a boot partition is not a pass.
-      - name: busybox, for the emOS update's device commands
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq busybox
+      # Schedule sound tests exercise the real decoder for the advertised formats.
+      - name: Install busybox and FFmpeg for device-command and sound tests
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq busybox ffmpeg
       - name: Run pytest
         working-directory: controller
         run: python -m pytest tests/ -v --cov --cov-report=term
@@ -139,6 +140,7 @@ jobs:
           curl -sfL -o /tmp/babel.min.js https://cdn.jsdelivr.net/npm/@babel/standalone@7.22.5/babel.min.js
           echo "ee17810b11af1c9b97ac2d85752b9f73b9ba37d9f50ba6312e0709013ebeec6e  /tmp/babel.min.js" | sha256sum -c -
           BABEL_STANDALONE=/tmp/babel.min.js node controller/tests/dashboard_globals.test.mjs
+          BABEL_STANDALONE=/tmp/babel.min.js node controller/tests/schedule_sounds.test.mjs
       - name: Run forge console tests
         run: node oww_forge/tests/console_log.test.mjs
 

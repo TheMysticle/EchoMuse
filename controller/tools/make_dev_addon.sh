@@ -59,9 +59,9 @@ VERSION="dev-$(git -C "$SRC" describe --tags --match 'controller-v*' --match 'co
 #   slug:    distinct, so this installs alongside the released add-on rather
 #            than replacing it.
 #   version: the git description, so the add-on page says what it is.
-python3 - "$OUT/config.yaml" "$VERSION" <<'PY'
+python3 - "$OUT/config.yaml" "$VERSION" "$OUT/Dockerfile" <<'PY'
 import re, sys
-path, version = sys.argv[1], sys.argv[2]
+path, version, dockerfile = sys.argv[1:]
 text = open(path, encoding="utf-8").read()
 
 # Drop `image:` and the comment block explaining it — that comment is about
@@ -87,6 +87,16 @@ missing = [k for k in ("slug:", "version:", "ingress:", "  esphome_port_base: 16
            if not re.search(rf'^{k}', text, re.M)]
 if missing or re.search(r'^image:', text, re.M):
     sys.exit(f"config.yaml rewrite failed: {missing or 'image: key still present'}")
+
+# Supervisor builds locally without passing our release workflow's build arg.
+# Bake the same version into the copied Dockerfile so the dashboard and add-on
+# page identify this exact package, rather than reporting a generic "dev".
+text = open(dockerfile, encoding="utf-8").read()
+text, count = re.subn(r'^ARG EM_CONTROLLER_VERSION=dev$',
+    f'ARG EM_CONTROLLER_VERSION={version}', text, count=1, flags=re.M)
+if count != 1:
+    sys.exit("Dockerfile rewrite failed: controller version argument missing")
+open(dockerfile, "w", encoding="utf-8").write(text)
 PY
 
 echo "Local add-on written to: $OUT"

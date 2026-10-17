@@ -36,10 +36,10 @@ const Babel = createRequire(import.meta.url)(BABEL);
 
 const KNOWN = new Set(`
   AbortController Array Audio Blob Boolean DataView Date DecompressionStream
-  Error FormData Int32Array JSON Map Math Number Object Promise React ReactDOM
+  Error FormData Int32Array Intl JSON Map Math Number Object Promise React ReactDOM
   RegExp ResizeObserver Response Set String TextDecoder TextEncoder URL
   URLSearchParams Uint8Array WebSocket alert btoa clearInterval clearTimeout
-  confirm console crypto document encodeURIComponent fetch localStorage
+  confirm console crypto document encodeURIComponent fetch globalThis localStorage
   location navigator parseInt setInterval setTimeout undefined unescape window
 `.split(/\s+/).filter(Boolean));
 

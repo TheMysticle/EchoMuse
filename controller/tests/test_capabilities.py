@@ -48,6 +48,13 @@ def test_device_announces_expected_capabilities():
         assert expected in caps, f"firmware no longer announces {expected!r}"
 
 
+def test_global_schedule_sounds_are_negotiated():
+    assert "local_schedule_sounds" in device_capabilities()
+    assert '"local_schedule_sounds" not in (live.capabilities or [])' in API.read_text()
+    jsx = (ROOT / "controller" / "static" / "dashboard.jsx").read_text()
+    assert ".includes('local_schedule_sounds')" in jsx
+
+
 def test_every_capability_the_controller_checks_is_one_the_device_sends():
     """
     A controller checking for a capability string the device never sends is a

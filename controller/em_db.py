@@ -2205,6 +2205,8 @@ def delete_device(device_id: str) -> None:
     actually matters.
     """
     with _tx() as conn:
+        # A re-added satellite must not revive an old HA scheduling key.
+        conn.execute("DELETE FROM system_config WHERE key = ?", ("schedule_key:" + device_id,))
         conn.execute("DELETE FROM device_logs WHERE device_id = ?", (device_id,))
         wake_samples = conn.execute(
             "SELECT audio_file FROM wake_samples WHERE device_id = ?", (device_id,)

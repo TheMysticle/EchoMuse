@@ -58,6 +58,7 @@ import websockets
 import em_db as db
 import em_health
 import em_auth as auth
+import em_schedule_auth as schedule_auth
 import em_ble_proxy
 import em_broadcast
 import em_config_sections as sections_mod
@@ -414,6 +415,11 @@ async def create_app() -> web.Application:
     app.router.add_patch("/api/users/{id}", _patch_user)
 
     # Devices — order matters: specific paths before parameterised ones
+    app.router.add_post("/api/devices/{id}/schedule-connection", _post_schedule_connection)
+    app.router.add_delete("/api/devices/{id}/schedule-connection", _delete_schedule_connection)
+    app.router.add_get("/api/schedules", _get_schedules)
+    app.router.add_post("/api/devices/{id}/schedules", _post_schedule)
+    app.router.add_post("/api/devices/{id}/schedule-assets", _post_schedule_asset)
     app.router.add_get("/api/devices",                    _get_devices)
     app.router.add_get("/api/devices/pending",            _get_pending)
     app.router.add_get("/api/devices/{id}",               _get_device)
@@ -518,10 +524,16 @@ async def _ingress_only_middleware(request: web.Request, handler):
     """
     As a Home Assistant add-on, the dashboard/API must only be reachable
     through the authenticated ingress gateway — the add-on has no other
-    auth in front of it on the LAN otherwise. No-op (INGRESS_ONLY unset)
-    for every deployment that isn't the add-on.
+    auth in front of it on the LAN otherwise. A scoped satellite key may
+    cross this boundary only for its schedule read/command/audio routes; it
+    never grants a dashboard session or access to other APIs. No-op
+    (INGRESS_ONLY unset) for standalone deployments.
     """
     if INGRESS_ONLY and request.remote != INGRESS_GATEWAY_IP:
+        satellite = await schedule_auth.authorize(request)
+        if satellite is not None:
+            request["schedule_satellite"] = satellite
+            return await handler(request)
         log.warning("Rejected non-ingress request from %s", request.remote)
         raise web.HTTPForbidden(text="Home Assistant Ingress is required")
     return await handler(request)
@@ -7413,3 +7425,90 @@ def _merge_device(row, boot: dict | None = None) -> dict:
         # of "updating…" forever when an update aborts.
         "update_error":       _update_errors.get(device_id),
     }
+
+
+@schedule_auth.require_auth
+async def _get_schedules(request):
+    # Identity comes from the same stored MAC as ESPHome, never a room label.
+    rows = []
+    for device_id, live in list(_devices.items()):
+        if request.get("schedule_satellite") not in (None, device_id):
+            continue
+        if "local_schedule" not in (live.capabilities or []):
+            continue
+        rows.append({"id": device_id, "mac": db.get_esphome_mac(device_id),
+                     "epoch": live.schedule.epoch, "snapshot": live.schedule.snapshot})
+    return _ok(rows)
+
+
+def _schedule_device(request):
+    live = _devices.get(request.match_info["id"])
+    if live is None or "local_schedule" not in (live.capabilities or []):
+        raise web.HTTPConflict(text="Satellite offline or firmware lacks local schedules")
+    return live
+
+
+@schedule_auth.require_admin
+async def _post_schedule(request):
+    live = _schedule_device(request)
+    body = await request.json()
+    if not isinstance(body, dict):
+        return _error("bad_command", "Expected a command object", 400)
+    if body.get("action") == "dialogue_hold":
+        import em_player
+        token = body.get("token")
+        if not isinstance(token, str) or not re.fullmatch(r"[a-f0-9]{32}", token) or type(body.get("on")) is not bool:
+            return _error("bad_command", "Invalid clarification hold", 400)
+        try:
+            await em_player.dialogue_hold(live.device_id, token, body["on"])
+        except ValueError as err:
+            return _error("bad_command", str(err), 409)
+        return _ok({"held": body["on"]})
+    if (body.get("action") == "settings" and isinstance(body.get("settings"), dict)
+            and "sounds" in body["settings"]
+            and "local_schedule_sounds" not in (live.capabilities or [])):
+        return _error("unsupported", "Update satellite firmware to set global sounds", 409)
+    try:
+        result = await live.schedule.request(live.send_control, body)
+        return _ok(result)
+    except (ValueError, asyncio.TimeoutError) as err:
+        return _error("schedule_failed", str(err) or "Device acknowledgment timed out", 409)
+
+
+@schedule_auth.require_admin
+async def _post_schedule_asset(request):
+    import em_schedule
+    live = _schedule_device(request)
+    data = bytearray()
+    async for chunk in request.content.iter_chunked(65536):
+        data.extend(chunk)
+        if len(data) > em_schedule.MAX_INPUT:
+            raise web.HTTPRequestEntityTooLarge(max_size=em_schedule.MAX_INPUT, actual_size=len(data))
+    try:
+        asset, pcm = await em_schedule.convert_audio(bytes(data))
+        await live.schedule.request(live.send_control, asset=asset, data=pcm)
+        return _ok({"asset": asset})
+    except (ValueError, asyncio.TimeoutError) as err:
+        return _error("asset_failed", str(err) or "Device acknowledgment timed out", 409)
+
+
+@auth.require_admin
+async def _post_schedule_connection(request):
+    device_id = request.match_info["id"]
+    device = await asyncio.to_thread(db.get_device, device_id)
+    if device is None or not device["approved"]:
+        return _error("not_found", "Approved satellite not found", 404)
+    token = await asyncio.to_thread(schedule_auth.issue, device_id)
+    host = _link["ip"]
+    if ":" in host:
+        host = "[" + host + "]"
+    url = f"http://{host}:{os.environ.get('API_PORT', '8768')}" if host else None
+    response = _ok({"satellite": device_id, "api_key": token, "url": url})
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@auth.require_admin
+async def _delete_schedule_connection(request):
+    await asyncio.to_thread(schedule_auth.revoke, request.match_info["id"])
+    return _ok({"revoked": True})

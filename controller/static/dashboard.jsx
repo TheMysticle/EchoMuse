@@ -1567,6 +1567,217 @@ function ConnectivityTab({ device, row }) {
 
 // ─── Device detail modal ──────────────────────────────────────────────────────
 
+// Wall-clock input in the chosen timezone; reject DST gaps and choose the
+// first occurrence of an ambiguous time, matching the voice parser.
+function scheduleWallTime(value, zone) {
+  const parts = value.match(/\d+/g).map(Number);
+  const target = Date.UTC(parts[0], parts[1]-1, parts[2], parts[3], parts[4]);
+  const formatter = new Intl.DateTimeFormat('en-GB', {timeZone:zone, year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', hourCycle:'h23'});
+  const wall = ms => { const p = Object.fromEntries(formatter.formatToParts(new Date(ms)).map(x => [x.type,x.value])); return Date.UTC(+p.year,+p.month-1,+p.day,+p.hour,+p.minute); };
+  let guess = target;
+  for (let n=0; n<4; n++) guess += target-wall(guess);
+  if (wall(guess)!==target) throw new Error('That local time does not exist because of a clock change');
+  if (wall(guess-3600000)===target) guess -= 3600000;
+  return Math.floor(guess/1000);
+}
+
+let scheduleIdCounter = 0;
+function scheduleId() {
+  const cryptoApi = globalThis.crypto;
+  if (cryptoApi?.randomUUID) return cryptoApi.randomUUID();
+  const bytes = new Uint8Array(16);
+  if (cryptoApi?.getRandomValues) cryptoApi.getRandomValues(bytes);
+  else for (let i=0;i<bytes.length;i++) bytes[i] = Math.floor(Math.random()*256);
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = [...bytes].map(value=>value.toString(16).padStart(2,'0')).join('');
+  scheduleIdCounter++;
+  return `${hex.slice(0,8)}-${hex.slice(8,12)}-${hex.slice(12,16)}-${hex.slice(16,20)}-${hex.slice(20)}-${Date.now().toString(36)}-${scheduleIdCounter.toString(36)}`;
+}
+
+function SchedulesTab({ device, isAdmin }) {
+  const [snapshot, setSnapshot] = useState(null);
+  const [settings, setSettings] = useState(null);
+  const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
+  const [loadError, setLoadError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [connection, setConnection] = useState(null);
+  const [showKey, setShowKey] = useState(false);
+  const [kind, setKind] = useState('timer');
+  const [label, setLabel] = useState('');
+  const [seconds, setSeconds] = useState(300);
+  const [when, setWhen] = useState('');
+  const [zone, setZone] = useState(() => Intl.DateTimeFormat().resolvedOptions().timeZone);
+  const [repeat, setRepeat] = useState('once');
+  const [soundFiles, setSoundFiles] = useState({});
+  const soundSettingsCapable = (device.capabilities || []).includes('local_schedule_sounds');
+  const base = `/api/devices/${encodeURIComponent(device.device_id)}`;
+  const explain = e => e.message || e.error || 'The request failed';
+  // A device that restarted with a reset store reports revisions from 1 again;
+  // within one controller-side epoch a lower revision is a stale reply.
+  const epoch = useRef(null);
+  const adopt = useCallback((value, fresh) => {
+    setSnapshot(old => old && value && !fresh && old.revision > value.revision ? old : value);
+    if (value) setSettings(old => old || value.settings);
+  }, []);
+  useEffect(() => {
+    let stopped = false, timer;
+    const poll = async () => {
+      try {
+        const rows = await API.get('/api/schedules');
+        if (!stopped) {
+          const row = rows.find(r => r.id === device.device_id);
+          const restarted = !!row && epoch.current !== null && epoch.current !== row.epoch;
+          if (row) epoch.current = row.epoch;
+          adopt(row?.snapshot || null, restarted);
+          setLoadError('');
+        }
+      } catch (e) { if (!stopped) setLoadError(explain(e)); }
+      if (!stopped) timer = setTimeout(poll, 3000);
+    };
+    poll();
+    return () => { stopped = true; clearTimeout(timer); };
+  }, [device.device_id, adopt]);
+  const run = async work => {
+    setBusy(true); setError(''); setNotice('');
+    try { await work(); } catch (e) { setError(explain(e)); }
+    finally { setBusy(false); }
+  };
+  const command = async data => {
+    const value = await API.post(base + '/schedules', {...data, request:scheduleId()});
+    adopt(value);
+    return value;
+  };
+  const create = async event => {
+    event.preventDefault();
+    await run(async () => {
+      const item = {id:scheduleId(), kind, label, timezone:zone};
+      if (kind === 'timer') item.duration = Number(seconds);
+      else {
+        if (!when) throw new Error('Choose a date and time');
+        item.due = scheduleWallTime(when, zone);
+        if (repeat !== 'once') {
+          const parts = when.match(/\d+/g).map(Number);
+          item.rule = {days:repeat==='weekday'?[1,2,3,4,5]:repeat==='weekend'?[0,6]:[0,1,2,3,4,5,6], hour:parts[3], minute:parts[4]};
+          item.due = 0;
+        }
+      }
+      if (kind === 'reminder') item.message = label;
+      await command({action:'create',item});
+      setNotice(kind==='reminder'?'Reminder saved on satellite. Use Assist or HA to create reminders with cached speech.':'Saved on satellite');
+    });
+  };
+  const saveSettings = async event => {
+    event.preventDefault();
+    await run(async () => {
+      const next = {...settings};
+      if (soundSettingsCapable) next.sounds = {...settings.sounds};
+      if (!soundSettingsCapable && Object.keys(soundFiles).length) throw new Error('Update satellite firmware to set global sounds');
+      for (const type of ['timer','alarm','reminder']) {
+        if (!(type in soundFiles)) continue;
+        const file = soundFiles[type];
+        if (!file) throw new Error('Choose a custom '+type+' sound or select Default');
+        if (!/\.(wav|mp3|ogg|opus|flac|m4a|aac)$/i.test(file.name)) throw new Error('Choose a WAV, MP3, OGG, Opus, FLAC, M4A or AAC file');
+        if (file.size > 8*1024*1024) throw new Error('Sound exceeds 8 MiB');
+        const response = await fetch(ingressPath(base + '/schedule-assets'), {method:'POST', headers:{Authorization:`Bearer ${API.token}`}, body:file});
+        if (response.status === 401) API.unauthorized();
+        const result = await response.json();
+        if (!response.ok) throw result;
+        next.sounds[type] = result.asset;
+      }
+      const saved = await command({action:'settings',settings:next});
+      setSettings(saved.settings);
+      setSoundFiles({});
+      setNotice('Settings saved for all alerts on this satellite');
+    });
+  };
+  const field = (title, control) => <label style={{display:'flex', flexDirection:'column', gap:6, minWidth:0}}><span style={{fontSize:11, color:'var(--text2)'}}>{title}</span>{React.cloneElement(control, {'aria-label':control.props['aria-label'] || title})}</label>;
+  const changeSetting = (name, value) => setSettings(old => ({...old,[name]:Number(value)}));
+  return <div className="em-schedules" style={{fontFamily:"'DM Sans',sans-serif", display:'grid', gap:18}}>
+    <div style={{fontSize:12, color:'var(--text2)', lineHeight:1.6}}>
+      Timers, alarms and reminders are saved on this satellite and ring even when Home Assistant is offline.
+    </div>
+    {(error || loadError) && <div role="alert" style={{color:'var(--error)', fontSize:12}}>{error || loadError}</div>}
+    {notice && <div role="status" style={{color:'var(--accent-deep)', fontSize:12}}>{notice}</div>}
+    {!snapshot ? <Panel label="Satellite schedules"><div style={{fontSize:12, color:'var(--muted)'}}>Satellite offline or waiting for a scheduler report. Confirm the device is running the updated firmware.</div></Panel> : <>
+      <Panel label="Saved on satellite">
+        <div style={{fontSize:11, color:snapshot.error?'var(--error)':'var(--muted)', marginBottom:14}}>{snapshot.error || (snapshot.time_valid?'Device time synchronized':'Waiting for trustworthy time; relative timers can run during this boot')}</div>
+        {!snapshot.items.length && <div style={{fontSize:12, color:'var(--muted)'}}>No timers, alarms or reminders yet.</div>}
+        {snapshot.items.map(item => <div key={item.id} style={{display:'flex', justifyContent:'space-between', gap:12, flexWrap:'wrap', borderTop:'1px solid var(--border)', padding:'12px 0'}}>
+          <div style={{minWidth:0, overflowWrap:'anywhere'}}>
+            <SectionLabel style={{marginBottom:5}}>{item.kind} · {item.state}{item.rule?' · recurring':''}{item.rule&&!item.enabled?' · disabled':''}</SectionLabel>
+            <div style={{fontSize:13, color:'var(--text)'}}>{item.message || item.label || item.kind}</div>
+            <div style={{fontSize:11, color:'var(--muted)', marginTop:5}}>{item.due?new Date(item.due*1000).toLocaleString(undefined,{timeZone:item.timezone||'UTC'})+' · '+(item.timezone||'UTC'):item.state==='paused'?'Paused':'Waiting for next deadline'}</div>
+          </div>
+          {isAdmin && <div style={{display:'flex', gap:6, flexWrap:'wrap', alignItems:'center'}}>
+            {(item.state==='ringing'?['dismiss','snooze']:[]).concat(item.kind==='timer'&&item.state==='scheduled'?['pause']:[], item.state==='paused'?['resume']:[], item.rule?[item.enabled?'disable':'enable']:[], ['cancel']).map(action => <Pill key={action} small danger={action==='cancel'} disabled={busy} onClick={()=>run(()=>command({action,id:item.id}))}>{action}</Pill>)}
+          </div>}
+        </div>)}
+      </Panel>
+      {isAdmin && <div className="em-grid2" style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:18, alignItems:'start'}}>
+        <Panel label="Create an alert"><form onSubmit={create} style={{display:'grid', gap:14}}>
+          {field('Type', <select value={kind} onChange={e=>setKind(e.target.value)}><option value="timer">Timer</option><option value="alarm">Alarm</option><option value="reminder">Reminder</option></select>)}
+          {field(kind==='reminder'?'Reminder text':'Name', <input value={label} maxLength={160} required onChange={e=>setLabel(e.target.value)}/>)}
+          {kind==='timer'?field('Duration (seconds)', <input type="number" min="1" max="315360000" value={seconds} required onChange={e=>setSeconds(e.target.value)}/>):<>
+            {field('Date and time', <input type="datetime-local" required value={when} onChange={e=>setWhen(e.target.value)}/>)}
+            {field('Timezone', <input required value={zone} onChange={e=>setZone(e.target.value)}/>)}
+            {field('Repeat', <select value={repeat} onChange={e=>setRepeat(e.target.value)}><option value="once">Once</option><option value="daily">Every day</option><option value="weekday">Every weekday</option><option value="weekend">Every weekend</option></select>)}
+          </>}
+          <button className="em-pill em-pill--accent" disabled={busy} type="submit">Save on satellite</button>
+        </form></Panel>
+        {settings && <Panel label="Alert settings"><form onSubmit={saveSettings} style={{display:'grid', gap:14}}>
+          <div style={{fontSize:12, color:'var(--text2)', lineHeight:1.6}}>Sounds apply to all existing and future alerts of each type on this satellite. {soundSettingsCapable && 'Default uses the timer sound and the Echo’s stock alarm and reminder sounds.'}</div>
+          {!soundSettingsCapable && <div style={{fontSize:12, color:'var(--muted)'}}>Update satellite firmware to enable global sound settings.</div>}
+          {['timer','alarm','reminder'].map(type => {
+            const custom = Boolean(settings.sounds?.[type]) || type in soundFiles;
+            return <div key={type} style={{display:'grid', gap:8}}>
+              {field(type+' sound', <select disabled={busy || !soundSettingsCapable} value={custom?'custom':'default'} onChange={e=>{
+                if(e.target.value==='default') {
+                  setSettings(old=>({...old,sounds:{...old.sounds,[type]:''}}));
+                  setSoundFiles(old=>{const next={...old};delete next[type];return next;});
+                } else setSoundFiles(old=>({...old,[type]:null}));
+              }}><option value="default">Default</option><option value="custom">Custom sound</option></select>)}
+              {custom && <>
+                {settings.sounds?.[type] && !(type in soundFiles) && <span style={{fontSize:11, color:'var(--muted)'}}>Custom sound saved on satellite. Choose a file to replace it.</span>}
+                {field('Upload '+type+' sound', <input key={type+(type in soundFiles?'pending':'saved')} disabled={busy || !soundSettingsCapable} type="file" accept=".wav,.mp3,.ogg,.opus,.flac,.m4a,.aac" onChange={e=>{const file=e.target.files[0];if(file)setSoundFiles(old=>({...old,[type]:file}));}}/>)}
+                {soundFiles[type] && <span style={{fontSize:11, color:'var(--muted)'}}>Selected: {soundFiles[type].name}</span>}
+              </>}
+            </div>;
+          })}
+          <div style={{fontSize:11, color:'var(--muted)', lineHeight:1.6}}>Allowed files: WAV, MP3, OGG, Opus, FLAC, M4A and AAC. Maximum 8 MiB per file; the first 43 seconds are used. The reminder sound plays before each spoken reminder. Save settings to apply your choices.</div>
+          {field('Repeat reminders', <input type="checkbox" checked={settings.reminder_repeat || false} onChange={e=>setSettings(old=>({...old,reminder_repeat:e.target.checked,reminder_repeats:old.reminder_repeats || 1}))}/>)}
+          {settings.reminder_repeat && field('Additional reminder repetitions', <input type="number" required min={1} max={10} value={settings.reminder_repeats || 1} onChange={e=>changeSetting('reminder_repeats',e.target.value)}/>)}
+          <div style={{fontSize:11, color:'var(--muted)'}}>Applies to every reminder on this satellite. Each additional repetition plays the sound and reminder again.</div>
+          <div style={{display:'flex', gap:12, flexWrap:'wrap'}}>{['timer','alarm','reminder'].map(type=><React.Fragment key={type}>{field(type+' color', <input key={type} type="color" aria-label={type+' pulse color'} value={'#'+settings.colors[type].map(x=>x.toString(16).padStart(2,'0')).join('')} onChange={e=>{const color=e.target.value.match(/[a-f\d]{2}/gi).map(x=>parseInt(x,16));setSettings(old=>({...old,colors:{...old.colors,[type]:color}}));}}/>)}</React.Fragment>)}</div>
+          {[
+            ['snooze','Snooze (seconds)',1,86400], ['ramp','Volume ramp (seconds)',0,300],
+            ['ring_cap','Maximum ring time (seconds)',1,3600], ['retention','Remove completed alerts after (seconds)',0,604800],
+            ['grace','Missed deadline grace (seconds)',0,86400],
+            ['timer_volume','Timer maximum volume',0.01,1,0.01], ['alarm_volume','Alarm maximum volume',0.01,1,0.01],
+            ['volume','Reminder volume',0.01,1,0.01]
+          ].map(([name,title,min,max,step])=><React.Fragment key={name}>{field(title,<input type="number" required min={min} max={max} step={step||1} value={settings[name]} onChange={e=>changeSetting(name,e.target.value)}/>)}</React.Fragment>)}
+          <button className="em-pill" disabled={busy} type="submit">Save settings</button>
+          <button className="em-pill" type="button" disabled={busy || Object.keys(soundFiles).length>0} onClick={()=>run(async()=>{await command({action:'prune_assets'});setNotice('Unused cached sounds removed');})}>Remove unused cached sounds</button>
+        </form></Panel>}
+      </div>}
+    </>}
+    {isAdmin && <Panel label="Home Assistant connection">
+      <div style={{fontSize:12, color:'var(--text2)', lineHeight:1.6, marginBottom:12}}>Generate a key for EchoMuse Scheduler in Home Assistant. It controls only this satellite’s schedules. Generating a new key replaces the previous one. No username or password is needed.</div>
+      <div style={{display:'flex', gap:8, flexWrap:'wrap'}}>
+        <Pill disabled={busy} accent onClick={()=>run(async()=>{const value=await API.post(base+'/schedule-connection',{});setConnection(value);setShowKey(false);})}>Generate connection key</Pill>
+        <Pill disabled={busy} danger onClick={()=>run(async()=>{await API.del(base+'/schedule-connection');setConnection(null);setNotice('Connection key revoked. Saved alerts keep running on the satellite.');})}>Revoke connection key</Pill>
+      </div>
+      {connection && <div style={{display:'grid', gap:12, marginTop:16}}>
+        {field('Controller URL (use an address reachable from HA)',<input readOnly value={connection.url || 'http://<controller-IP>:8768'}/>)}
+        {field('Satellite serial',<input readOnly value={device.device_id}/>)}
+        {field('Connection key — shown only until you close this tab',<input aria-label="Satellite connection key" type={showKey?'text':'password'} readOnly value={connection.api_key} onFocus={e=>e.target.select()}/>)}
+        <div style={{display:'flex', gap:8}}><Pill small onClick={()=>setShowKey(value=>!value)}>{showKey?'Hide key':'Show key'}</Pill><Pill small onClick={()=>run(async()=>{if (!navigator.clipboard) throw new Error('Show the key and copy it from the field; clipboard access is unavailable here.');await navigator.clipboard.writeText(connection.api_key);setNotice('Connection key copied');})}>Copy key</Pill></div>
+      </div>}
+    </Panel>}
+  </div>;
+}
+
 function Detail({ device, token, onClose, onApprove, isAdmin, globalConfig, onDeviceConfigChange }) {
   const [tab, setTab] = useState(() => device.approved ? 'status' : 'approve');
   // Seed from the EFFECTIVE config, not the raw stored one — see
@@ -1618,7 +1829,7 @@ function Detail({ device, token, onClose, onApprove, isAdmin, globalConfig, onDe
   const needsUpdate = !!device.firmware_update;
 
   const TABS = device.approved
-    ? (isAdmin ? ['status', 'activity', 'config', 'console', 'updates', 'logs'] : ['status', 'activity', 'config', 'logs'])
+    ? (isAdmin ? ['status', 'activity', 'schedules', 'config', 'console', 'updates', 'logs'] : ['status', 'activity', 'schedules', 'config', 'logs'])
     : ['approve'];
 
   useEffect(() => {
@@ -2135,6 +2346,7 @@ function Detail({ device, token, onClose, onApprove, isAdmin, globalConfig, onDe
             UAT 2026-09-27 — a device with enough log lines to scroll). */}
         <div className="em-modal-body" tabIndex={0} role="region" aria-label={`${device.label || device.device_id} ${tab}`}
              style={{ flex: 1, overflowY: 'auto', padding: 24 }}>
+          {tab === 'schedules' && <SchedulesTab key={device.device_id} device={device} isAdmin={isAdmin}/>}
 
           {/* APPROVE */}
           {!device.approved && (

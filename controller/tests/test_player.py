@@ -1362,3 +1362,60 @@ def test_a_slow_read_while_well_ahead_is_not_a_stall(caplog):
             "a read that leaves the feed ahead of real time is not a stall"
     asyncio.run(main())
     em_player.SOURCE_STALL_MS = 500.0
+
+
+def test_dialogue_holds_duck_between_followup_turns_and_announces():
+    async def run():
+        device = FakeDevice()
+        device.audio_mix_capable = True
+        _wire(device)
+        await em_player.interrupt("office")  # initial request
+        await em_player.dialogue_hold("office", "one", True)
+        await em_player.resume_interrupted("office")
+        for _ in range(2):
+            await em_player.interrupt("office")  # question, then answer
+            await em_player.resume_interrupted("office")
+        assert device.control_msgs == [{"type":"duck", "on":True}]
+        await em_player.dialogue_hold("office", "one", False)
+        assert device.control_msgs[-1] == {"type":"duck", "on":False}
+        assert not em_player._dialogue_holds
+        assert em_player._sessions["office"].owner_depth == 0
+    asyncio.run(run())
+
+
+def test_dialogue_disconnect_cannot_release_reconnected_session():
+    async def run():
+        device = FakeDevice()
+        device.audio_mix_capable = True
+        _wire(device)
+        await em_player.dialogue_hold("office", "one", True)
+        em_player.device_gone("office")
+        await em_player.interrupt("office")
+        await asyncio.sleep(0)
+        assert em_player._sessions["office"].duck_depth == 1
+        assert device.control_msgs == [{"type":"duck","on":True}, {"type":"duck","on":True}]
+        await em_player.resume_interrupted("office")
+    asyncio.run(run())
+
+
+def test_concurrent_identical_dialogue_holds_take_one_owner_and_leak_no_task(monkeypatch):
+    real_interrupt = em_player.interrupt
+
+    async def yielding_interrupt(device_id):
+        await real_interrupt(device_id)
+        await asyncio.sleep(0)  # the real one awaits a socket write
+    monkeypatch.setattr(em_player, "interrupt", yielding_interrupt)
+
+    async def run():
+        em_player._dialogue_lock = asyncio.Lock()  # bound to this test's loop
+        device = FakeDevice()
+        device.audio_mix_capable = True
+        _wire(device)
+        await asyncio.gather(*[em_player.dialogue_hold("office", "same", True) for _ in range(3)])
+        assert len(em_player._dialogue_holds) == 1
+        assert em_player._sessions["office"].owner_depth == 1
+        task = next(iter(em_player._dialogue_holds.values()))
+        await em_player.dialogue_hold("office", "same", False)
+        assert task.done() and not em_player._dialogue_holds
+        assert em_player._sessions["office"].owner_depth == 0
+    asyncio.run(run())
