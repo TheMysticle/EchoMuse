@@ -32,6 +32,7 @@ import (
 	"github.com/wilbowes/EchoMuse/internal/client"
 	"github.com/wilbowes/EchoMuse/internal/config"
 	"github.com/wilbowes/EchoMuse/internal/cue"
+	"github.com/wilbowes/EchoMuse/internal/earcon"
 	"github.com/wilbowes/EchoMuse/internal/listen"
 	"github.com/wilbowes/EchoMuse/internal/platform"
 	"github.com/wilbowes/EchoMuse/internal/server"
@@ -165,10 +166,10 @@ func main() {
 	localDuck = speaker.NewLocalDuck(pcmSpeaker.SetDuck, speaker.LocalDuckHold)
 
 	buttonController.SetVolumeCallback(func(direction string) {
-		// Inert without a controller: nothing is playing to be louder or
-		// quieter, and showing the arc would acknowledge a device that
-		// cannot act. The mute button stays live — see Server.SetLinkDown.
-		if s.LinkDown() {
+		// Inert without a controller unless Spotify standalone is active:
+		// with standalone Spotify, volume buttons control the hardware mixer
+		// and Spotify playback even with no controller session.
+		if s.LinkDown() && !spotifyStandaloneActive() {
 			log.Println("[cmd] volume button ignored — no controller session")
 			return
 		}
@@ -393,8 +394,17 @@ func main() {
 		// produces would acknowledge a press that achieves nothing. Dropped
 		// here rather than at the binding — the binding is the portable
 		// hardware layer and knows nothing about sessions.
+		//
+		// When Spotify standalone is active, a click release plays the offline
+		// error prompt through the cue mixer, matching stock Echo behaviour.
 		if s.LinkDown() {
-			log.Println("[cmd] action button ignored — no controller session")
+			if spotifyStandaloneActive() && event.ClickType == pkgbuttons.DotClick && !event.Down {
+				s.CancelVolumeDisplay()
+				log.Println("[cmd] action button pressed while offline in spotify standalone mode — playing offline error prompt")
+				playOfflinePrompt(pcmSpeaker, s.VolumeLevel(), s, 0)
+			} else {
+				log.Println("[cmd] action button ignored — no controller session")
+			}
 			return
 		}
 		// Muted presses are FORWARDED, with the mute state attached, and the
@@ -475,6 +485,28 @@ func main() {
 		// paints through SetLEDs rather than the animator, so it is not what
 		// this cancels.
 		s.StopAnim()
+		if spotifyStandaloneActive() {
+			if pulseCancel != nil {
+				pulseCancel()
+				pulseCancel = nil
+			}
+			pulseKind = ""
+			s.SetPulseSuppressed(true)
+			s.SetLinkDown(true)
+			sendspinLinkDown(pcmSpeaker)
+			spotifyLinkDown(pcmSpeaker)
+			if s.IsMuted() {
+				s.RestoreMuteRing()
+			} else {
+				s.SetLEDs(allLEDs(0, 0, 0), nil)
+			}
+			// Not while muted: mute must keep every mic stream down. The
+			// unmute callback restarts it.
+			if !s.IsMuted() && dataClient.ShadowScorer() != nil && config.Get().Snapshot().OwwOnDevice == config.OnDeviceOn {
+				dataClient.EnsureOfflineMic()
+			}
+			return
+		}
 		if pulseKind == "orange" {
 			return // already pulsing; restarting is what breaks the cycle
 		}
@@ -484,6 +516,7 @@ func main() {
 		pulseCtx, cancel := context.WithCancel(ctx)
 		pulseCancel = cancel
 		pulseKind = "orange"
+		s.SetPulseSuppressed(false)
 		// Ring belongs to the link state from here, and the action/volume
 		// buttons go inert. Set BEFORE the pulse starts, or its first frames
 		// are swallowed by the mute suppression on a muted device.
@@ -504,6 +537,7 @@ func main() {
 		pulseCtx, cancel := context.WithCancel(ctx)
 		pulseCancel = cancel
 		pulseKind = "white"
+		s.SetPulseSuppressed(false)
 		// Pending approval is the same condition one step earlier: there is
 		// nothing above this device, so the white pulse owns the ring and the
 		// buttons do nothing.
@@ -528,6 +562,7 @@ func main() {
 		pulseCtx, cancel := context.WithCancel(ctx)
 		pulseCancel = cancel
 		pulseKind = "refused"
+		s.SetPulseSuppressed(false)
 		s.SetLinkDown(true)
 		sendspinLinkDown(pcmSpeaker)
 		spotifyLinkDown(pcmSpeaker)
@@ -558,6 +593,7 @@ func main() {
 		pcmSpeaker.SetOutputChainActive(controlClient.HasFeature(client.FeatureOutputChain))
 		// Session restored: the ring goes back to the controller, the mute
 		// ring reasserts below if it applies, and the buttons work again.
+		s.SetPulseSuppressed(false)
 		s.SetLinkDown(false)
 		// Always report mute state on (re)connect — the controller may have
 		// restarted and lost its record of our state. Volume is only
@@ -645,6 +681,11 @@ func main() {
 
 	controlClient.OnSendspinToken(sendspinToken)
 	controlClient.OnSpotifyCmd(spotifyCmd)
+
+	// Restart a controllerless Spotify engine before any controller is
+	// reached, so a reboot with the link still down does not leave the
+	// Connect speaker dark until someone brings the controller back.
+	restoreSpotifyFromState(pcmSpeaker, controlClient, dataClient, s, deviceID)
 
 	// Speaker flush — barge-in: cut buffered TTS the moment the controller
 	// hears the wake word during playback.
@@ -759,6 +800,11 @@ func main() {
 			// also sends its own mic_start around the same time, StartMic
 			// is idempotent (ignores the call while already active).
 			dataClient.StartMic(false)
+			if s.LinkDown() && spotifyStandaloneActive() {
+				if dataClient.ShadowScorer() != nil && config.Get().Snapshot().OwwOnDevice == config.OnDeviceOn {
+					dataClient.EnsureOfflineMic()
+				}
+			}
 		}
 	})
 
@@ -1303,6 +1349,7 @@ func applyShadowConfig(dc *client.DataClient, cc *client.ControlClient,
 	snap := config.Get().Snapshot()
 	mode, model := snap.OwwOnDevice, snap.OwwModel
 	threshold := float32(snap.OwwThreshold)
+	server.SaveWakeWordState(mode, model)
 
 	if mode == config.OnDeviceOff {
 		if dc.ShadowScorer() != nil {
@@ -1508,6 +1555,11 @@ func onWakeCrossing(cc *client.ControlClient, dc *client.DataClient,
 	if !config.Get().WakeWordOn() {
 		cc.SendOwwShadowCross(score, ageMs)
 		log.Printf("[shadow] wake %.3f suppressed — wake word off", score)
+		return
+	}
+	if srv != nil && srv.LinkDown() && spotifyStandaloneActive() {
+		log.Printf("[wake] wake word detected while offline in spotify standalone mode — playing offline error prompt")
+		playOfflinePrompt(spk, srv.VolumeLevel(), srv, offlinePromptWakeCooldown)
 		return
 	}
 	var session uint32
@@ -1928,4 +1980,52 @@ func coresTotal() int {
 		}
 	}
 	return n
+}
+
+// spotifyStandaloneActive reports whether Spotify standalone mode is enabled.
+func spotifyStandaloneActive() bool {
+	snap := config.Get().Snapshot()
+	return snap.SpotifyEnabled != nil && *snap.SpotifyEnabled &&
+		snap.SpotifyStandalone != nil && *snap.SpotifyStandalone
+}
+
+// offlinePromptWakeCooldown is the minimum gap between wake-triggered offline
+// prompts. The prompt runs several seconds and a crossing can repeat (more
+// easily with music playing, where the barge-in bar applies); without a gap
+// each crossing restarts the cue and the duck.
+const offlinePromptWakeCooldown = 5 * time.Second
+
+var (
+	offlinePromptMu   sync.Mutex
+	offlinePromptLast time.Time
+)
+
+// playOfflinePrompt plays the stock offline error prompt audio at the device's
+// set volume level, ducks music, and pulses the ring violet for the duration.
+// minGap > 0 drops the call if a prompt started less than minGap ago; button
+// presses pass 0 and always play.
+func playOfflinePrompt(spk *speaker.PcmSpeaker, level int, srv *server.Server, minGap time.Duration) {
+	if spk == nil {
+		return
+	}
+	offlinePromptMu.Lock()
+	if minGap > 0 && time.Since(offlinePromptLast) < minGap {
+		offlinePromptMu.Unlock()
+		return
+	}
+	offlinePromptLast = time.Now()
+	offlinePromptMu.Unlock()
+	gain := speaker.VolumeGain(level)
+	samples, err := earcon.LoadWithVolume(earcon.OfflineNotConnected, gain)
+	if err != nil {
+		log.Printf("[offline] could not load prompt %s: %v", earcon.OfflineNotConnected, err)
+		return
+	}
+	if srv != nil {
+		srv.FlashPulse(140, 0, 180, 4*time.Second)
+	}
+	if localDuck != nil {
+		localDuck.Start(config.Get().DuckDb)
+	}
+	spk.PlayCue(samples)
 }

@@ -692,8 +692,14 @@ func (d *DataClient) StartMic(lockMic bool) {
 	// 2026-08-30's boot.
 	d.micWanted, d.micWantedLock = true, lockMic
 	if d.micActive {
-		log.Println("[data] StartMic: already active — ignoring")
-		return
+		if d.micConn == nil {
+			// Replace offline local stream with connected stream.
+			close(d.micStopCh)
+			d.micActive = false
+		} else {
+			log.Println("[data] StartMic: already active — ignoring")
+			return
+		}
 	}
 	d.connMu.Lock()
 	conn := d.conn
@@ -709,6 +715,27 @@ func (d *DataClient) StartMic(lockMic bool) {
 	log.Println("[data] Mic streaming started")
 }
 
+// EnsureOfflineMic starts local mic capture and feeding to the on-device wake-word
+// engine (shadow scorer) when the device is disconnected from the controller.
+func (d *DataClient) EnsureOfflineMic() {
+	d.micMu.Lock()
+	defer d.micMu.Unlock()
+	if d.micActive {
+		if d.micConn == nil {
+			return // already running offline
+		}
+		// A connected stream was active or winding down; stop it so offline mic can start.
+		close(d.micStopCh)
+		d.micActive = false
+		d.micConn = nil
+	}
+	d.micActive = true
+	d.micStopCh = make(chan struct{})
+	d.micConn = nil
+	go d.streamMic(nil, d.micStopCh, false)
+	log.Println("[data] Offline mic streaming started for on-device wake word")
+}
+
 // resumeMic restores the stream on a new data connection when the
 // controller's standing instruction is to stream.
 //
@@ -721,6 +748,10 @@ func (d *DataClient) StartMic(lockMic bool) {
 // start a no-op.
 func (d *DataClient) resumeMic() {
 	d.micMu.Lock()
+	if d.micActive && d.micConn == nil {
+		close(d.micStopCh)
+		d.micActive = false
+	}
 	want, lockMic, active := d.micWanted, d.micWantedLock, d.micActive
 	d.micMu.Unlock()
 	if !want || active {
@@ -1084,6 +1115,9 @@ func (d *DataClient) streamMic(conn *websocket.Conn, stopCh <-chan struct{}, loc
 	}
 
 	writeFrame := func(frame []byte) {
+		if conn == nil {
+			return
+		}
 		d.connMu.Lock()
 		conn.SetWriteDeadline(time.Now().Add(wsWriteWait))
 		err := conn.WriteMessage(websocket.BinaryMessage, frame)
@@ -1109,6 +1143,9 @@ func (d *DataClient) streamMic(conn *websocket.Conn, stopCh <-chan struct{}, loc
 	var listenSession uint32
 	var listenSeq uint16
 	sendListenFrame := func(session uint32, payload []byte) {
+		if conn == nil {
+			return
+		}
 		if session != listenSession {
 			listenSession, listenSeq = session, 0
 		}

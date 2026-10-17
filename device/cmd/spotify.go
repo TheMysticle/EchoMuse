@@ -13,6 +13,7 @@ import (
 	"github.com/wilbowes/EchoMuse/internal/config"
 	"github.com/wilbowes/EchoMuse/internal/firewall"
 	"github.com/wilbowes/EchoMuse/internal/platform"
+	"github.com/wilbowes/EchoMuse/internal/server"
 	"github.com/wilbowes/EchoMuse/internal/spotify"
 )
 
@@ -36,8 +37,8 @@ var sp struct {
 	failed  *spotify.Player // start refused (engine missing); only its status is kept
 	name    string
 	stamp   string // the engine binary the running process was started from
-	waiting bool // enabled, but not started yet (wall clock not set)
-	paused  bool // arbitration pause already sent for the current takeover
+	waiting bool   // enabled, but not started yet (wall clock not set)
+	paused  bool   // arbitration pause already sent for the current takeover
 }
 
 func spotifyPlayer() *spotify.Player {
@@ -132,6 +133,15 @@ func spotifyVolumeChanged(level int) {
 }
 
 func spotifyLinkDown(spk *speaker.PcmSpeaker) {
+	// Controllerless mode: the operator asked the Connect engine to keep
+	// serving Spotify even when the control link is gone. Leave the process
+	// alone; status pushes will fail quietly until the controller returns.
+	snap := config.Get().Snapshot()
+	if snap.SpotifyStandalone != nil && *snap.SpotifyStandalone &&
+		snap.SpotifyEnabled != nil && *snap.SpotifyEnabled {
+		log.Printf("[spotify] controller link down — engine kept running (standalone)")
+		return
+	}
 	sp.mu.Lock()
 	defer sp.mu.Unlock()
 	sp.waiting = false
@@ -174,6 +184,7 @@ func applySpotifyConfig(spk *speaker.PcmSpeaker, cc *client.ControlClient, vol d
 	}
 	snap := config.Get().Snapshot()
 	on := snap.SpotifyEnabled != nil && *snap.SpotifyEnabled
+	standalone := snap.SpotifyStandalone != nil && *snap.SpotifyStandalone
 	name := snap.SpotifyName
 	if name == "" {
 		name = snap.SendspinName
@@ -181,6 +192,11 @@ func applySpotifyConfig(spk *speaker.PcmSpeaker, cc *client.ControlClient, vol d
 	if name == "" {
 		name = "Echo " + tail(deviceID, 4)
 	}
+	// Remember for a reboot that may not have a controller yet. Recorded on
+	// every push so turning standalone OFF is remembered too; LoadSpotifyState
+	// ignores the record unless standalone was on, which is what stops a plain
+	// enable outliving the link.
+	server.SaveSpotifyState(on, standalone, name)
 
 	sp.mu.Lock()
 	defer sp.mu.Unlock()
@@ -333,5 +349,49 @@ func spotifyCmd(cmd string, fields map[string]any) map[string]any {
 func spotifyShutdown() {
 	if p := spotifyPlayer(); p != nil {
 		p.Stop()
+	}
+}
+
+// restoreSpotifyFromState starts the Connect engine from the last persisted
+// standalone settings when the process boots with no controller yet. No-op
+// unless SpotifyStandalone was on at the last config push.
+func restoreSpotifyFromState(spk *speaker.PcmSpeaker, cc *client.ControlClient, dc *client.DataClient, srv *server.Server, deviceID string) {
+	if platform.Base() != platform.EmOS {
+		return
+	}
+	st, ok := server.LoadSpotifyState()
+	if !ok || !st.Enabled {
+		return
+	}
+	// Seed the in-memory config so applySpotifyConfig / link-down see the
+	// same values the controller last pushed.
+	enabled, standalone := true, true
+	cfg := config.ConfigMessage{
+		SpotifyEnabled:    &enabled,
+		SpotifyStandalone: &standalone,
+		SpotifyName:       st.Name,
+	}
+	if st.OwwOnDevice == config.OnDeviceOn {
+		cfg.OwwOnDevice = st.OwwOnDevice
+		cfg.OwwModel = st.OwwModel
+	}
+	config.Get().Apply(cfg)
+
+	// Offline standalone mode: suppress orange disconnect pulse.
+	if srv != nil {
+		srv.SetPulseSuppressed(true)
+		srv.SetLinkDown(true)
+	}
+
+	log.Printf("[spotify] restoring controllerless engine from saved state")
+	applySpotifyConfig(spk, cc, srv, deviceID)
+
+	if st.OwwOnDevice == config.OnDeviceOn && dc != nil {
+		log.Printf("[spotify] restoring on-device wake word engine (%s) offline", st.OwwModel)
+		applyShadowConfig(dc, cc, spk, srv)
+		// Not while muted — mute was restored in NewServer, before this runs.
+		if dc.ShadowScorer() != nil && (srv == nil || !srv.IsMuted()) {
+			dc.EnsureOfflineMic()
+		}
 	}
 }

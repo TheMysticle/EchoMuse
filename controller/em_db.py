@@ -271,6 +271,11 @@ DEFAULT_DEVICE_CONFIG = {
     # the exception: somebody is changing the volume on purpose and wants to
     # see it land. HA and controller sets stay silent.
     "spotifyVolumeRing": True,
+    # spotifyStandalone: keep the Connect engine running when the controller
+    # link is down (and across reboots via the device's state file). Default
+    # off — without a controller the ring already signals the disconnect, and
+    # an always-on mDNS speaker is a surprise on a device that looks offline.
+    "spotifyStandalone": False,
     # beamformingEnabled: True — ch6 (centre/omni) hears the wake word, then
     # the turn locks to the best perimeter mic. The flag ONLY gates Lock():
     # unlocked is always ch6 and the wake path never locks, so the wake

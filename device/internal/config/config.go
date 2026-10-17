@@ -222,6 +222,13 @@ type Device struct {
 	// it off would be indistinguishable from a field nobody sent and could
 	// never reach a device. Same reason as SpotifyEnabled and DuckDb.
 	SpotifyVolumeRing *bool
+	// SpotifyStandalone keeps the Connect engine running when the controller
+	// link is down. Default off: without a controller the ring shows the
+	// disconnect pulse and an always-on mDNS speaker is a surprise. On means
+	// the last pushed Spotify config survives a lost (or never-established)
+	// control link for as long as the process — and across reboots via the
+	// device state file.
+	SpotifyStandalone *bool
 
 	// ListeningAnim carries the controller's current listening-ring
 	// animation spec, raw JSON in the led_anim shape, so the device can
@@ -304,6 +311,8 @@ func (d *Device) loadDefaults() {
 	d.SpotifyEnabled = &spotifyEnabled
 	spotifyVolumeRing := true
 	d.SpotifyVolumeRing = &spotifyVolumeRing
+	spotifyStandalone := false
+	d.SpotifyStandalone = &spotifyStandalone
 	d.Output = outchain.DefaultParams()
 }
 
@@ -438,6 +447,9 @@ func (d *Device) Apply(msg ConfigMessage) {
 	}
 	if msg.SpotifyVolumeRing != nil {
 		d.SpotifyVolumeRing = msg.SpotifyVolumeRing
+	}
+	if msg.SpotifyStandalone != nil {
+		d.SpotifyStandalone = msg.SpotifyStandalone
 	}
 	if msg.SpotifyName != "" {
 		d.SpotifyName = msg.SpotifyName
@@ -597,6 +609,7 @@ func (d *Device) Snapshot() ConfigMessage {
 	// lights the ring on a change somebody made, so the harmless answer is
 	// to show it.
 	spotifyVolumeRing := d.SpotifyVolumeRing == nil || *d.SpotifyVolumeRing
+	spotifyStandalone := d.SpotifyStandalone != nil && *d.SpotifyStandalone
 	remoteVolumeArc := d.RemoteVolumeArc
 	return ConfigMessage{
 		VadThreshold:        d.VadThreshold,
@@ -634,6 +647,7 @@ func (d *Device) Snapshot() ConfigMessage {
 		SendspinName:        d.SendspinName,
 		SpotifyEnabled:      &spotifyEnabled,
 		SpotifyVolumeRing:   &spotifyVolumeRing,
+		SpotifyStandalone:   &spotifyStandalone,
 		SpotifyName:         d.SpotifyName,
 		RemoteVolumeArc:     &remoteVolumeArc,
 		ListeningAnim:       d.ListeningAnim,
@@ -711,6 +725,7 @@ type ConfigMessage struct {
 	SendspinName        string   `json:"sendspinName,omitempty"`
 	SpotifyEnabled      *bool    `json:"spotifyEnabled,omitempty"`
 	SpotifyVolumeRing   *bool    `json:"spotifyVolumeRing,omitempty"`
+	SpotifyStandalone   *bool    `json:"spotifyStandalone,omitempty"`
 	SpotifyName         string   `json:"spotifyName,omitempty"`
 	// WakeSound: a pointer so "off" is distinguishable from absent.
 	WakeSound      *bool  `json:"wakeSound,omitempty"`

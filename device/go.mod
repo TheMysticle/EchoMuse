@@ -7,6 +7,7 @@ require (
 	github.com/flynn/noise v1.1.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/grandcat/zeroconf v1.0.0
+	github.com/hajimehoshi/go-mp3 v0.3.4
 	github.com/gvalkov/golang-evdev v0.0.0-20220815104727-7e27d6ce89b6
 	github.com/mewkiz/flac v1.0.14
 	golang.org/x/crypto v0.46.0

@@ -92,3 +92,28 @@ func TestRestoreMuteRingOnlyPaintsWhenMuted(t *testing.T) {
 		t.Errorf("muted: reached the paint %d times, want 1", reached)
 	}
 }
+
+func TestPulseSuppressedRestoresMuteRing(t *testing.T) {
+	reached := 0
+	s := &Server{
+		mute: &muteController{
+			muted:   true,
+			ledCtrl: func() led.Controller { reached++; return nil },
+		},
+	}
+	s.SetLinkDown(true)
+
+	// Pulse active: orange pulse wins, mute ring not shown on restoreRing.
+	s.SetPulseSuppressed(false)
+	s.restoreRing()
+	if reached != 0 {
+		t.Errorf("pulse active: restoreRing painted mute LEDs %d times, want 0", reached)
+	}
+
+	// Pulse suppressed (e.g. Spotify standalone): mute ring restored.
+	s.SetPulseSuppressed(true)
+	s.restoreRing()
+	if reached != 1 {
+		t.Errorf("pulse suppressed: restoreRing painted mute LEDs %d times, want 1", reached)
+	}
+}

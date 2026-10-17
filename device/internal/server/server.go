@@ -55,6 +55,10 @@ type Server struct {
 	// compound decision with anything else it guards. See SetLinkDown.
 	linkDown atomic.Bool
 
+	// pulseSuppressed is true when offline disconnect pulse is suppressed
+	// (e.g. Spotify standalone playback is active).
+	pulseSuppressed atomic.Bool
+
 	// flash holds the ring for a one-shot acknowledgement (flash.go).
 	flash   flashState
 	flashMu sync.Mutex
@@ -119,7 +123,9 @@ func NewServer(buttonController buttons.Controller, microphone mic.Microphone, s
 		server.mute.RestoreMuted() // ADC only; LEDs painted after init below
 	}
 	server.mute.persist = func() {
-		saveDeviceState(statePath, deviceState{Muted: server.mute.IsMuted()})
+		// Locked read-modify-write: preserves the Spotify / wake-word
+		// fields and cannot interleave with their writers.
+		saveMuted(server.mute.IsMuted())
 	}
 
 	go func() {
@@ -351,6 +357,16 @@ func (s *Server) LinkDown() bool {
 	return s.linkDown.Load()
 }
 
+// SetPulseSuppressed sets whether the offline disconnect pulse is suppressed.
+func (s *Server) SetPulseSuppressed(suppressed bool) {
+	s.pulseSuppressed.Store(suppressed)
+}
+
+// PulseSuppressed reports whether the disconnect pulse is suppressed.
+func (s *Server) PulseSuppressed() bool {
+	return s.pulseSuppressed.Load()
+}
+
 func clearLeds(ledController led.Controller) {
 	numLEDs, err := ledController.GetNumLEDs()
 	if err != nil {
@@ -508,7 +524,8 @@ func (s *Server) SetLEDs(leds []led.Led, listeningHint *bool) {
 	}
 	s.listeningLEDs = listeningRing
 	s.baseLEDsMu.Unlock()
-	if s.flashActive() || suppressPaint(s.volume.DisplayActive(), s.mute.IsMuted(), s.LinkDown()) {
+	pulseActive := s.LinkDown() && !s.PulseSuppressed()
+	if s.flashActive() || suppressPaint(s.volume.DisplayActive(), s.mute.IsMuted(), pulseActive) {
 		return
 	}
 	s.paintBaseLEDs()

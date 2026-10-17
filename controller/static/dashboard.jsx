@@ -9398,7 +9398,7 @@ const CONFIG_SECTIONS = {
   "advanced": ["agcEnabled", "vadThreshold", "vadSpeechMs", "vadSilenceMs", "buttonSingleTapEvent", "buttonMultiTapMs", "consolePassword", "consoleTimeoutMin", "controllerEndpoints"],
   "bluetooth": ["bleProxyEnabled", "bleProxyConnections"],
   "sendspin": ["sendspinEnabled", "sendspinUnpaired"],
-  "spotify": ["spotifyEnabled", "spotifyVolumeRing"]
+  "spotify": ["spotifyEnabled", "spotifyVolumeRing", "spotifyStandalone"]
 };
 
 // Display labels for the section ids, and the reverse key -> section index
@@ -10379,6 +10379,11 @@ function DeviceConfigForm({ config, onChange, disabled, sections, onScopeChange,
             disabled={!spotifyCapable || !(config.spotifyEnabled ?? false)}
             value={config.spotifyVolumeRing ?? true}
             onChange={v => set('spotifyVolumeRing', v)}/>
+          <Toggle label="Keep running without the controller"
+            sub={spotifyCapable ? 'librespot stays online if the control link drops or the controller is unreachable; needs Wi‑Fi' : 'needs emOS and newer firmware on this Echo'}
+            disabled={!spotifyCapable || !(config.spotifyEnabled ?? false)}
+            value={config.spotifyStandalone ?? false}
+            onChange={v => set('spotifyStandalone', v)}/>
         </div>
       </Stage>
     </div>

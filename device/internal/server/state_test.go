@@ -3,6 +3,7 @@ package server
 import (
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -33,5 +34,85 @@ func TestDeviceStateRoundtrip(t *testing.T) {
 	}
 	if _, ok := loadDeviceState(path); ok {
 		t.Fatal("expected ok=false for corrupt file")
+	}
+}
+
+func TestSpotifyStateRoundtrip(t *testing.T) {
+	orig := statePath
+	statePath = filepath.Join(t.TempDir(), "etc", "state.json")
+	t.Cleanup(func() { statePath = orig })
+
+	// When no state exists, LoadSpotifyState returns false.
+	if _, ok := LoadSpotifyState(); ok {
+		t.Fatal("expected ok=false when no state exists")
+	}
+
+	// Persisting Spotify state saves all fields.
+	SaveSpotifyState(true, true, "Living Room")
+	sp, ok := LoadSpotifyState()
+	if !ok || !sp.Enabled || !sp.Standalone || sp.Name != "Living Room" {
+		t.Fatalf("unexpected spotify state: ok=%v %+v", ok, sp)
+	}
+
+	// Mute toggle preserves Spotify fields.
+	saveDeviceState(statePath, deviceState{
+		Muted:             true,
+		SpotifyEnabled:    sp.Enabled,
+		SpotifyStandalone: sp.Standalone,
+		SpotifyName:       sp.Name,
+	})
+	sp, ok = LoadSpotifyState()
+	if !ok || !sp.Enabled || !sp.Standalone || sp.Name != "Living Room" {
+		t.Fatalf("spotify state lost on mute: ok=%v %+v", ok, sp)
+	}
+	st, ok := loadDeviceState(statePath)
+	if !ok || !st.Muted {
+		t.Fatalf("muted state lost: ok=%v %+v", ok, st)
+	}
+
+	// Disabling standalone causes LoadSpotifyState to return ok=false.
+	SaveSpotifyState(true, false, "Living Room")
+	if _, ok := LoadSpotifyState(); ok {
+		t.Fatal("expected ok=false when SpotifyStandalone is false")
+	}
+	// But mute state is still preserved.
+	st, ok = loadDeviceState(statePath)
+	if !ok || !st.Muted {
+		t.Fatalf("muted state lost after SaveSpotifyState: ok=%v %+v", ok, st)
+	}
+}
+
+func TestSaveMutedAndWakeWordPreserveEachOther(t *testing.T) {
+	orig := statePath
+	statePath = filepath.Join(t.TempDir(), "etc", "state.json")
+	t.Cleanup(func() { statePath = orig })
+
+	SaveSpotifyState(true, true, "Kitchen")
+	SaveWakeWordState("on", "hey_test")
+	saveMuted(true)
+
+	st, ok := loadDeviceState(statePath)
+	if !ok || !st.Muted || !st.SpotifyStandalone || st.SpotifyName != "Kitchen" ||
+		st.OwwOnDevice != "on" || st.OwwModel != "hey_test" {
+		t.Fatalf("fields clobbered: ok=%v %+v", ok, st)
+	}
+}
+
+func TestStateUpdatesAreSerialised(t *testing.T) {
+	orig := statePath
+	statePath = filepath.Join(t.TempDir(), "etc", "state.json")
+	t.Cleanup(func() { statePath = orig })
+
+	var wg sync.WaitGroup
+	for i := 0; i < 50; i++ {
+		wg.Add(3)
+		go func(i int) { defer wg.Done(); saveMuted(i%2 == 0) }(i)
+		go func(i int) { defer wg.Done(); SaveSpotifyState(true, true, "Den") }(i)
+		go func(i int) { defer wg.Done(); SaveWakeWordState("on", "m") }(i)
+	}
+	wg.Wait()
+	st, ok := loadDeviceState(statePath)
+	if !ok || !st.SpotifyStandalone || st.SpotifyName != "Den" || st.OwwModel != "m" {
+		t.Fatalf("lost update: ok=%v %+v", ok, st)
 	}
 }

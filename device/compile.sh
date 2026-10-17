@@ -31,11 +31,22 @@ BUILD_CMD="cd /sdk && mkdir -p build && go build \
                -X github.com/wilbowes/EchoMuse/internal/client.BuildUnix=${BUILD_UNIX}\" \
     -o build/server ./cmd/"
 
+# Reuse the host module cache (read-only) so the build needs no network. Only
+# mounted when it exists: Docker would otherwise create the missing path on the
+# host as a root-owned directory. GOPATH may be a list; use the first entry.
+HOST_GOPATH=$(go env GOPATH 2>/dev/null | cut -d: -f1)
+HOST_GOPATH=${HOST_GOPATH:-$HOME/go}
+MODCACHE_MOUNT=()
+if [ -d "$HOST_GOPATH/pkg/mod" ]; then
+  MODCACHE_MOUNT=(-v "$HOST_GOPATH/pkg/mod":/go/pkg/mod:ro)
+fi
+
 if docker run --rm \
   --entrypoint bash \
   -e CGO_LDFLAGS="-Wl,--hash-style=both" \
   -e CGO_CFLAGS="$SUPPRESS" \
   -v "$(pwd)":/sdk \
+  ${MODCACHE_MOUNT[@]+"${MODCACHE_MOUNT[@]}"} \
   -v "$REPO_ROOT/GoTinyAlsa":/GoTinyAlsa \
   echomuse-compiler \
   -c "$BUILD_CMD" 2>/tmp/build_err.log; then

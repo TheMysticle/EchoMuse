@@ -77,3 +77,22 @@ func TestFlashOnAMutedConnectedDeviceReturnsToRed(t *testing.T) {
 		t.Fatalf("muted device did not return to the red ring: %+v", got)
 	}
 }
+
+func TestFlashPulseHoldsAndHandsBack(t *testing.T) {
+	ring := &recordingRing{}
+	s := testServer(ring)
+	s.mute.muted = true
+
+	s.FlashPulse(140, 0, 180, 150*time.Millisecond)
+	// Give it time to paint at least one pulse frame
+	time.Sleep(20 * time.Millisecond)
+	if got := ring.last(); got.B == 0 {
+		t.Fatalf("FlashPulse did not paint violet: %+v", got)
+	}
+
+	// After duration expires, it must return to muted red ring
+	time.Sleep(500 * time.Millisecond)
+	if got := ring.last(); got.R != 180 || got.G != 0 || got.B != 0 {
+		t.Fatalf("muted device did not return to red ring after FlashPulse: %+v", got)
+	}
+}
