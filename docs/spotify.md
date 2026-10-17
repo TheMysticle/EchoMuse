@@ -25,6 +25,16 @@ by voice: *"play Caroline Polachek on the bedroom echo"*.
 
 ### Build the engine
 
+The engine includes a narrow patch to librespot-core 0.8.0's Dealer recovery.
+A lost Spotify WebSocket heartbeat could leave the process alive but absent
+from Spotify Connect if reconnection stalled or URL/token retrieval failed.
+Connection attempts now time out after 30 seconds and retry after ten seconds,
+including initial startup. Healthy idle sessions stay connected without
+periodic restarts. This fix requires installing the rebuilt `em-spotify`;
+the server and HA integrations do not need rebuilding for it. Patch provenance
+and local fault-injection tests are documented in
+[`ECHOMUSE_PATCH.md`](../device/spotify/vendor/librespot-core/ECHOMUSE_PATCH.md).
+
 The playback engine is a separate binary, not part of the firmware. It is
 ~4 MB and would double the size of every firmware update across both A/B
 slots whether or not Spotify changed, which is the same reason the wake word

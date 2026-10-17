@@ -3,6 +3,7 @@ name = "em-spotify"
 version = "0.1.0"
 edition = "2021"
 publish = false
+
 # What the dependency TREE actually needs, not what librespot declares.
 # librespot-core 0.8.0 says 1.85, but resolving its transitives pulls
 # crates that have moved on (uuid 1.28 → 1.89, cpufeatures 0.3.1 → edition
@@ -112,3 +113,8 @@ strip = true
 # restarts it cleanly, rather than unwinding into a half-dead player that
 # still holds the music source. Also removes the unwinding tables.
 panic = "abort"
+
+# Keep librespot 0.8.0's API and behavior, with bounded/retryable Dealer
+# reconnection. See vendor/librespot-core/ECHOMUSE_PATCH.md.
+[patch.crates-io]
+librespot-core = { path = "vendor/librespot-core" }
