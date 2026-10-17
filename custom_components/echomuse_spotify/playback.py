@@ -27,6 +27,7 @@ playlist or show; NOT for an artist, so no artist context carries one.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 # Kinds that go in `uris`, and the ones that go in `context_uri`. Both lists
@@ -60,6 +61,27 @@ def uri_kind(uri: str) -> str | None:
     if len(parts) < 3 or parts[0] != "spotify" or not parts[-1]:
         return None
     return parts[1] or None
+
+
+# What a search for a generic word ("music", "play music") offers instead of
+# the artist literally named Music. Playing it resumes the player.
+RESUME_URI = "spotify:echomuse:resume"
+
+_ID_KINDS = {"track", "album", "artist", "playlist", "show", "episode"}
+
+
+def malformed_id(uri: str) -> bool:
+    """True for `spotify:<kind>:<id>` whose id cannot be a Spotify id.
+
+    A catalogue id is exactly 22 base62 characters. A language model asked
+    for a playlist will write something shaped like one (it did:
+    `37i9dQZF1E-HkgMh927C6C`, a hyphen and all), and Spotify's answer is a
+    403 "Restriction violated" that names nothing wrong with the id. Other
+    shapes (`spotify:collection:tracks`, `spotify:user:...`) are not judged.
+    """
+    parts = uri.split(":")
+    return (len(parts) == 3 and parts[0] == "spotify" and parts[1] in _ID_KINDS
+            and re.fullmatch(r"[0-9A-Za-z]{22}", parts[2]) is None)
 
 
 def play_payload(uri: str, album_uri: str | None = None) -> dict[str, Any]:

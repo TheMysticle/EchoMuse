@@ -185,7 +185,7 @@ def test_newer_transport_commands_cancel_pending_resume(fast, action):
         async def read():
             # Simulate a newer action while Spotify's playback query is in flight.
             if action == "seek": await player.async_media_seek(12)
-            elif action == "load": await player.async_play_media("playlist", "spotify:playlist:new")
+            elif action == "load": await player.async_play_media("playlist", "spotify:playlist:" + "n" * 22)
             elif action == "unload": player.coordinator.begin_playback_command()
             elif action == "another-device":
                 player.coordinator.data.devices["other"] = {"_spotify_id":"other-id"}

@@ -21,6 +21,8 @@ exactly one API call** and nothing is fetched merely to decide what to show.
 
 from __future__ import annotations
 
+import logging
+import time
 from datetime import datetime
 from typing import Any
 
@@ -47,7 +49,7 @@ from . import EchoMuseSpotifyEntry
 from . import search as ranking
 from .const import DOMAIN
 from .coordinator import SPOTIFY_ID_KEY, SpotifyCoordinator
-from .playback import is_resume_request
+from .playback import RESUME_URI, is_resume_request, malformed_id
 from .intents import async_register_local_search
 from .resume import resume_inactive
 
@@ -126,6 +128,14 @@ async def async_setup_entry(
     entry.async_on_unload(coordinator.async_add_listener(_sync))
 
 
+_LOGGER = logging.getLogger(__name__)
+
+# A tool-calling model cannot see what a title resolved to, so it searches and
+# plays the top result again. The same URI inside this window, while it is
+# playing, is that echo and not a request to restart it.
+REPEAT_PLAY_WINDOW_S = 30.0
+JUST_STARTED_S = 5.0   # inside this the poll may not show it playing yet
+
 class SpotifyConnectPlayer(CoordinatorEntity[SpotifyCoordinator], MediaPlayerEntity):
     """A Spotify Connect device, played by transferring playback to it.
 
@@ -144,6 +154,7 @@ class SpotifyConnectPlayer(CoordinatorEntity[SpotifyCoordinator], MediaPlayerEnt
         # Stable name slug from the coordinator — not Spotify's opaque id.
         self._entity_key = entity_key
         self._attr_unique_id = f"{DOMAIN}_{entity_key}"
+        self._last_started: tuple[str, float] | None = None
 
     # ── Identity ────────────────────────────────────────────────────────────
 
@@ -291,6 +302,20 @@ class SpotifyConnectPlayer(CoordinatorEntity[SpotifyCoordinator], MediaPlayerEnt
         consulted, variants demoted but never dropped. See its docstring for
         why each of those matters more than it sounds.
         """
+        if is_resume_request(query.search_query) and not query.media_filter_classes:
+            # "music", "play music", "resume": a transport request, not a title.
+            # A tool-calling model searches first and plays the top row, which
+            # was the artist named Music (seen live, 2026-10-17). The one row
+            # offered resumes this player; an explicit artist/album/track
+            # filter still searches literally.
+            return SearchMedia(result=[BrowseMedia(
+                media_class=MediaClass.MUSIC,
+                media_content_id=RESUME_URI,
+                media_content_type=MediaType.MUSIC,
+                title="Resume playback",
+                can_play=True,
+                can_expand=False,
+            )])
         kinds = ranking.KINDS
         if query.media_filter_classes:
             wanted = [
@@ -421,6 +446,9 @@ class SpotifyConnectPlayer(CoordinatorEntity[SpotifyCoordinator], MediaPlayerEnt
         """
         generation = self.coordinator.begin_playback_command()
         uri = (media_id or "").strip()
+        if uri == RESUME_URI:
+            await self.async_media_play()
+            return
         # A direct play_media call (e.g. an LLM tool) may contain transport
         # words rather than a title. Native voice aliases take the faster
         # media_play path; keep this fallback from searching for an artist
@@ -453,10 +481,26 @@ class SpotifyConnectPlayer(CoordinatorEntity[SpotifyCoordinator], MediaPlayerEnt
 
         if not uri or not uri.startswith("spotify:"):
             raise HomeAssistantError(f"{media_id!r} is not a valid Spotify URI or song")
+        if malformed_id(uri):
+            raise HomeAssistantError(
+                f"{uri!r} is not a real Spotify ID, so it was not played. Pass the "
+                "title or artist as plain text to search for it, or use an ID "
+                "returned by a search. To resume playback, use the media play "
+                "command instead."
+            )
 
         if not self.coordinator.is_current_playback_command(generation):
             return
+        last = self._last_started
+        if last is not None and last[0] == uri:
+            age = time.monotonic() - last[1]
+            if age < JUST_STARTED_S or (age < REPEAT_PLAY_WINDOW_S
+                                        and self.state == MediaPlayerState.PLAYING):
+                _LOGGER.info("%s is already playing on %s (started %.0fs ago); not restarting it",
+                             uri, self._entity_key, age)
+                return
         await self.coordinator.api.play_uri(self._spotify_id, uri)
+        self._last_started = (uri, time.monotonic())
         await self.coordinator.async_request_refresh()
 
     async def async_media_play(self) -> None:
