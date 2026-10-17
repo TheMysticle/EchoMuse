@@ -57,29 +57,20 @@ const (
 	// why the volume anchor below is its own constant rather than this one.
 	ringBottomLED = ((180 - ringLEDOffset + 360) % 360) / 30
 
-	// ringVolumeStart is the first LED of the volume arc, which then grows
+	// ringVolumeStart is the first LED of the volume *fill*, which then grows
 	// CLOCKWISE (increasing index — LED i sits at ringLEDOffset + 30i
 	// degrees clockwise from 12 o'clock).
 	//
-	// CONFIRMED ON RADAR: the minus button is at 6 o'clock, so the anchor is
-	// ringBottomLED and ringLEDOffset's geometry — calibrated on biscuit
-	// against mic angles from tone injection — holds on this board too.
-	//
-	// The glyph is {10, 11} — the arc's own first two LEDs, which is how
-	// minGlyph defines it. Four rounds on the hardware to get there, and the
-	// lesson is that rotating the anchor was chasing symptoms of two other
-	// faults: a 3-wide glyph, and a glyph placed on the wrong side of the
-	// anchor. The anchor itself was right from the start.
-	//
-	//	{9,10,11} symmetric  too wide, and one LED too far
-	//	start 9  -> {8,9}    extended away from the button
-	//	start 11 -> {10,11}  right LEDs, right by accident
-	//	start 10, glyph with the sweep -> {10,11}  correct, by construction
-	//
-	// Set the volume to its lowest and watch which LEDs pulse if this ever
-	// needs checking on a new board: they must be the same ones a low
-	// volume lights.
-	ringVolumeStart = ringBottomLED
+	// Hardware observation: the fill was one LED too far anticlockwise
+	// relative to the physical ring, while the min-volume pulse glyph was
+	// already correct. Keep the glyph on the geometric bottom (minus button)
+	// and shift only the fill start one LED clockwise.
+	ringVolumeStart = (ringBottomLED + 1) % numLEDs
+
+	// ringVolumeGlyphStart is the anchor for the bottom-of-scale pulse glyph.
+	// Independent of ringVolumeStart so the fill can be rotated without
+	// moving the pulse that was already in the right place.
+	ringVolumeGlyphStart = ringBottomLED
 
 	// ringVolumeSweep is which way the arc grows from the anchor: +1 for
 	// increasing LED index, -1 for decreasing.
@@ -97,6 +88,14 @@ const (
 	// button looks like; 1 puts a single LED under it. Three was tried first
 	// and read as far too much.
 	minGlyphLEDs = 2
+
+	// arcUnitsPerLED is how many brightness steps each LED contributes to the
+	// volume fill. Was effectively 2 (off / half / full), which only gave
+	// 24 distinct ring states for 0–100% — many adjacent button and slider
+	// levels looked identical. 10 steps per LED → 120 states, so almost
+	// every percent (and every Radar button step) moves the ring. The
+	// leading edge uses intermediate PWM values; full LEDs stay at full.
+	arcUnitsPerLED = 10
 
 	// minPulse* shape the bottom-of-scale breathe. A ~1.2s cycle reads as a
 	// pulse rather than a flash, and the floor keeps the glyph visible at
@@ -409,68 +408,60 @@ func ringOrder(n, start, sweep int) []int {
 	return out
 }
 
-// minGlyph is the bottom-of-scale indicator: the FIRST `width` LEDs of the
-// arc itself.
+// minGlyph is the bottom-of-scale indicator: `width` LEDs starting at `start`
+// and running with `sweep`.
 //
-// Defining it as the arc's own low end is the point. The lowest volume and
-// the first step above it must light the same place, or the ring jumps when
-// you come off the floor — and it means the glyph cannot be put on the wrong
-// side of the anchor, which is the mistake this went through three times.
-// The operator's own description settled it: "the pulse should be where 11
-// percent is, those 2 LEDs that light up at 11 percent". At 11% the arc is 3
-// half-LEDs, so exactly these two.
-//
-// It follows the sweep for the same reason, so it needs no direction rule of
-// its own.
+// The fill arc and the pulse glyph use separate anchors (ringVolumeStart vs
+// ringVolumeGlyphStart) because on hardware the correct pulse position and
+// the correct fill start are one LED apart.
 func minGlyph(n, start, width, sweep int) []int {
 	order := ringOrder(n, start, sweep)
 	return order[:min(width, len(order))]
 }
 
-// volumeArc is the ring for a volume, in half-LEDs per LED: 2 full, 1
-// half-bright, 0 off.
+// volumeArc is the ring for a volume, in arcUnitsPerLED quanta per LED
+// (0 = off, arcUnitsPerLED = full). The leading edge takes a partial value
+// so intermediate percentages and button steps are visible as brightness
+// changes, not only as whole LEDs turning on.
 //
 // `pct` is the 0-100 scale EVERY SLIDER SHOWS — Home Assistant's, the
-// Spotify app's, the dashboard's. That is the change: the arc used to be
-// drawn from the step index out of the board's 30-step ladder, which is a
-// different scale, and it over-read badly at the bottom. Measured on Radar:
-// slider 3% lit 10% of the ring, 10% lit 17%, 20% lit 23%, 50% lit 47%. The
-// ring now agrees with whatever number the user is looking at, by
+// Spotify app's, the dashboard's. The ring agrees with that number by
 // construction.
 //
-// The arc grows from the bottom centre rather than from LED 0, which was
-// wherever index 0 happens to sit. A half-bright LED at the leading edge
-// keeps the ring moving on nearly every press: 30 steps over 12 LEDs is two
-// and a half steps per LED, so whole LEDs alone would move it on 12 presses
-// in 30.
+// The arc grows from ringVolumeStart clockwise (ringVolumeSweep). A partial
+// leading LED keeps the ring moving on nearly every press: with 10 units
+// per LED there are 120 distinct states across 12 LEDs.
 //
 // `atMin` is the bottom of the scale, and it is a FIXED GLYPH rather than a
-// proportion: the bottom centre at full brightness with its two neighbours
-// at half, which is how a stock Echo shows its lowest volume. It says "this
-// is as quiet as it goes" and no fraction of a 12-LED ring can.
+// proportion: full-bright LEDs on ringVolumeGlyphStart, as stock shows its
+// lowest volume. It says "this is as quiet as it goes".
 func volumeArc(pct, n int, atMin bool) []int {
 	units := make([]int, n)
 	order := ringOrder(n, ringVolumeStart, ringVolumeSweep)
 	if atMin {
-		for _, i := range minGlyph(n, ringVolumeStart, minGlyphLEDs, ringVolumeSweep) {
-			units[i] = 2
+		// Glyph stays on ringVolumeGlyphStart (correct pulse position);
+		// fill order above uses the shifted ringVolumeStart.
+		for _, i := range minGlyph(n, ringVolumeGlyphStart, minGlyphLEDs, ringVolumeSweep) {
+			units[i] = arcUnitsPerLED
 		}
 		return units
 	}
-	half := (pct*2*n + 50) / 100
-	if half < 1 {
-		// Above silence but below half an LED still shows something: a ring
+	// Total quanta for this percentage, rounded. One quantum is the smallest
+	// visible step on the leading LED.
+	filled := (pct*n*arcUnitsPerLED + 50) / 100
+	if filled < 1 {
+		// Above silence but below one quantum still shows something: a ring
 		// that reads as off when the device is merely quiet is a fault.
-		half = 1
+		filled = 1
 	}
-	if half > 2*n {
-		half = 2 * n
+	if filled > n*arcUnitsPerLED {
+		filled = n * arcUnitsPerLED
 	}
 	for _, i := range order {
-		u := min(half, 2)
+		u := min(filled, arcUnitsPerLED)
 		units[i] = u
-		half -= u
-		if half <= 0 {
+		filled -= u
+		if filled <= 0 {
 			break
 		}
 	}
@@ -507,7 +498,8 @@ func (vc *volumeController) startMinPulse(lc led.Controller, base []int) {
 						float64(minPulsePeriod)))/2
 				leds := make([]led.Led, numLEDs)
 				for i := 0; i < numLEDs; i++ {
-					v := uint8(float64(100*base[i]) * scale)
+					full := (200*base[i] + arcUnitsPerLED/2) / arcUnitsPerLED
+					v := uint8(float64(full) * scale)
 					leds[i] = led.Led{ID: i, R: 0, G: v, B: v}
 				}
 				if lc.SetLEDs(leds...) != nil {
@@ -560,7 +552,9 @@ func (vc *volumeController) showLEDs(level int) {
 
 	leds := make([]led.Led, numLEDs)
 	for i := 0; i < numLEDs; i++ {
-		leds[i] = led.Led{ID: i, R: 0, G: uint8(100 * units[i]), B: uint8(100 * units[i])} // cyan, 200 at full
+		// Map 0..arcUnitsPerLED → 0..200 cyan (same full brightness as before).
+		b := uint8((200*units[i] + arcUnitsPerLED/2) / arcUnitsPerLED)
+		leds[i] = led.Led{ID: i, R: 0, G: b, B: b}
 	}
 	if err := lc.SetLEDs(leds...); err != nil {
 		log.Printf("Volume LED set failed: %v", err)

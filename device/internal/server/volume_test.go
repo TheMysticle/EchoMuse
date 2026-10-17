@@ -203,21 +203,34 @@ func TestVolumeArcTracksTheSliderPercentage(t *testing.T) {
 	}
 	for _, pct := range []int{1, 3, 10, 20, 30, 50, 70, 90, 100} {
 		got := sum(volumeArc(pct, n, false))
-		want := (pct*2*n + 50) / 100
+		want := (pct*n*arcUnitsPerLED + 50) / 100
 		if want < 1 {
 			want = 1
 		}
 		if got != want {
-			t.Errorf("%d%%: %d half-LEDs, want %d (%.0f%% of the ring)",
-				pct, got, want, float64(got)/float64(2*n)*100)
+			t.Errorf("%d%%: %d quanta, want %d (%.0f%% of the ring)",
+				pct, got, want, float64(got)/float64(n*arcUnitsPerLED)*100)
 		}
 	}
 	// Full means full, and nothing above silence is ever dark.
-	if a := volumeArc(100, n, false); sum(a) != 2*n {
+	if a := volumeArc(100, n, false); sum(a) != n*arcUnitsPerLED {
 		t.Errorf("100%% = %v, want every LED full", a)
 	}
 	if a := volumeArc(0, n, false); sum(a) != 1 {
-		t.Errorf("0%% = %v, want one half-bright LED rather than a dark ring", a)
+		t.Errorf("0%% = %v, want one quantum rather than a dark ring", a)
+	}
+	// Adjacent percents should differ when resolution allows (smooth steps).
+	prev := sum(volumeArc(0, n, false))
+	changed := 0
+	for pct := 1; pct <= 100; pct++ {
+		got := sum(volumeArc(pct, n, false))
+		if got != prev {
+			changed++
+			prev = got
+		}
+	}
+	if changed < 50 {
+		t.Errorf("only %d distinct fill totals across 0–100%%; want finer steps", changed)
 	}
 }
 
@@ -271,39 +284,28 @@ func TestVolumeArcGrowsClockwiseFromTheAnchor(t *testing.T) {
 	}
 }
 
-// The bottom of the scale is a glyph straddling the anchor, not a fraction.
-// It says "as quiet as it goes", which no fraction of a 12-LED ring can.
-// Three LEDs was tried first and read as far too much.
+// The bottom of the scale is a fixed glyph on ringVolumeGlyphStart, not a
+// fraction of the fill arc. Fill and glyph anchors are independent: the pulse
+// was already correct on hardware while the fill needed a one-LED clockwise
+// shift.
 func TestTheBottomOfScaleGlyph(t *testing.T) {
 	const n = 12
 	a := volumeArc(3, n, true)
-	glyph := minGlyph(n, ringVolumeStart, minGlyphLEDs, ringVolumeSweep)
+	glyph := minGlyph(n, ringVolumeGlyphStart, minGlyphLEDs, ringVolumeSweep)
 	if len(glyph) != minGlyphLEDs {
 		t.Fatalf("glyph covers %d LEDs, want %d", len(glyph), minGlyphLEDs)
 	}
 	in := map[int]bool{}
 	for _, i := range glyph {
 		in[i] = true
-		if a[i] != 2 {
-			t.Errorf("glyph LED %d = %d, want full: %v", i, a[i], a)
+		if a[i] != arcUnitsPerLED {
+			t.Errorf("glyph LED %d = %d, want full (%d): %v", i, a[i], arcUnitsPerLED, a)
 		}
 	}
-	// THE GLYPH IS THE ARC'S OWN LOW END. The lowest volume and the first
-	// step above it must light the same place, or the ring jumps when you
-	// come off the floor — and it is what stops the glyph being put on the
-	// wrong side of the anchor, which took three attempts to get right.
-	order := ringOrder(n, ringVolumeStart, ringVolumeSweep)
+	order := ringOrder(n, ringVolumeGlyphStart, ringVolumeSweep)
 	for i, g := range glyph {
 		if g != order[i] {
-			t.Fatalf("glyph %v is not the start of the arc %v", glyph, order[:len(glyph)])
-		}
-	}
-	// Concretely: whatever a low volume lights must be exactly the glyph.
-	low := volumeArc(11, n, false)
-	for i, v := range low {
-		if (v != 0) != in[i] {
-			t.Errorf("11%% lights %v but the glyph is %v — they must agree", low, a)
-			break
+			t.Fatalf("glyph %v is not the glyph-order start %v", glyph, order[:len(glyph)])
 		}
 	}
 	for i, v := range a {
