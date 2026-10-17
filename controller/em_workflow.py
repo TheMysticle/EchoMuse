@@ -57,6 +57,13 @@ LISTEN_IDLE_S = 8.0     # mic open, nothing heard from the server
 THINK_IDLE_S = 30.0     # mic gated, server working (matches the native TTS wait)
 REPLY_IDLE_S = 10.0     # reply audio started, then the server went quiet
 SESSION_MAX_S = 120.0   # whole conversation, continuations included
+# "thinking" from the server (bot-llm-started, bot-tts-started, a tool call) can
+# arrive just after the first reply audio. Ending the reply stream on it splits
+# one sentence in two, and the device waits ~1s to prime the second stream: a
+# 150ms word, a second of silence, then the rest. Audio this recent means the
+# model is speaking, so the phase is noise; a real pause (a tool running after
+# "let me check") is longer and still ends the stream.
+THINK_SPLIT_S = 1.0
 # Speech the server keeps producing while no session is open (it is dropped, so
 # nobody hears it, but the model is still talking and answers the next wake from
 # that state): ask it to stop, then give up on the connection and start fresh.
@@ -303,6 +310,7 @@ class Bridge:
         self.playback_task = None
         self.playback_tasks = set()
         self.pending_phase = None
+        self.last_reply_pcm = 0.0
         self.reply_audio = ReplyAudio()
         self.queued_bytes = 0
         self.endpointed = False
@@ -806,6 +814,7 @@ class Bridge:
         if self.queued_bytes + len(pcm) > MAX_REPLY_SECONDS * SPEAKER_RATE * 2:
             raise ProtocolError("speaker_backpressure")
         self.queued_bytes += len(pcm)
+        self.last_reply_pcm = asyncio.get_running_loop().time()
         self.output_queue.put_nowait(pcm)
 
     async def on_event(self, event):
@@ -815,6 +824,9 @@ class Bridge:
             await self.device.workflow_phase("listening")
             return
         phase = event.get("phase")
+        if (phase == "thinking" and not event.get("terminal") and self.output_queue is not None
+                and asyncio.get_running_loop().time() - self.last_reply_pcm < THINK_SPLIT_S):
+            return
         normal_reply_done = (phase == "listening" and event.get("follow_up")
                              and not event.get("continuation_question"))
         if normal_reply_done or phase in {"idle", "thanks"} or event.get("terminal"):

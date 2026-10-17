@@ -260,3 +260,41 @@ def test_a_burst_of_small_messages_is_not_a_protocol_error(fresh_db):
         finally:
             await d.workflow.stop()
     asyncio.run(main())
+
+
+def test_thinking_just_after_reply_audio_does_not_split_the_reply(fresh_db):
+    # Field log 2026-10-18: a 152ms stream, then a second stream that waited
+    # 1.2s to prime, so a reply began with one word and a second of silence.
+    async def main():
+        d = awake_bridge()
+        events, receiver = serve_events(d)
+        try:
+            await d.workflow.wake(1)
+            w = d.workflow
+            pcm = np.zeros(2400, dtype='<i2').tobytes()
+            w.output_pcm(pcm)
+            first_queue = w.output_queue
+            await events.put(phase('thinking'))
+            await asyncio.sleep(.05)
+            assert w.output_queue is first_queue and w.pending_phase is None
+            w.output_pcm(pcm)
+            assert w.output_queue is first_queue
+        finally:
+            await stop(d, receiver)
+    asyncio.run(main())
+
+
+def test_thinking_after_a_real_pause_in_reply_audio_still_ends_the_stream(fresh_db):
+    async def main():
+        d = awake_bridge()
+        events, receiver = serve_events(d)
+        try:
+            await d.workflow.wake(1)
+            w = d.workflow
+            w.output_pcm(np.zeros(2400, dtype='<i2').tobytes())
+            w.last_reply_pcm -= W.THINK_SPLIT_S + .5
+            await events.put(phase('thinking'))
+            await until(lambda: w.output_queue is None)
+        finally:
+            await stop(d, receiver)
+    asyncio.run(main())
