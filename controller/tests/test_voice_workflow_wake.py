@@ -219,3 +219,41 @@ def test_first_speech_after_wake_keeps_its_partial_speaker_period():
             task.cancel()
             await asyncio.gather(task,return_exceptions=True)
     asyncio.run(main())
+
+
+def test_button_opens_an_idle_session_interrupts_a_reply_and_stops_listening(fresh_db):
+    async def main():
+        d=device()
+        d.workflow.config={'mode':W.PIPECAT}
+        d.workflow.status='connected'
+        try:
+            await d.workflow.button()
+            assert d.workflow.awake                       # idle: opens a session
+            await d.workflow.button()
+            assert not d.workflow.awake                   # only listening: stops it
+            assert d.workflow.queue.empty() and not d.workflow.button_capture
+            await d.workflow.button()
+            assert d.workflow.awake
+            d.workflow.output_queue=asyncio.Queue()       # a reply is playing
+            await d.workflow.button()
+            assert d.workflow.awake and d.workflow.output_queue is None   # cut short, still listening
+            await d.workflow.button()
+            assert not d.workflow.awake                   # now nothing is playing
+        finally:
+            await d.workflow.stop()
+    asyncio.run(main())
+
+
+def test_button_while_the_server_is_thinking_stops_the_session(fresh_db):
+    async def main():
+        d=device()
+        d.workflow.config={'mode':W.PIPECAT}
+        d.workflow.status='connected'
+        try:
+            assert await d.workflow.wake(button=True)
+            d.workflow.accept_audio=False                 # utterance sent, waiting for the model
+            await d.workflow.button()
+            assert not d.workflow.awake
+        finally:
+            await d.workflow.stop()
+    asyncio.run(main())

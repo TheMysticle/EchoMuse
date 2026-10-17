@@ -4421,10 +4421,7 @@ async def handle_button_event(device: Device, event: dict):
             return
 
         if device.workflow.blocks_native:
-            if device.workflow.awake:
-                await device.workflow.interrupt()
-            else:
-                await device.workflow.wake(button=True)
+            await device.workflow.button()
             return
 
         if action == em_button.CANCEL:

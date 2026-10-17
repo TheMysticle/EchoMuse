@@ -424,6 +424,26 @@ class Bridge:
         return True
 
     @property
+    def speaking(self):
+        """A reply is queued or still playing on the Echo."""
+        return self.output_queue is not None or bool(self.playback_tasks)
+
+    async def button(self):
+        """An action-button tap: open a session, cut a reply short, or stop listening.
+
+        The tap that interrupts speech keeps the session open for the answer.
+        With nothing being said, there is nothing to interrupt, so the tap
+        ends the session instead of leaving the microphone open, which is
+        what the button does for a native Assist turn.
+        """
+        if not self.awake:
+            await self.wake(button=True)
+        elif self.speaking:
+            await self.interrupt()
+        else:
+            await self.end_session(reason="button")
+
+    @property
     def draining(self):
         """The server has finished a reply and the speaker is still playing it."""
         return self.output_queue is None and bool(self.playback_tasks)

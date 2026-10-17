@@ -76,7 +76,9 @@ this endpoint automatically, verifies `va-pipecat` protocol version 1, and sends
 The standard server negotiates 16 kHz mono
 input and 24 kHz mono output. Returned JSON phases drive dashboard state and
 LED controls; `interrupt` flushes buffered speech. An action-button tap opens an
-idle session or interrupts speech in an active Pipecat session.
+idle session, interrupts speech in an active Pipecat session (which keeps
+listening for the answer), and otherwise, while it is only listening or waiting
+for the model, ends the session.
 
 Configure the model key in the add-on, or enter a new Google AI Studio key in
 the EchoMuse wizard. For this server, an explicitly entered key updates the
