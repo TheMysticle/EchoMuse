@@ -38,7 +38,7 @@ def adapt(text):
         area = session_body["echomuse"].get("area")
         area_hint = f" The speaker is in the {area} area; treat that as the room for bare media stop requests." if area else " Use the speaker's current Home Assistant area for bare media stop requests."
         lang_hint = f" Always reply in the language with code {flow.language or 'en'}, the satellite's configured language, unless the user clearly speaks a different language to you. Accented or very short speech is not a reason to switch, and names or titles in another language in tool results or the home setup do not change your reply language."
-        flow.instructions += "\\nFor EchoMuse: keep replies short. After you do what was asked, confirm in a few words and stop (for example: Light off.). Never end a reply with an offer or a question such as: Can I help with anything else? Is there anything else? Let me know if you need anything. Ask a question only when a required detail is missing, and then call EchoMuseRequestContinuation before asking one short clarification; never use it for optional follow-up. Use EchoMuse scheduler tools for timers, alarms and reminders; never claim a save without device acknowledgment. For a bare stop, call EchoMuseStop once. It stops one thing: what is ringing first, otherwise this speaker's music, otherwise a running timer, and reports `stopped` and `left_running`. Report only what `stopped` lists, explain any reported errors, and never stop, pause or cancel anything listed in `left_running`: that is deliberate, and a second stop does the next thing. Only when `stopped` is empty and there are no errors, use homeassistant__GetLiveContext or equivalent to find a playing media_player in the speaker's area and call intent__HassMediaPause for only those active room players; if a Home Assistant timer in that area is active and a timer-cancel tool is available, cancel it. Never cancel future alarms or reminders. For a bare snooze, inspect EchoMuseList and snooze only the active ringing alert. Explicit room or device targets take precedence over this bare-stop behavior. For a bare play, resume or continue with no title, resume this speaker's own media player (the Home Assistant media unpause tool) and never call play_media. When asked for specific music, pass the title or artist as plain text to play_media; never write a Spotify URI or playlist ID yourself, only reuse one that a search returned. play_media with a title starts playback at once and its success means the music is playing, so never search first, verify afterwards or call it again for the same request. Never search for a generic word such as music to find something to resume; a bare play or resume is the media unpause tool. Ask about an unknown timezone before creating a calendar alarm or reminder. Do not close any reply by offering more help." + area_hint + lang_hint
+        flow.instructions += "\\nFor EchoMuse: keep replies short. After you do what was asked, confirm in a few words and stop (for example: Light off.). Never end a reply with an offer or a question such as: Can I help with anything else? Is there anything else? Let me know if you need anything. Ask a question only when a required detail is missing, and then call EchoMuseRequestContinuation before asking one short clarification; never use it for optional follow-up. Use EchoMuse scheduler tools for timers, alarms and reminders; never claim a save without device acknowledgment. For a bare stop, call EchoMuseStop once. It stops one thing: what is ringing first, otherwise this speaker's music, otherwise a running timer, and reports `stopped` and `left_running`. Report only what `stopped` lists, explain any reported errors, and never stop, pause or cancel anything listed in `left_running`: that is deliberate, and a second stop does the next thing. Only when `stopped` is empty and there are no errors, use homeassistant__GetLiveContext or equivalent to find a playing media_player in the speaker's area and call intent__HassMediaPause for only those active room players; if a Home Assistant timer in that area is active and a timer-cancel tool is available, cancel it. Never cancel future alarms or reminders. For a bare snooze, inspect EchoMuseList and snooze only the active ringing alert. Explicit room or device targets take precedence over this bare-stop behavior. For a bare play, resume or continue with no title, resume this speaker's own media player (the Home Assistant media unpause tool) and never call play_media. When asked for specific music, pass the title or artist as plain text to play_media; never write a Spotify URI or playlist ID yourself, only reuse one that a search returned. play_media with a title starts playback at once and its success means the music is playing, so never search first, verify afterwards or call it again for the same request. Never search for a generic word such as music to find something to resume; a bare play or resume is the media unpause tool. Use an area name exactly as GetLiveContext lists it, for example 'Living Room': never join its words with underscores or change its capitalisation. If a tool says an area does not exist, do not ask the user which area it is in; call GetLiveContext to read the real area names and try again. A spoken volume number is a percentage whether or not the user says percent: 'volume 10' and 'set the volume to 10' mean volume_level 10, which is ten percent. Never read it as a number out of ten and never multiply it; pass the number you heard. Ask about an unknown timezone before creating a calendar alarm or reminder. Do not close any reply by offering more help." + area_hint + lang_hint
     is_esphome_satellite''')
     replace('    local_tool_schemas = [schema for schema in [_web_search_tool_schema(config, flow)] if schema]\n    tools_schema = _merge_tools_schema(mcp_tools_schema, local_tool_schemas)\n    context_for_memory = None', '''    local_tool_schemas = [schema for schema in [_web_search_tool_schema(config, flow)] if schema]
     if session_body.get("echomuse") and session_body["transport"] == "va-pipecat":
@@ -83,6 +83,35 @@ def main():
     protocol = protocol.replace('phase_extra = {"terminal": True} if terminal else {"follow_up": True, "continuation_question": self.continuation_requested}', 'phase_extra = {"terminal": True} if terminal else {"follow_up": True, "continuation_question": continuation_question}')
     protocol = protocol.replace('self.phase_message("listening", follow_up=True)', 'self.phase_message("listening", follow_up=True, continuation_question=continuation_question)')
     path.write_text(protocol)
+    path = args.out/'app/mcp_bridge.py'
+    bridge = path.read_text()
+    old_call = """            session = self.client._ensure_connected()  # Pipecat exposes no public call_tool yet.
+            result = await session.call_tool(name, arguments=arguments)
+            chunks: list[str] = []
+            for content in getattr(result, "content", []) or []:
+                text = getattr(content, "text", None)
+                if text:
+                    chunks.append(text)
+            text_result = "\\n".join(chunks) if chunks else "Tool returned no text content."
+"""
+    new_call = """            session = self.client._ensure_connected()  # Pipecat exposes no public call_tool yet.
+
+            async def _call(call_arguments):
+                result = await session.call_tool(name, arguments=call_arguments)
+                chunks: list[str] = []
+                for content in getattr(result, "content", []) or []:
+                    text = getattr(content, "text", None)
+                    if text:
+                        chunks.append(text)
+                return "\\n".join(chunks) if chunks else "Tool returned no text content."
+
+            text_result = await echomuse.call_with_area_fallback(_call, arguments)
+"""
+    if bridge.count(old_call) != 1:
+        raise ValueError("Upstream MCP bridge anchor changed")
+    bridge = bridge.replace(old_call, new_call)
+    bridge = bridge.replace("from __future__ import annotations\n", "from __future__ import annotations\n\nfrom app import echomuse\n", 1)
+    path.write_text(bridge)
     shutil.copyfile(Path(__file__).with_name('echomuse.py'), args.out/'app/echomuse.py')
     version = subprocess.check_output(['git', '-C', str(ROOT), 'rev-parse', '--short', 'HEAD'], text=True).strip()
     path = args.out/'config.yaml'

@@ -1,4 +1,5 @@
 """Per-authenticated-session EchoMuse options; no global Pipecat config edits."""
+import re
 from urllib.parse import urlsplit
 
 PROFILES = {
@@ -78,3 +79,43 @@ def continuation_schema(protocol):
         required=[],
         handler=handler,
     )
+
+
+AREA_MISSING = "The area does not exist"
+
+
+def area_spellings(area):
+    """Other ways to write the same area name, most likely first.
+
+    Home Assistant matches an area by its name, ignoring case ("Living Room"),
+    or by its exact id ("living_room"). A model that has seen both writes a
+    blend such as "Living_Room", which matches neither.
+    """
+    words = [w for w in re.split(r"[\s_\-]+", area.strip()) if w]
+    if not words:
+        return []
+    candidates = [" ".join(words), " ".join(words).title(), "_".join(words).lower(), " ".join(words).lower()]
+    seen, result = {area}, []
+    for candidate in candidates:
+        if candidate not in seen:
+            seen.add(candidate)
+            result.append(candidate)
+    return result
+
+
+async def call_with_area_fallback(call, arguments):
+    """Run a tool call; if Home Assistant says the area does not exist, try its other spellings.
+
+    `call(arguments)` returns the tool's text. The spelling that works is used
+    and the model never sees the failure; if none does, the original answer is
+    returned so a genuinely unknown area is still reported.
+    """
+    text = await call(arguments)
+    area = arguments.get("area") if isinstance(arguments, dict) else None
+    if not isinstance(area, str) or AREA_MISSING not in text:
+        return text
+    for spelling in area_spellings(area):
+        retry = await call({**arguments, "area": spelling})
+        if AREA_MISSING not in retry:
+            return retry
+    return text

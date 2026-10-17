@@ -112,3 +112,67 @@ def test_generated_adapter_forbids_closing_offers_and_names_them():
     assert 'Do not close any reply by offering more help' in source
     # Asking is still allowed when something required is missing, via the tool.
     assert 'call EchoMuseRequestContinuation before asking' in source
+
+
+@pytest.mark.parametrize('given,expected_first',[
+    ('Living_Room','Living Room'),         # the blend seen in the field
+    ('living-room','Living Room'),
+    ('LIVING ROOM','Living Room'),
+    ('Living  Room ','Living Room'),
+])
+def test_area_spellings_start_with_the_name_home_assistant_matches(given,expected_first):
+    spellings=adapter.area_spellings(given)
+    assert spellings[0].casefold()==expected_first.casefold() and ' ' in spellings[0]
+    assert 'living_room' in spellings and given not in spellings
+
+
+def test_area_spellings_of_nothing_are_nothing():
+    assert adapter.area_spellings('')==[] and adapter.area_spellings(' _ ')==[]
+
+
+def _run(coro):
+    import asyncio
+    return asyncio.run(coro)
+
+
+def test_an_unknown_area_spelling_is_retried_and_the_model_sees_only_the_success():
+    calls=[]
+    async def call(arguments):
+        calls.append(arguments.get('area'))
+        # Home Assistant: the name ignoring case, or the exact id.
+        if arguments.get('area') in ('Living Room','living room','Living room','living_room'):
+            return '{"response_type": "action_done"}'
+        return f"Error calling tool: The area does not exist (given area '{arguments['area']}', domains light)"
+    result=_run(adapter.call_with_area_fallback(call,{'area':'Living_Room','domain':['light']}))
+    assert 'action_done' in result
+    assert calls==['Living_Room','Living Room']
+
+
+def test_a_genuinely_unknown_area_is_still_reported():
+    async def call(arguments):
+        return f"Error calling tool: The area does not exist (given area '{arguments['area']}')"
+    result=_run(adapter.call_with_area_fallback(call,{'area':'Garage'}))
+    assert result.endswith("(given area 'Garage')")
+
+
+def test_calls_without_an_area_or_with_other_errors_are_not_retried():
+    calls=[]
+    async def call(arguments):
+        calls.append(arguments)
+        return 'Error calling tool: No device named lamp'
+    assert _run(adapter.call_with_area_fallback(call,{'name':'lamp'}))
+    assert _run(adapter.call_with_area_fallback(call,{'area':'Kitchen','name':'lamp'}))
+    assert len(calls)==2
+
+
+def test_generated_adapter_retries_area_spellings_and_tells_the_model_not_to_ask():
+    root=ROOT/'dist/pipecat-assist-echomuse-dev/app'
+    if not (root/'mcp_bridge.py').exists():
+        pytest.skip('Package pinned Pipecat source for adapter integration tests')
+    bridge=(root/'mcp_bridge.py').read_text()
+    ast.parse(bridge)
+    assert 'echomuse.call_with_area_fallback(_call, arguments)' in bridge
+    main=(root/'main.py').read_text()
+    assert 'do not ask the user which area it is in' in main
+    assert "never join its words with underscores" in main
+    assert "A spoken volume number is a percentage" in main
