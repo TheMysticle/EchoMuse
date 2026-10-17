@@ -633,10 +633,10 @@ func lockForTurn(b *Beamformer, az float64) {
 	b.lockedChannel, b.lockAz, b.lockAzOK = 3, az, true
 }
 
-// A turn heard through the beam starts on the group the wake engaged (or the
-// group nearest the lock's mic if none was), and then goes on as before: the
-// selection keeps scoring through the turn, as stock's does, so a talker who
-// moves is followed.
+// A turn heard through the beam starts on the group nearest the lock azimuth
+// and may follow a talker who moves a short distance, but will not jump to a
+// group more than 90° from the wake direction (so a TV on the far side cannot
+// steal the beam and mute the talker).
 func TestTurnStartsOnTheWakeGroupAndThenFollowsTheTalker(t *testing.T) {
 	rng := rand.New(rand.NewSource(11))
 	src := denseTones(rng, 200, 3500, 100)
@@ -655,20 +655,22 @@ func TestTurnStartsOnTheWakeGroupAndThenFollowsTheTalker(t *testing.T) {
 		t.Error("the turn's audio is not the beam's")
 	}
 
-	// An already engaged group is kept, whatever the lock pointed at.
+	// The lock's azimuth wins over a group the listening-time merger had
+	// already wandered to (toward a TV, say): the turn starts from the talker.
 	b2 := New()
 	enableWakeBeam(b2)
 	b2.SetWakeBeamTurns(true)
 	b2.fbf.cur = 1
 	lockForTurn(b2, 55)
 	b2.WakeBeam(s16(zeros(NumMics, 2560)))
-	if b2.WakeBeamIndex() != 1 {
-		t.Errorf("an engaged group 1 became %d at the lock", b2.WakeBeamIndex())
+	if b2.WakeBeamIndex() != want {
+		t.Errorf("an engaged group 1 became %d at the lock, want the group nearest it (%d)", b2.WakeBeamIndex(), want)
 	}
 
-	// Past the warm-up, a talker at 55 degrees and then one at 235 are each
-	// given a group with a beam looking his way: the turn does not freeze the
-	// selection on the wake's group.
+	// Past the warm-up, a talker at 55 degrees and then one who has moved to
+	// 100 (45 degrees from the wake) are each given a group with a beam looking
+	// his way: the turn does not freeze the selection on the wake's group. One
+	// on the far side, at 235, is not followed.
 	b3 := New()
 	enableWakeBeam(b3)
 	b3.SetWakeBeamTurns(true)
@@ -707,8 +709,8 @@ func TestTurnStartsOnTheWakeGroupAndThenFollowsTheTalker(t *testing.T) {
 	for k := 0; k < 80; k++ {
 		feed(55, quiet)
 	}
-	last := [2]int{-1, -1}
-	for phase, az := range []float64{55, 235} {
+	last := [3]int{-1, -1, -1}
+	for phase, az := range []float64{55, 100, 235} {
 		held := map[int]int{}
 		for k := 0; k < 40; k++ {
 			feed(az, burst)
@@ -723,12 +725,23 @@ func TestTurnStartsOnTheWakeGroupAndThenFollowsTheTalker(t *testing.T) {
 				last[phase] = g
 			}
 		}
+		if az == 235 {
+			continue
+		}
 		if !covers(last[phase], az) {
 			t.Errorf("after 6.4s of a talker at %.0f deg the turn is on group %d, which has no beam within 40 deg of him", az, last[phase])
 		}
 	}
-	if last[0] == last[1] {
-		t.Errorf("the turn stayed on group %d for talkers on opposite sides", last[0])
+	// The far-side talker must not capture the beam: whatever group the turn
+	// is on, one of its beams is within 90 degrees of the wake azimuth.
+	near := false
+	for _, bm := range groupBeams(last[2]) {
+		if math.Abs(angleDiff(b3.fbf.sd.Azimuths[bm], 55)) <= turnFollowDeg {
+			near = true
+		}
+	}
+	if !near {
+		t.Errorf("after the far-side talker the turn left the wake hemisphere: group %d", last[2])
 	}
 
 	// After the turn nothing moves.

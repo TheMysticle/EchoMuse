@@ -471,7 +471,11 @@ func (w *wakeBeam) enterOrLeaveTurn(mode int) {
 	switch {
 	case mode == modeTurn && !w.inTurn:
 		w.inTurn = true
-		if w.cur == fbfNeutral && w.lockAzOK {
+		// Always re-select the group whose middle beam is closest to the
+		// azimuth Lock() recorded at the wake. The listening-time merger may
+		// already have wandered toward a continuous interferer (TV, fan);
+		// the turn must start from the talker, not from that wander.
+		if w.lockAzOK {
 			best, bd := 0, 1e9
 			for b, az := range w.sd.Azimuths {
 				if d := math.Abs(angleDiff(az, w.lockAz)); d < bd {
@@ -481,10 +485,8 @@ func (w *wakeBeam) enterOrLeaveTurn(mode int) {
 			// The group whose middle beam looks that way.
 			w.cur = (best + fbfBeams - 1) % fbfBeams
 		}
-		// The group the wake chose is kept for the hold, then the selection
-		// carries on as it was.
 		w.holdLeft = fbfHoldBlocks
-		log.Printf("[beam] turn on %s", w.name(w.cur))
+		log.Printf("[beam] turn on %s (wake azimuth)", w.name(w.cur))
 	case mode != modeTurn && w.inTurn:
 		w.inTurn = false
 		w.holdLeft = fbfHoldBlocks
@@ -493,9 +495,11 @@ func (w *wakeBeam) enterOrLeaveTurn(mode int) {
 }
 
 // process runs one period of NumMics S16 buffers through every beam, picks the
-// output per block and returns it as S16. locked freezes the statistics and
-// parks the selection on the centre mic: a turn's own voice must not move the
-// baseline, and the path should start the next listen from neutral.
+// output per block and returns it as S16. During a locked turn the group is
+// frozen on the wake-azimuth choice so a continuous interferer cannot steal
+// the beam; modeBypass parks on the centre mic when the single-mic path is
+// used. The talker's own voice must not move the noise floors used for the
+// next listen.
 func (w *wakeBeam) process(mics [][]byte, gain float64, mode int) (out []byte, clipped uint64) {
 	locked := mode != modeListen
 	n := len(mics[0]) / 2
@@ -560,11 +564,10 @@ func (w *wakeBeam) process(mics [][]byte, gain float64, mode int) (out []byte, c
 				w.cur, w.holdLeft = fbfNeutral, 0
 			}
 		default:
-			// Listening, and a turn heard through the beam: stock does nothing
-			// different once a wake word is reported (one beamformed ASR stream
-			// serves both, and the group merger keeps scoring), so the talker's
-			// own voice moves the selection as it does before the wake. It cannot
-			// move the noise floor, which is a minimum.
+			// Listening and turn both score groups. During a turn, step() only
+			// accepts a switch whose beams stay near the wake azimuth so a TV
+			// on the far side cannot capture the group and mute the talker,
+			// while a talker who walks a short distance is still followed.
 			w.step(s, e)
 		}
 		for i := s; i < e; i++ {
@@ -790,8 +793,10 @@ func (w *wakeBeam) step(s, e int) {
 	}
 	switch {
 	case w.cur == fbfNeutral:
-		w.pick(best, score[best])
-	case w.holdLeft == 0 && best != w.cur && score[best] > fbfGroupMargin*score[w.cur]:
+		if w.groupNearWake(best) {
+			w.pick(best, score[best])
+		}
+	case w.holdLeft == 0 && best != w.cur && score[best] > fbfGroupMargin*score[w.cur] && w.groupNearWake(best):
 		w.pick(best, score[best]/math.Max(score[w.cur], 1e-9))
 	}
 }
@@ -848,15 +853,19 @@ func (w *wakeBeam) stockStep(s, e int) {
 	}
 	switch {
 	case w.cur == fbfNeutral:
-		w.pick(best, score[best])
+		if w.groupNearWake(best) {
+			w.pick(best, score[best])
+		}
 		w.votes = [fbfBeams]int{}
 	default:
 		if w.holdLeft > 0 {
 			w.holdLeft-- // only ever the turn's hold at its start
 		}
-		w.votes[best]++
+		if w.groupNearWake(best) {
+			w.votes[best]++
+		}
 		if w.votes[best] >= fbfVoteFrames && w.holdLeft == 0 {
-			if best != w.cur {
+			if best != w.cur && w.groupNearWake(best) {
 				w.pick(best, score[best]/math.Max(score[w.cur], 1e-9))
 			}
 			w.votes = [fbfBeams]int{}
@@ -891,6 +900,25 @@ func (w *wakeBeam) name(k int) string {
 	b := groupBeams(k)
 	return fmt.Sprintf("group %d (beams %d-%d-%d, %.0f-%.0f deg)", k, b[0], b[1], b[2],
 		w.sd.Azimuths[b[0]], w.sd.Azimuths[b[2]])
+}
+
+// groupNearWake reports whether group g has at least one beam within
+// turnFollowDeg of the wake lock azimuth. Used only while inTurn so a
+// continuous interferer on the far side of the room cannot steal the beam
+// and mute the talker, while a talker who moves a short distance is still
+// followed. 90° is half the ring; opposite-side jumps are rejected.
+const turnFollowDeg = 90.0
+
+func (w *wakeBeam) groupNearWake(g int) bool {
+	if !w.inTurn || !w.lockAzOK || g == fbfNeutral {
+		return true
+	}
+	for _, bm := range groupBeams(g) {
+		if math.Abs(angleDiff(w.sd.Azimuths[bm], w.lockAz)) <= turnFollowDeg {
+			return true
+		}
+	}
+	return false
 }
 
 // logSwitch says what the selection did and why (score is the SNR ratio of the

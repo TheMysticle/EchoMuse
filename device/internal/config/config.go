@@ -131,10 +131,10 @@ type Device struct {
 	WakeBeamAra bool
 
 	// WakeBeamTurns makes a locked voice turn listen through the wake beam,
-	// held on the beam chosen at the wake, instead of the single perimeter mic
-	// the lock picked. Off by default, which leaves turns exactly as they were,
-	// and only meaningful with WakeBeam on. It changes the audio speech-to-text
-	// hears, so it is a setting to compare transcripts with, not to assume.
+	// starting from the beam chosen at the wake and allowed to follow only
+	// within ~90° of that azimuth, so a continuous interferer (TV) cannot
+	// steal the group and mute the talker. Off by default; only meaningful
+	// with WakeBeam on. It changes the audio speech-to-text hears.
 	WakeBeamTurns bool
 
 	// WakeBeamStock puts the wake beam on Radar's own rules, decoded from its
