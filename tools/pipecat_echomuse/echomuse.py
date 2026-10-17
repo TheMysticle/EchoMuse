@@ -57,16 +57,46 @@ def mcp_options(settings, servers, allowlist):
     return result, allowed
 
 
+CONTINUATION_RESULT = (
+    "The user's microphone will reopen briefly after your response. Ask only "
+    "the required clarification, then finish that turn without another question."
+)
+
+
+async def answer_continuation(protocol, params, run_llm_off):
+    """Record the request and hand the model its result without waiting for the bot to stop.
+
+    Gemini 3 Live speaks and calls a tool in the same turn, and its tools block:
+    the turn waits for the result. Pipecat holds a result back while the bot is
+    speaking and pushes it when the bot stops, so a call made mid-reply stalled
+    the audio for the length of the rest of the reply (3.0s of silence in the
+    field) and the late result found a turn that had already ended, leaving it
+    open until the next wake. The result is therefore sent to the model at once,
+    and the aggregator is told not to send it a second time.
+
+    `llm._tool_result` and `llm._completed_tool_calls` are private to Pipecat's
+    Gemini Live service; a service without them (another provider) keeps the
+    normal path, which is correct there because it does not block on the result.
+    """
+    protocol.continuation_requested = True
+    llm = params.llm
+    send = getattr(llm, "_tool_result", None)
+    completed = getattr(llm, "_completed_tool_calls", None)
+    if callable(send) and isinstance(completed, set):
+        await send(params.tool_call_id, params.function_name, {"value": CONTINUATION_RESULT})
+        completed.add(params.tool_call_id)
+        await params.result_callback(CONTINUATION_RESULT, properties=run_llm_off())
+        return
+    await params.result_callback(CONTINUATION_RESULT)
+
+
 def continuation_schema(protocol):
     """Build a per-satellite tool that explicitly opens one clarification turn."""
     from pipecat.adapters.schemas.function_schema import FunctionSchema
+    from pipecat.frames.frames import FunctionCallResultProperties
 
     async def handler(params):
-        protocol.continuation_requested = True
-        await params.result_callback(
-            "The user's microphone will reopen briefly after your response. Ask only "
-            "the required clarification, then finish that turn without another question."
-        )
+        await answer_continuation(protocol, params, lambda: FunctionCallResultProperties(run_llm=False))
 
     return FunctionSchema(
         name="EchoMuseRequestContinuation",

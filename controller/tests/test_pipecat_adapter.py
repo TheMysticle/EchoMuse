@@ -176,3 +176,55 @@ def test_generated_adapter_retries_area_spellings_and_tells_the_model_not_to_ask
     assert 'do not ask the user which area it is in' in main
     assert "never join its words with underscores" in main
     assert "A spoken volume number is a percentage" in main
+
+
+class _Params:
+    def __init__(self, llm):
+        self.llm=llm
+        self.tool_call_id='fc_1'
+        self.function_name='EchoMuseRequestContinuation'
+        self.calls=[]
+
+    async def result_callback(self, result, properties=None):
+        self.calls.append((result, properties))
+
+
+class _GeminiLive:
+    """The two private members of Pipecat's Gemini Live service the handler uses."""
+    def __init__(self):
+        self.sent=[]
+        self._completed_tool_calls=set()
+
+    async def _tool_result(self, tool_call_id, name, message):
+        self.sent.append((tool_call_id, name, message))
+
+
+class _Protocol:
+    continuation_requested=False
+
+
+def test_continuation_result_reaches_a_blocking_model_before_the_bot_stops_speaking():
+    # Gemini 3 Live calls the tool in the middle of its reply and blocks on the
+    # result. Pipecat's aggregator holds a result until the bot stops speaking,
+    # which stalled the reply's audio for 3s and left the turn open (2026-10-18).
+    import asyncio
+    llm=_GeminiLive()
+    params=_Params(llm)
+    protocol=_Protocol()
+    marker=object()
+    asyncio.run(adapter.answer_continuation(protocol, params, lambda: marker))
+    assert protocol.continuation_requested is True
+    assert llm.sent==[('fc_1','EchoMuseRequestContinuation',{'value':adapter.CONTINUATION_RESULT})]
+    # Marked done so the aggregator's later context push does not send it twice,
+    # and told not to run the model again.
+    assert llm._completed_tool_calls=={'fc_1'}
+    assert params.calls==[(adapter.CONTINUATION_RESULT, marker)]
+
+
+def test_continuation_keeps_the_normal_path_on_a_service_without_the_private_hooks():
+    import asyncio
+    params=_Params(object())
+    protocol=_Protocol()
+    asyncio.run(adapter.answer_continuation(protocol, params, lambda: pytest.fail('no override expected')))
+    assert protocol.continuation_requested is True
+    assert params.calls==[(adapter.CONTINUATION_RESULT, None)]
