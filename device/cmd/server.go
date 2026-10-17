@@ -35,6 +35,7 @@ import (
 	"github.com/wilbowes/EchoMuse/internal/earcon"
 	"github.com/wilbowes/EchoMuse/internal/listen"
 	"github.com/wilbowes/EchoMuse/internal/platform"
+	"github.com/wilbowes/EchoMuse/internal/schedule"
 	"github.com/wilbowes/EchoMuse/internal/server"
 	"github.com/wilbowes/EchoMuse/internal/wakeword"
 	"github.com/wilbowes/EchoMuse/internal/wakeword/pryon"
@@ -293,6 +294,7 @@ func main() {
 
 	// Device-rendered ring animations (led_anim) — the animation engine
 	// runs on the device's own ticker, immune to controller/WiFi jitter.
+	schedules := startSchedules(ctx, deviceID, controlClient, s, pcmSpeaker)
 	controlClient.OnLEDAnim(func(raw json.RawMessage) {
 		var spec server.AnimSpec
 		if err := json.Unmarshal(raw, &spec); err != nil {
@@ -382,6 +384,21 @@ func main() {
 	// Button events — forward to controller via control plane
 	_, err = buttonController.SubscribeToButton(func(event pkgbuttons.ButtonClickEvent) {
 		log.Printf("Button event: clickType=%d down=%v", event.ClickType, event.Down)
+		if schedules != nil && event.ClickType == pkgbuttons.DotClick {
+			if item, _, active := schedules.Active(); active {
+				if !event.Down {
+					action := "dismiss"
+					if event.HeldMs >= 800 {
+						action = "snooze"
+					}
+					_, err := schedules.Apply(schedule.Command{Owner: deviceID, Request: fmt.Sprintf("button_%d", time.Now().UnixNano()), Action: action, ID: item.ID})
+					if err != nil {
+						log.Printf("[schedule] button action failed: %v", err)
+					}
+				}
+				return
+			}
+		}
 		// Ahead of the link-down gate: a device that cannot connect is the one
 		// that most needs to ask. The release ending a pairing hold is not
 		// forwarded, so it does not also reach HA as a long press.
@@ -476,6 +493,9 @@ func main() {
 	go pcmSpeaker.WatchJackRouting(ctx)
 
 	controlClient.OnDisconnected(func() {
+		// The controller can no longer release a confirmed voice turn.
+		// Restore local alerts as well as music; offline alerts must stay audible.
+		localDuck.Reset()
 		// A Bluetooth link's results have nowhere to go now, and a
 		// controller that comes back starts from no links.
 		bleBridge.DropAll()
@@ -572,6 +592,9 @@ func main() {
 	// Connected — stop pulse, report current mute state, restore ring or hand
 	// back to direction arc depending on mute state.
 	controlClient.OnConnected(func() {
+		if schedules != nil {
+			schedules.Wake() // report state now, not at the next due time
+		}
 		// A part opened by its old number, or not found at all, is reported
 		// once per process: it is how a kernel that names something
 		// differently is learned about from the field (#541).
@@ -699,7 +722,7 @@ func main() {
 		pcmSpeaker.FlushMusic()
 	})
 
-	// Duck — music is attenuated under a voice turn and restored at the end.
+	// Duck — music and alerts are attenuated through a voice turn and restored at the end.
 	// The depth is read at duck time rather than latched, so a config change
 	// takes effect on the next turn without a restart.
 	controlClient.OnDuck(func(on bool) {
@@ -1451,7 +1474,7 @@ func openEngine(model string, threshold float32, onCross func(score, threshold f
 // window still holds the reply's echo, so it needs the lower bar too.
 func speakerPlaying(spk *speaker.PcmSpeaker) func() bool {
 	return func() bool {
-		return spk.VoiceAudible(wakeword.ScoreSpan) || spk.MusicAudible(wakeword.ScoreSpan)
+		return spk.LocalAlertActive() || spk.VoiceAudible(wakeword.ScoreSpan) || spk.MusicAudible(wakeword.ScoreSpan)
 	}
 }
 
@@ -1591,9 +1614,9 @@ func onWakeCrossing(cc *client.ControlClient, dc *client.DataClient,
 			}
 		}
 	}
-	// Duck with the ring, not a round trip later. Music only: a reply being
+	// Duck music and local alerts with the ring, not a round trip later. A reply being
 	// barged over is cut by the controller's speaker_flush, not ducked.
-	if spk != nil && localDuck != nil && spk.MusicAudible(0) {
+	if spk != nil && localDuck != nil && (spk.MusicAudible(0) || spk.LocalAlertActive()) {
 		localDuck.Start(config.Get().DuckDb)
 	}
 	barge := spk != nil && spk.VoiceAudible(wakeword.ScoreSpan)

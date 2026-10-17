@@ -155,6 +155,7 @@ type PcmSpeaker struct {
 	// music. The device volume still runs on the completed mix below, so the
 	// buttons remain authoritative; response caps itself against vol so their
 	// combined gain never exceeds unity (#636).
+	alert         AlertAudio
 	response      responseGain
 	responseMix   []float64
 	responseGains []float64
@@ -164,13 +165,13 @@ type PcmSpeaker struct {
 	// Assistant's music always wins the plane (decided 2026-08-22). It is
 	// pulled rather than pushed because it must place audio in TIME, and
 	// only this loop knows when the period it is building reaches the DAC.
-	src       atomic.Pointer[sourceBox]
+	src        atomic.Pointer[sourceBox]
 	srcStarve  SourceStarve // periods the pull source had audio for and missed
 	alsaXrun   AlsaXrun     // periods on which the DAC had already run dry
 	alsaMargin AlsaMargin   // how close the DAC has come to running dry
-	srcBuf    []byte
-	srcLastNs atomic.Int64 // last period the source played
-	dacStep   dacStepLog   // pullSource's alone
+	srcBuf     []byte
+	srcLastNs  atomic.Int64 // last period the source played
+	dacStep    dacStepLog   // pullSource's alone
 }
 
 // MusicSource is a pull producer for the music plane. Fill writes one stereo
@@ -639,15 +640,17 @@ func (p *PcmSpeaker) silenceLoop() {
 		}
 
 		var out []byte
+		// Music and alerts follow one voice-turn target for this entire period.
+		duckTarget := p.duckTarget.Load()
 		if wideResponse {
-			wide := p.mixer.MixResponse(p.responseMix, voice, music, p.duckTarget.Load(), responseGains)
+			wide := p.mixer.MixResponse(p.responseMix, voice, music, duckTarget, responseGains)
 			if applied := p.chain.ProcessFloat(wide, responseGains); applied != nil {
 				log.Printf("[speaker] output chain: %s", applied)
 			}
 			out = voice
 			p.vol.applyFloat(wide, out, response.volumeTarget)
 		} else {
-			out = p.mixer.Mix(voice, music, p.duckTarget.Load())
+			out = p.mixer.Mix(voice, music, duckTarget)
 			process := out != nil
 			if out == nil {
 				out = silencePeriod
@@ -679,6 +682,8 @@ func (p *PcmSpeaker) silenceLoop() {
 		if cued := p.mixCue(out); cued != nil {
 			out = cued
 		}
+
+		out = p.alert.Mix(out, hasResponse, duckTarget)
 
 		// Taps see the MIXED output, which is what the speaker actually
 		// emits. That matters for AEC: the far-end reference is what needs
@@ -786,7 +791,7 @@ func (p *PcmSpeaker) PumpMusic(data []byte) error {
 	return err
 }
 
-// SetDuck sets the gain applied to music while it plays under voice, in dB of
+// SetDuck sets the gain applied to music and local alerts during a voice turn, in dB of
 // attenuation (0 = no ducking). The change is ramped by the mixer rather than
 // applied at once, because a gain step at a period boundary is a click — and
 // it would land on exactly the moment the user started speaking.
@@ -955,3 +960,14 @@ func periodRMS(period []byte) float64 {
 	}
 	return math.Sqrt(float64(sum)/float64(n)) / 32768.0
 }
+
+// SetLocalAlert arms a device-owned source, independent of remote flushes.
+func (p *PcmSpeaker) SetLocalAlert(sound, speech []byte, volume float64, ramp int64) {
+	p.alert.Set(sound, speech, volume, ramp)
+}
+func (p *PcmSpeaker) SetLocalReminder(sound, speech []byte, volume float64, repeats int) {
+	p.alert.SetReminder(sound, speech, volume, repeats)
+}
+func (p *PcmSpeaker) StopLocalAlert() { p.alert.Stop() }
+
+func (p *PcmSpeaker) LocalAlertActive() bool { return p.alert.Active() }

@@ -119,6 +119,7 @@ type ControlClient struct {
 	configAppliedCallback ConfigAppliedCallback
 	playCueCallback       func(string)
 	sendspinTokenCallback func() map[string]any
+	schedulerCallback     func(json.RawMessage) map[string]any
 	spotifyCmdCallback    func(cmd string, fields map[string]any) map[string]any
 	volumeSetCallback     VolumeSetCallback
 	beamLockCallback      BeamLockCallback
@@ -210,6 +211,14 @@ func (c *ControlClient) OnSendspinToken(cb func() map[string]any) { c.sendspinTo
 // ignored by older controllers.
 func (c *ControlClient) SendSendspinStatus(status any) error {
 	return c.writeJSON(map[string]any{"type": "sendspin_status", "status": status})
+}
+
+// OnScheduler handles device-owned schedule requests on the authenticated link.
+func (c *ControlClient) OnScheduler(cb func(json.RawMessage) map[string]any) {
+	c.schedulerCallback = cb
+}
+func (c *ControlClient) SendSchedule(state any) error {
+	return c.writeJSON(map[string]any{"type": "schedule_state", "snapshot": state})
 }
 
 // OnSpotifyCmd handles a spotify_cmd from the controller (transport, load,
@@ -717,6 +726,10 @@ func (c *ControlClient) connect(ctx context.Context, server *discovery.ServerInf
 					time.Now().Format(time.RFC3339))
 			}
 		}
+
+		if !clock.ShouldStep(time.Now(), first.TimeMs) {
+			clock.ConfirmController(first.TimeMs)
+		}
 	default:
 		return false, fmt.Errorf("unexpected first message: %s", first.Type)
 	}
@@ -991,6 +1004,13 @@ func (c *ControlClient) connect(ctx context.Context, server *discovery.ServerInf
 			}
 			if err := json.Unmarshal(raw, &cueMsg); err == nil && c.playCueCallback != nil {
 				c.playCueCallback(cueMsg.Cue)
+			}
+
+		case "schedule_cmd":
+			if c.schedulerCallback != nil {
+				reply := c.schedulerCallback(raw)
+				reply["type"] = "schedule_reply"
+				c.writeJSON(reply)
 			}
 
 		case "spotify_cmd":
@@ -1338,7 +1358,7 @@ func capabilities() []string {
 	// "sendspin": this firmware can be a Sendspin player (internal/sendspin),
 	// switched by sendspinEnabled. Whether it is running, and paired, is the
 	// sendspin status, for the aec_hw_ref reason.
-	caps := []string{"mic", "speaker", "leds", "led_anim", "buttons",
+	caps := []string{"local_schedule", "local_schedule_sounds", "mic", "speaker", "leds", "led_anim", "buttons",
 		"oww_shadow", "oww_trigger", "button_hold", "audio_mix",
 		"aec_hw_ref", "oww_local_only", "output_chain", "wake_cue", "volume_cue", "remote_volume_arc",
 		"response_level", "wake_mic", "wake_beam", "wake_beam_ara", "wake_beam_turns", "wake_beam_stock", "wake_endpoint", "pairing",

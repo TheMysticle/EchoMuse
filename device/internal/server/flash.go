@@ -133,6 +133,9 @@ func (s *Server) FlashPulse(r, g, b uint8, d time.Duration) {
 
 // restoreRing repaints the ring from state after something held it.
 func (s *Server) restoreRing() {
+	if s.alertActive() {
+		return
+	}
 	if s.volume != nil && s.volume.DisplayActive() {
 		return // the arc repaints the base itself when it expires
 	}

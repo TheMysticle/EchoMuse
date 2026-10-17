@@ -73,5 +73,24 @@ func ShouldStep(deviceNow time.Time, serverUnixMs int64) bool {
 // ship to.
 func Step(serverUnixMs int64) error {
 	ts := unix.NsecToTimespec(serverUnixMs * int64(time.Millisecond))
-	return unix.ClockSettime(unix.CLOCK_REALTIME, &ts)
+	err := unix.ClockSettime(unix.CLOCK_REALTIME, &ts)
+	if err == nil {
+		notify()
+	}
+	return err
 }
+
+var changed = make(chan struct{}, 1)
+
+func notify() {
+	select {
+	case changed <- struct{}{}:
+	default:
+	}
+}
+
+// Changed is signalled after the wall clock is stepped or becomes trusted.
+// Anything that sleeps until a wall-clock time must re-plan on it, because a
+// timer runs on the monotonic clock and does not notice the step. It has one
+// reader (the schedule loop); a signal sent while nobody is waiting is kept.
+func Changed() <-chan struct{} { return changed }

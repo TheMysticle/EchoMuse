@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// LocalDuck ducks music at the device's OWN wake crossing, so the duck lands
+// LocalDuck ducks music and alerts at the device's OWN wake crossing, so the duck lands
 // with the listening ring the device lights at the same moment (#263). The
 // controller's duck used to be the only one, arriving a round trip later —
 // 48-68ms on a good link, seconds on a bad one.
@@ -77,4 +77,15 @@ func (d *LocalDuck) Cancel() {
 	d.timer = nil
 	d.set(0)
 	log.Println("[speaker] local duck released — session closed without a turn")
+}
+
+// Reset releases even a confirmed duck when its controller disconnects.
+func (d *LocalDuck) Reset() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.timer != nil {
+		d.timer.Stop()
+		d.timer = nil
+	}
+	d.set(0)
 }

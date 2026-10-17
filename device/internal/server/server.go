@@ -46,7 +46,8 @@ type Server struct {
 	listeningLEDs bool
 
 	// anim owns the device-rendered ring animation (led_anim messages).
-	anim animator
+	anim  animator
+	alert alertRing
 
 	// linkDown is true while there is no controller session — disconnected
 	// or pending approval. Read on the LED paint path and the button paths,
@@ -226,7 +227,6 @@ func (s *Server) SetVolumeFrom(level int, src string, showRing bool) {
 	s.volumeSeeded.Store(true)
 	s.volume.Set(level, showRing, src)
 }
-
 
 // SeedVolume restores the controller's stored startupVolume — the source of
 // truth for volume, kept current by the volume_state echo — on the first
@@ -553,6 +553,9 @@ func suppressPaint(volumeActive, muted, linkDown bool) bool {
 
 // paintBaseLEDs paints the ring from the stored controller state.
 func (s *Server) paintBaseLEDs() {
+	if s.alertActive() && !s.voiceOwnsRing() {
+		return
+	}
 	s.ledMu.Lock()
 	lc := s.ledController
 	s.ledMu.Unlock()

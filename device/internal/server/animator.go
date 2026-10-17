@@ -17,6 +17,7 @@ import (
 // the current spec on reconnect, and TTLSec is the dead-man switch for the
 // opposite failure (controller gone mid-animation).
 type AnimSpec struct {
+	Alert bool `json:"-"`
 	// Pattern: "off", "solid", "spin" (head+trail dot), "rotate" (palette
 	// rotates around the ring — the pride spinner), "pulse" (sinusoidal
 	// throb), or "meter" (brightness follows the live speaker RMS — the
@@ -103,8 +104,9 @@ func resolveMeter(spec AnimSpec) (attack, decay, floor, gamma, ref, curve float6
 // new spec (or Stop) atomically replaces the current one via generation
 // counting, so a stale goroutine can never paint over its successor.
 type animator struct {
-	mu  sync.Mutex
-	gen int
+	mu     sync.Mutex
+	gen    int
+	active bool
 }
 
 const defaultAnimPeriod = 80 * time.Millisecond
@@ -113,6 +115,7 @@ const defaultAnimPeriod = 80 * time.Millisecond
 func (s *Server) StartAnim(spec AnimSpec) {
 	s.anim.mu.Lock()
 	s.anim.gen++
+	s.anim.active = spec.Pattern != "off"
 	gen := s.anim.gen
 	s.anim.mu.Unlock()
 
@@ -132,6 +135,11 @@ func (s *Server) StartAnim(spec AnimSpec) {
 		go s.runMeter(gen, spec)
 	default:
 		log.Printf("StartAnim: unknown pattern %q — clearing ring", spec.Pattern)
+		s.anim.mu.Lock()
+		if s.anim.gen == gen {
+			s.anim.active = false
+		}
+		s.anim.mu.Unlock()
 		s.SetLEDs(blackFrame(), boolPtr(false))
 	}
 }
@@ -141,7 +149,23 @@ func (s *Server) StartAnim(spec AnimSpec) {
 func (s *Server) StopAnim() {
 	s.anim.mu.Lock()
 	s.anim.gen++
+	s.anim.active = false
 	s.anim.mu.Unlock()
+}
+
+// voiceOwnsRing lets assistant/listening animations take precedence over a
+// local schedule pulse. The alert pulse resumes as soon as the voice ring ends.
+func (s *Server) voiceOwnsRing() bool {
+	s.anim.mu.Lock()
+	active := s.anim.active
+	s.anim.mu.Unlock()
+	if active {
+		return true
+	}
+	s.baseLEDsMu.Lock()
+	listening := s.listeningLEDs
+	s.baseLEDsMu.Unlock()
+	return listening
 }
 
 // animCurrent reports whether gen is still the live animation.
@@ -155,11 +179,21 @@ func (s *Server) animCurrent(gen int) bool {
 // dead-man window without being replaced.
 func (s *Server) animExpiry(gen int, ttl time.Duration) {
 	time.Sleep(ttl)
-	if !s.animCurrent(gen) {
+	if !s.finishAnim(gen) {
 		return
 	}
 	log.Printf("led_anim: TTL expired with no replacement — clearing ring")
 	s.SetLEDs(blackFrame(), boolPtr(false))
+}
+
+func (s *Server) finishAnim(gen int) bool {
+	s.anim.mu.Lock()
+	defer s.anim.mu.Unlock()
+	if gen != s.anim.gen {
+		return false
+	}
+	s.anim.active = false
+	return true
 }
 
 // runAnim renders spin/rotate frames until replaced or TTL-expired. Frames
@@ -185,7 +219,7 @@ func (s *Server) runAnim(gen int, spec AnimSpec) {
 		}
 		if !deadline.IsZero() && time.Now().After(deadline) {
 			log.Printf("led_anim: TTL expired with no replacement — clearing ring")
-			if s.animCurrent(gen) {
+			if s.finishAnim(gen) {
 				s.SetLEDs(blackFrame(), boolPtr(false))
 			}
 			return
@@ -222,19 +256,23 @@ func (s *Server) runPulse(gen int, spec AnimSpec) {
 	ticker := time.NewTicker(40 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		if !s.animCurrent(gen) {
+		if !s.pulseCurrent(gen, spec.Alert) {
 			return
 		}
 		if !deadline.IsZero() && time.Now().After(deadline) {
 			log.Printf("led_anim: TTL expired with no replacement — clearing ring")
-			if s.animCurrent(gen) {
+			if spec.Alert || s.finishAnim(gen) {
 				s.SetLEDs(blackFrame(), boolPtr(false))
 			}
 			return
 		}
 		phase := float64(time.Since(start)) / float64(cycle)
 		b := 0.15 + 0.85*(0.5-0.5*math.Cos(2*math.Pi*phase))
-		s.SetLEDs(scaleFrame(base, b), boolPtr(false))
+		if spec.Alert {
+			s.paintAlert(gen, scaleFrame(base, b))
+		} else {
+			s.SetLEDs(scaleFrame(base, b), boolPtr(false))
+		}
 		<-ticker.C
 	}
 }
@@ -262,7 +300,7 @@ func (s *Server) runMeter(gen int, spec AnimSpec) {
 		}
 		if !deadline.IsZero() && time.Now().After(deadline) {
 			log.Printf("led_anim: TTL expired with no replacement — clearing ring")
-			if s.animCurrent(gen) {
+			if s.finishAnim(gen) {
 				s.SetLEDs(blackFrame(), boolPtr(false))
 			}
 			return
