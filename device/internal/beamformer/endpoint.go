@@ -59,6 +59,13 @@ var (
 	// EPMinHistory is how much history makes a reference: 6s. Less than that
 	// and the session is left to the controller.
 	EPMinHistory = 750
+	// EPRefOverMedian caps the reference at this many times the history's
+	// median power. A TV is loud all the time, so its 97th percentile is only
+	// a few dB over its median (3.6x in the test scene, which sits at the
+	// recordings' 5-14dB over the TV's quiet moments); a cough, a door or the tail of the last reply
+	// is over the median by 30dB and more, and as 3% of the history it set the
+	// reference. See quietRoomMoment in the test.
+	EPRefOverMedian = 8.0
 )
 
 func init() {
@@ -90,6 +97,7 @@ type Endpointer struct {
 	hist   [epRing]float32 // the smoothed power of each of the last epRing blocks
 
 	ref   float64 // the reference level, fixed for a session (0 = none)
+	med   float64 // the median power of the history the reference came from, for the log
 	speak bool
 	run   int
 	quiet int
@@ -179,7 +187,7 @@ func (e *Endpointer) verdict(v float64) {
 // reference is the EPQuantile level of the history from before the wake word.
 func (e *Endpointer) StartSession(sinceCrossMs int) {
 	e.inSession, e.seen, e.ended, e.speak = true, false, false, false
-	e.run, e.quiet, e.ref = 0, 0, 0
+	e.run, e.quiet, e.ref, e.med = 0, 0, 0, 0
 	back := min(max(sinceCrossMs*16000/1000/fbfBlock, 0), epRing-1)
 	e.ignore = max(EPWakeTailBlocks-back, 0)
 
@@ -194,7 +202,12 @@ func (e *Endpointer) StartSession(sinceCrossMs int) {
 		vals = append(vals, float64(e.hist[i%epRing]))
 	}
 	sort.Float64s(vals)
-	e.ref = math.Max(vals[int(float64(len(vals)-1)*EPQuantile)], fbfPowFloor)
+	ref := vals[int(float64(len(vals)-1)*EPQuantile)]
+	e.med = vals[len(vals)/2]
+	if capRef := e.med * EPRefOverMedian; ref > capRef {
+		ref = capRef
+	}
+	e.ref = math.Max(ref, fbfPowFloor)
 	for j := EPWakeTailBlocks; j < back; j++ {
 		e.verdict(float64(e.hist[(e.n-back+1+j+epRing)%epRing]))
 	}
@@ -203,8 +216,11 @@ func (e *Endpointer) StartSession(sinceCrossMs int) {
 // EndSession returns to tracking the room.
 func (e *Endpointer) EndSession() {
 	e.inSession, e.seen, e.ended, e.speak = false, false, false, false
-	e.ignore, e.ref = 0, 0
+	e.ignore, e.ref, e.med = 0, 0, 0
 }
+
+// Median is the median power of the history the reference was taken from.
+func (e *Endpointer) Median() float64 { return e.med }
 
 // Warm reports that the session has a reference: there were seconds of room to
 // take it from. Without one the controller's own ending is left alone.

@@ -1595,8 +1595,8 @@ func (d *DataClient) endpointSession(on bool, frames int, session uint32, cur *u
 		*cur, *sent, *tick = session, false, 0
 		d.endpoint.StartSession(frames * 80)
 		ratio, ref, _ := d.endpoint.State()
-		log.Printf("[endpoint] session %d: following the talker (reference %.0f, warm=%v, level %.1fx the reference)",
-			session, ref, d.endpoint.Warm(), ratio)
+		log.Printf("[endpoint] session %d: following the talker (reference %.0f over a history median of %.0f, warm=%v, level %.1fx the reference)",
+			session, ref, d.endpoint.Median(), d.endpoint.Warm(), ratio)
 		return
 	}
 	*tick++

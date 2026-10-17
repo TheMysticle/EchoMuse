@@ -23,6 +23,10 @@ type epScene struct {
 	speaking func(t int) bool
 	walk     float64
 	lp       float64
+	// level, when set, scales the talker at sample t (a command that starts
+	// loud and settles); extra adds a noise burst at sample t (a cough, a door).
+	level func(t int) float64
+	extra func(t int) float64
 }
 
 func (s *epScene) next(n int) []byte {
@@ -42,7 +46,14 @@ func (s *epScene) next(n int) []byte {
 			for k := 1; k <= 12; k++ {
 				h += math.Sin(2*math.Pi*120*float64(k)*tt+float64(k)) / float64(k)
 			}
-			v += s.talker * env * h * 0.9
+			lv := 1.0
+			if s.level != nil {
+				lv = s.level(s.t)
+			}
+			v += s.talker * lv * env * h * 0.9
+		}
+		if s.extra != nil {
+			v += s.extra(s.t) * s.rng.NormFloat64()
 		}
 		q := int16(math.Max(-32768, math.Min(32767, v)))
 		binary.LittleEndian.PutUint16(out[i*2:], uint16(q))
@@ -209,5 +220,40 @@ func TestEndSessionClearsTheSession(t *testing.T) {
 	ep.EndSession()
 	if ep.Ended() || ep.Heard() || ep.Warm() {
 		t.Error("session state survived EndSession")
+	}
+}
+
+// Field log 2026-10-18, session 10: a silent room, yet the reference came out
+// 20x the other quiet-room sessions' (1,100,959 against 19-56k), the command
+// read 0.3-0.4x of it, and the Echo ended the turn 1.0s after the first words
+// while the talker was still going. One loud second inside the seconds the
+// reference is taken from is enough: the reference is a 97th percentile, and a
+// second of a ten-second window is 10%.
+func TestOneLoudMomentBeforeTheWakeWordDoesNotEndTheCommandEarly(t *testing.T) {
+	// 1 s of cough at 5.0-6.0 s; wake at 10 s; the first 400ms of the command
+	// are emphatic, then it settles to a fifth of that until 13 s.
+	mk := func(withCough bool) *epScene {
+		sc := newScene(0, 8000, 10400, 13000)
+		sc.level = func(t int) float64 {
+			if t < 10800*16 {
+				return 1
+			}
+			return 0.2
+		}
+		if withCough {
+			sc.extra = func(t int) float64 {
+				if t >= 5000*16 && t < 6000*16 {
+					return 1200
+				}
+				return 0
+			}
+		}
+		return sc
+	}
+	if end := runEP(mk(false), NewEndpointer(), 10000, 20000); end < 13000+800 || end > 13000+1700 {
+		t.Fatalf("control (no cough): ended at %dms, talker stopped at 13000ms", end)
+	}
+	if end := runEP(mk(true), NewEndpointer(), 10000, 20000); end >= 0 && end < 13000 {
+		t.Errorf("a cough 5s before the wake word ended the command at %dms, inside it (talker until 13000ms)", end)
 	}
 }
