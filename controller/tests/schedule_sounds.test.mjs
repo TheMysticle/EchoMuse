@@ -22,6 +22,11 @@ function harness(saved = initial, capabilities = ['local_schedule','local_schedu
       if (!(i in state)) state[i] = i===0?snapshot:i===1?structuredClone(saved):typeof value==='function'?value():value;
       return [state[i], next=>{state[i]=typeof next==='function'?next(state[i]):next;}];
     },
+    useRef(value) {
+      const i = cursor++;
+      if (!(i in state)) state[i] = {current:value};
+      return state[i];
+    },
     useCallback: fn=>fn, useEffect(){},
     Panel:'Panel', Pill:'Pill', SectionLabel:'SectionLabel',
     scheduleId:()=>`request-${requests.length}`, ingressPath:path=>path,
