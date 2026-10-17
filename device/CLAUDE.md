@@ -1147,6 +1147,27 @@ thought to watch. Idle sits at 31–34°C, nowhere near throttling.
 this SoC offers** — below `coresTotal` means the governor is already capping
 capacity, which bites well before any temperature reading looks alarming.
 
+**Which goroutine is the load? `cpuprofile.req` (`internal/cpuprofile`, 2026-10-17).**
+Every thread of the server is named `server`, so `top -H` can show that the
+process is busy but not what with. `echo 30 > /data/local/etc/echomuse/cpuprofile.req`
+makes the running server write a Go CPU profile of the next 30 seconds (1-120)
+to `/data/local/tmp/cpu.pprof`, then removes the request. Same shape as
+`capture.req`: no setting, no controller change, one stat a second when idle.
+Pull and read it on the workstation, with the matching `build/server` so lines
+resolve (function names are already inside the profile):
+
+```bash
+adb pull /data/local/tmp/cpu.pprof .          # or via the shell plane
+go tool pprof -top -nodecount=30 cpu.pprof    # who burns the cycles
+go tool pprof -top -cum cpu.pprof             # by call tree, including callees
+go tool pprof -http=:8080 build/server cpu.pprof   # flame graph
+```
+
+Profile in the state being investigated (idle, music, a turn) and keep the run
+to what you ask about: sampling at 100Hz has a cost of its own while it runs.
+A profile counts CPU time over wall time, so read percentages against the
+core count in `coresOnline` (see above), not against 100%.
+
 ## Volume / mute persistence
 
 **Volume is applied in software, and the DAC stays at unity (2026-09-24).**

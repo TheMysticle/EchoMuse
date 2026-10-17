@@ -31,6 +31,7 @@ import (
 	"github.com/wilbowes/EchoMuse/internal/bluetooth"
 	"github.com/wilbowes/EchoMuse/internal/client"
 	"github.com/wilbowes/EchoMuse/internal/config"
+	"github.com/wilbowes/EchoMuse/internal/cpuprofile"
 	"github.com/wilbowes/EchoMuse/internal/cue"
 	"github.com/wilbowes/EchoMuse/internal/earcon"
 	"github.com/wilbowes/EchoMuse/internal/listen"
@@ -196,6 +197,7 @@ func main() {
 	})
 
 	ctx := context.Background()
+	go cpuprofile.Watch(ctx)
 
 	dataClient := client.NewDataClient(deviceID, microphone, pcmSpeaker, canceller)
 	// The wake beam resets its canceller when the speaker starts or stops, as
