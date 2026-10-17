@@ -589,6 +589,11 @@ async def spotify_scenarios(hass, make_entry, kitchen, source, satellite, snapsh
         # alarm stop should reach neither music implementation.
         primary=next(entity for entity in hass.data['media_player'].entities if isinstance(entity,Speaker))
         for ringing in (False,True):
+            # The previous steps dismissed an alert, and a bare stop within the
+            # absorb window afterwards is answered instead of reaching the media
+            # handler. This case is about the media path, so start outside it.
+            for schedule_coordinator in hass.data["echomuse_schedule"]["coordinators"].values():
+                schedule_coordinator.alert_stop_until=0
             primary.reset()
             primary.async_write_ha_state()
             api.playback_data['is_playing']=True
@@ -617,8 +622,10 @@ async def spotify_scenarios(hass, make_entry, kitchen, source, satellite, snapsh
             ('media_stop',{},'seek'), ('media_pause',{},'pause'), ('media_play',{},'play'),
             ('media_next_track',{},'next'), ('media_previous_track',{},'previous'),
             ('volume_set',{'volume_level':0.4},'volume'), ('media_seek',{'seek_position':15},'seek'),
+            # A different track from the voice case above: replaying the one that
+            # just started is deliberately not restarted (3cbac19).
             ('play_media',{'media_content_type':'music',
-                           'media_content_id':'spotify:track:4uLU6hMCjMI75M1A2tKUQC'},'load'),
+                           'media_content_id':'spotify:track:5uLU6hMCjMI75M1A2tKUQC'},'load'),
             ('shuffle_set', {'shuffle':True}, 'shuffle'),
             ('shuffle_set', {'shuffle':False}, 'shuffle'),
             ('repeat_set', {'repeat':'one'}, 'repeat'),
@@ -655,6 +662,9 @@ async def spotify_scenarios(hass, make_entry, kitchen, source, satellite, snapsh
                 assert len(commands) == before and snapshot['active'] == 'alert'
             for text in ('play Repeat on Studio speaker', 'play Shuffle on Studio speaker'):
                 api.calls.clear()
+                # Both titles resolve to the same fake track; replaying one that
+                # just started is deliberately skipped (3cbac19), so forget it.
+                player._last_started = None
                 response = await say(text, local)
                 assert response is not None and response.error_code is None
                 assert len(api.calls) == 2

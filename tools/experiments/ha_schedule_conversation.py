@@ -95,6 +95,10 @@ async def scenarios(hass):
         await say('stop')
         assert len(commands)==1 and speaker.pauses==0 and not snapshot['active']
         print('PASS native stop dismisses source alarm via HTTP without pausing music',flush=True)
+        # A repeated bare stop right after a dismissal is absorbed for a few
+        # seconds; this case is about the media path, so start outside that window.
+        for c in hass.data['echomuse_schedule']['coordinators'].values():
+            c.alert_stop_until=0
         await say('stop')
         assert len(commands)==1 and speaker.pauses==1
         print('PASS no alert: native stop calls REAL media-pause handler/service/entity',flush=True)
