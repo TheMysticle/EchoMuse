@@ -1192,6 +1192,15 @@ MIGRATIONS: list[str] = [
 
     UPDATE system_config SET value = '31' WHERE key = 'schema_version';
     """,
+    # v32 — controller-only voice routing, including credentials. Never part
+    # of firmware config, fleet defaults, or support bundle configuration.
+    """
+    CREATE TABLE voice_workflows (
+        device_id TEXT PRIMARY KEY REFERENCES devices(device_id) ON DELETE CASCADE,
+        config TEXT NOT NULL
+    );
+    UPDATE system_config SET value = '32' WHERE key = 'schema_version';
+    """,
 ]
 
 # Post-migration fixups that need Python rather than SQL. Keyed by the schema
@@ -2207,6 +2216,7 @@ def delete_device(device_id: str) -> None:
     with _tx() as conn:
         # A re-added satellite must not revive an old HA scheduling key.
         conn.execute("DELETE FROM system_config WHERE key = ?", ("schedule_key:" + device_id,))
+        conn.execute("DELETE FROM system_config WHERE key = ?", ("voice_schedule_key:" + device_id,))
         conn.execute("DELETE FROM device_logs WHERE device_id = ?", (device_id,))
         wake_samples = conn.execute(
             "SELECT audio_file FROM wake_samples WHERE device_id = ?", (device_id,)
@@ -3369,6 +3379,36 @@ def prune_sessions() -> int:
 
 
 # ─── System config ────────────────────────────────────────────────────────────
+
+def get_voice_workflow(device_id: str) -> dict:
+    """The satellite's voice routing; Home Assistant unless a valid record says otherwise.
+
+    Read on every device connect, so a record that cannot be understood must
+    fall back to the native path rather than raise and keep the device from
+    registering.
+    """
+    native = {"mode": "home_assistant"}
+    row = _q1("SELECT config FROM voice_workflows WHERE device_id = ?", (device_id,))
+    if not row:
+        return native
+    try:
+        config = json.loads(row["config"])
+    except (TypeError, ValueError):
+        config = None
+    if not isinstance(config, dict) or config.get("mode") not in ("home_assistant", "pipecat"):
+        log.warning(
+            "[%s] stored voice workflow is unreadable; using Home Assistant", device_id)
+        return native
+    return config
+
+
+def set_voice_workflow(device_id: str, config: dict) -> None:
+    with _tx() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO voice_workflows (device_id, config) VALUES (?, ?)",
+            (device_id, json.dumps(config)),
+        )
+
 
 def get_config(key: str, default: Optional[str] = None) -> Optional[str]:
     """Return a system_config value by key, or default if not set."""

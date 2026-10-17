@@ -32,6 +32,7 @@ state with persisted DB state without coupling to a global.
 """
 
 import asyncio
+import em_workflow
 import contextlib
 import hashlib
 import html as _html
@@ -419,6 +420,7 @@ async def create_app() -> web.Application:
     app.router.add_delete("/api/devices/{id}/schedule-connection", _delete_schedule_connection)
     app.router.add_get("/api/schedules", _get_schedules)
     app.router.add_post("/api/devices/{id}/schedules", _post_schedule)
+    app.router.add_post("/api/devices/{id}/voice-workflow/mcp", _post_workflow_mcp)
     app.router.add_post("/api/devices/{id}/schedule-assets", _post_schedule_asset)
     app.router.add_get("/api/devices",                    _get_devices)
     app.router.add_get("/api/devices/pending",            _get_pending)
@@ -426,6 +428,8 @@ async def create_app() -> web.Application:
     app.router.add_patch("/api/devices/{id}",             _patch_device)
     app.router.add_delete("/api/devices/{id}",            _delete_device)
     app.router.add_post("/api/devices/{id}/approve",      _post_approve)
+    app.router.add_get("/api/devices/{id}/voice-workflow", _get_voice_workflow)
+    app.router.add_post("/api/devices/{id}/voice-workflow", _post_voice_workflow)
     app.router.add_get("/api/devices/{id}/config",        _get_device_config)
     app.router.add_get("/api/devices/{id}/sendspin/token", _get_sendspin_token)
     app.router.add_get("/api/devices/{id}/ble_proxy/key", _get_ble_proxy_key)
@@ -1562,7 +1566,10 @@ async def _apply_live_config(device_id: str, live, effective: dict) -> None:
     """
     effective = _well_typed(device_id, effective)
     effective, pending_model = _hold_back_oww_model(live, effective)
-    await live.send_control({"type": "config", **effective})
+    wire_config = effective
+    if getattr(getattr(live, "workflow", None), "active", False):
+        wire_config = live.workflow.wire_config(effective)
+    await live.send_control({"type": "config", **wire_config})
     if "owwThreshold" in effective:
         live.oww_threshold = float(effective["owwThreshold"])
     if "owwModel" in effective:
@@ -1681,6 +1688,85 @@ async def _get_device_config(request: web.Request) -> web.Response:
         # Compat view for older readers: no overridden sections == fleet.
         "use_global_config": not sections,
     })
+
+
+_workflow_locks: dict[str, asyncio.Lock] = {}
+
+
+@schedule_auth.require_admin
+async def _post_workflow_mcp(request):
+    import em_workflow_tools
+    return await em_workflow_tools.handle(request, _devices)
+
+
+@auth.require_auth
+async def _get_voice_workflow(request: web.Request) -> web.Response:
+    device_id = request.match_info["id"]
+    if await asyncio.to_thread(db.get_device, device_id) is None:
+        return _error("device_not_found", "Unknown satellite", 404)
+    config = await asyncio.to_thread(db.get_voice_workflow, device_id)
+    live = _devices.get(device_id)
+    bridge = getattr(live, "workflow", None)
+    return _ok({**em_workflow.public(config),
+                "status": bridge.status if bridge else "offline",
+                "session_active": bool(bridge and bridge.awake),
+                "interrupt_effective": bridge.interrupt_effective if bridge else None,
+                "last_error": bridge.last_error if bridge else None,
+                "dependencies": "ready — WebSocket, protobuf and PCM bridge bundled"})
+
+
+@auth.require_admin
+async def _post_voice_workflow(request: web.Request) -> web.Response:
+    device_id = request.match_info["id"]
+    body = await _json_body(request)
+    if await asyncio.to_thread(db.get_device, device_id) is None:
+        return _error("device_not_found", "Unknown satellite", 404)
+    lock = _workflow_locks.setdefault(device_id, asyncio.Lock())
+    async with lock:
+        previous = await asyncio.to_thread(db.get_voice_workflow, device_id)
+        try:
+            config = em_workflow.validate(body, previous)
+        except (ValueError, TypeError):
+            return _error("invalid_workflow", "Invalid workflow settings. Use a ws:// or wss:// endpoint and text mapping IDs.", 400)
+        ws = None
+        try:
+            if config["mode"] == em_workflow.PIPECAT:
+                if body.get("google_api_key"):
+                    await em_workflow.configure_google(config)
+                if config.get("local_schedules"):
+                    live = _devices.get(device_id)
+                    if not live or "local_schedule" not in (live.capabilities or []):
+                        raise ValueError("Local schedules require an online updated speaker")
+                if em_workflow.transport(config) == "va_pipecat":
+                    host = _link["ip"]
+                    if not host:
+                        raise ValueError("Controller advertised IP is required for EchoMuse stop controls")
+                    host = "[" + host + "]" if ":" in host else host
+                    config["_scheduler_url"] = f"http://{host}:{os.environ.get('API_PORT', '8768')}/api/devices/{device_id}/voice-workflow/mcp"
+                    if not config.get("_scheduler_token"):
+                        config["_scheduler_token"] = await asyncio.to_thread(schedule_auth.issue, device_id, voice=True)
+                ws = await em_workflow.handshake(config, device_id)
+        except Exception as error:
+            if isinstance(error, em_workflow.ProtocolError) and str(error) == "echomuse_pipecat_adapter_required":
+                return _error("adapter_required", "Install the Pipecat Assist EchoMuse adapter and configure its satellite shared secret to use sensitivity profiles, stop controls or local scheduling. Settings were not saved.", 400)
+            return _error("pipecat_unavailable", "Pipecat setup/handshake failed. Check the endpoint, credentials, provider and server. Settings were not saved.", 400)
+        try:
+            # Persist only after the background handshake/pong succeeded.
+            await asyncio.to_thread(db.set_voice_workflow, device_id, config)
+            live = _devices.get(device_id)
+            if live is not None:
+                async with live.workflow.lock:
+                    await live.workflow.apply(config, ws)
+                    ws = None  # bridge now owns the tested connection
+            return _ok({**em_workflow.public(config),
+                        "status": live.workflow.status if live else "offline",
+                        "session_active": bool(live and live.workflow.awake),
+                        "interrupt_effective": live.workflow.interrupt_effective if live else None,
+                        "last_error": live.workflow.last_error if live else None,
+                        "dependencies": "ready — WebSocket, protobuf and PCM bridge bundled"})
+        finally:
+            if ws is not None:
+                await ws.close()
 
 
 @auth.require_admin

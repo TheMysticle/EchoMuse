@@ -1778,6 +1778,142 @@ function SchedulesTab({ device, isAdmin }) {
   </div>;
 }
 
+// TextField — a labelled single-line input in the same type as the WiFi form,
+// for settings that are text rather than a number, a switch or a choice.
+function TextField({ label, sub, value, onChange, type = 'text', placeholder, disabled = false, mono: monoFont = false }) {
+  return (
+    <div style={{ marginBottom: 20, minWidth: 0 }}>
+      <div style={{ marginBottom: 7 }}>
+        <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 11, color: disabled ? 'var(--muted)' : 'var(--text2)' }}>{label}</span>
+      </div>
+      <input type={type} value={value} placeholder={placeholder} disabled={disabled}
+        autoComplete={type === 'password' ? 'new-password' : 'off'} spellCheck="false"
+        aria-label={label} onChange={e => onChange(e.target.value)}
+        style={{ width: '100%', boxSizing: 'border-box', ...(monoFont ? { fontFamily: "'DM Mono',monospace", fontSize: 11 } : null) }}/>
+      {sub && <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 10, color: 'var(--muted)', marginTop: 7 }}>{sub}</div>}
+    </div>
+  );
+}
+
+// The one-line state under the workflow card. `connected` only says the audio
+// link is up; whether anyone is talking is the session flag beside it.
+function workflowLine(config) {
+  if (!config) return { tone: 'muted', text: 'Loading…' };
+  if (config.mode !== 'pipecat') return { tone: 'muted', text: 'Home Assistant Core is handling this speaker.' };
+  if (config.last_error) return { tone: 'error', text: `Pipecat connection error: ${config.last_error}. Check the server’s audio protocol, provider and MCP settings.` };
+  if (config.status === 'connected') return { tone: 'ok', text: config.session_active ? 'Connected · conversation in progress' : 'Connected · waiting for the wake word' };
+  return { tone: 'warn', text: `Pipecat Assist · ${config.status || 'connecting'}` };
+}
+
+// VoiceWorkflow — where this Echo's conversations are processed. Stored per
+// satellite outside the fleet/device config (so it has no Fleet/Device switch
+// and its own Save), and the long explanations live in docs/voice-workflow.md.
+function VoiceWorkflow({ deviceId, isAdmin }) {
+  const [config, setConfig] = useState(null);
+  const [draft, setDraft] = useState({ mode: 'home_assistant', endpoint: '', area: '', target_device: '' });
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState('');
+  const [failed, setFailed] = useState(false);
+  const [advanced, setAdvanced] = useState(false);
+  useEffect(() => {
+    let live = true;
+    API.get(`/api/devices/${deviceId}/voice-workflow`).then(c => {
+      if (!live) return;
+      setConfig(c);
+      setDraft({ mode: c.mode, endpoint: c.endpoint || '', area: c.area || '', target_device: c.target_device || '',
+        local_schedules: c.local_schedules ?? false, barge_in_sensitivity: c.barge_in_sensitivity || 'responsive',
+        interrupt_by: c.interrupt_by || 'wake' });
+    }).catch(() => { if (live) { setFailed(true); setMessage('Could not load voice workflow.'); } });
+    return () => { live = false; };
+  }, [deviceId]);
+  useEffect(() => {
+    if (!config || config.mode !== 'pipecat') return;
+    let live = true;
+    const timer = setInterval(() => {
+      API.get(`/api/devices/${deviceId}/voice-workflow`).then(c => { if (live) setConfig(c); }).catch(() => {});
+    }, 5000);
+    return () => { live = false; clearInterval(timer); };
+  }, [deviceId, config?.mode]);
+  const field = (key, value) => setDraft(c => ({ ...c, [key]: value }));
+  async function save() {
+    setBusy(true); setFailed(false);
+    setMessage(draft.mode === 'pipecat' ? 'Testing the Pipecat connection…' : 'Switching to Home Assistant Core…');
+    try {
+      const result = await API.post(`/api/devices/${deviceId}/voice-workflow`, draft);
+      setConfig(result);
+      setDraft(c => { const { api_key, google_api_key, ...rest } = c; return rest; });
+      setMessage(result.mode === 'pipecat' ? 'Connection verified. Pipecat Assist is active.' : 'Home Assistant Core is active.');
+    } catch (e) { setFailed(true); setMessage(e.error || e.message || 'Unable to save voice workflow.'); }
+    finally { setBusy(false); }
+  }
+  const mono = "'DM Mono',monospace";
+  const pipecat = draft.mode === 'pipecat';
+  const off = !isAdmin || busy || !config;
+  const line = workflowLine(config);
+  const tone = { ok: 'var(--ok)', warn: 'var(--warn)', error: 'var(--error)', muted: 'var(--muted)' };
+  return (
+    <Stage n="09" title="Voice workflow"
+      chips={<><ScopeChip tone="device">Device</ScopeChip><ScopeChip tone="controller">Controller</ScopeChip></>}
+      desc="Where this Echo’s conversations are processed. Pipecat Assist streams speech both ways to a Pipecat server, but only after the wake word or the action button; nothing is sent before that, and the hardware mute still applies."
+      after={
+        <div style={{ fontFamily: mono, fontSize: 11, color: 'var(--text2)', display: 'flex', flexDirection: 'column', gap: 10, marginTop: 6 }}>
+          {isAdmin && (
+            <div><Pill accent disabled={off} onClick={save}>
+              {busy ? 'Checking…' : pipecat ? 'Verify & activate' : 'Activate'}
+            </Pill></div>
+          )}
+          {message && <div role={failed ? 'alert' : 'status'} style={{ color: failed ? 'var(--error)' : 'var(--text2)' }}>{message}</div>}
+          <div role={line.tone === 'error' ? 'alert' : undefined} style={{ color: tone[line.tone] }}>{line.text}</div>
+        </div>
+      }>
+      <Select label="Mode" value={draft.mode} disabled={off}
+        options={[{ value: 'home_assistant', label: 'Home Assistant' }, { value: 'pipecat', label: 'Pipecat Assist' }]}
+        onChange={v => { field('mode', v); setMessage(''); }}/>
+      {pipecat && <>
+        <TextField label="Server endpoint" value={draft.endpoint} disabled={off} mono
+          placeholder="ws://192.168.1.50:7860/api/assist/esphome"
+          sub="Pipecat Assist’s ESPHome WebSocket, or a protobuf server. Use wss:// across an untrusted network."
+          onChange={v => field('endpoint', v)}/>
+        <div className="em-grid2" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 24px' }}>
+          <TextField label="Server key" type="password" value={draft.api_key ?? ''} disabled={off}
+            placeholder={config?.has_api_key ? 'Saved — leave blank to keep' : 'Satellite shared secret'}
+            sub="Sent as a Bearer header, never in the URL"
+            onChange={v => field('api_key', v)}/>
+          <TextField label="Google AI Studio key" type="password" value={draft.google_api_key ?? ''} disabled={off}
+            placeholder={config?.has_google_api_key ? 'Saved — leave blank to keep' : 'Optional'}
+            sub="Saving updates the server’s Gemini integration, shared by all its pipelines"
+            onChange={v => field('google_api_key', v)}/>
+        </div>
+        <Select label="Interrupt a reply by" value={draft.interrupt_by || 'wake'} disabled={off}
+          sub={draft.interrupt_by !== 'voice' && config?.interrupt_effective === 'voice'
+            ? 'This Echo streams to the controller, so it cannot hear its wake word during a reply; speaking interrupts instead.'
+            : (draft.interrupt_by || 'wake') === 'wake'
+              ? 'The microphone is closed to the server while the assistant speaks, so its own voice cannot interrupt it. Say the wake word or press the button.'
+              : 'The microphone stays open and the server decides. The assistant’s own voice can interrupt it.'}
+          options={[{ value: 'wake', label: 'Wake word' }, { value: 'voice', label: 'Voice' }]}
+          onChange={v => field('interrupt_by', v)}/>
+        <Select label="Speech detection" value={draft.barge_in_sensitivity || 'responsive'} disabled={off}
+          sub="How long the server must hear speech before it counts you. Responsive catches one-word commands like stop and play. Needs the EchoMuse adapter on the server."
+          options={[{ value: 'responsive', label: 'Responsive' }, { value: 'balanced', label: 'Balanced' }, { value: 'low', label: 'Low' }]}
+          onChange={v => field('barge_in_sensitivity', v)}/>
+        <Toggle label="Timers, alarms and reminders" disabled={off}
+          sub="gives the model this Echo’s own scheduler; needs the EchoMuse adapter"
+          value={draft.local_schedules ?? false} onChange={v => field('local_schedules', v)}/>
+        <StageAdvanced open={advanced} onToggle={() => setAdvanced(v => !v)}>
+          <div className="em-grid2" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 24px' }}>
+            <TextField label="Home Assistant area" value={draft.area} disabled={off} placeholder="living_room"
+              sub="Sent as metadata only; it does not limit what the model can reach"
+              onChange={v => field('area', v)}/>
+            <TextField label="Session device ID" value={draft.target_device} disabled={off} placeholder={deviceId}
+              sub="Names this Echo’s session and conversation memory; blank uses its own ID"
+              onChange={v => field('target_device', v)}/>
+          </div>
+        </StageAdvanced>
+      </>}
+    </Stage>
+  );
+}
+
 function Detail({ device, token, onClose, onApprove, isAdmin, globalConfig, onDeviceConfigChange }) {
   const [tab, setTab] = useState(() => device.approved ? 'status' : 'approve');
   // Seed from the EFFECTIVE config, not the raw stored one — see
@@ -2731,6 +2867,13 @@ function Detail({ device, token, onClose, onApprove, isAdmin, globalConfig, onDe
                   }}>Cancel</Pill>
                 </div>
               )}
+
+              {/* Stage 09 follows the stages DeviceConfigForm renders: it is
+                  stored per satellite, outside the fleet/device scoping and
+                  the Push config above, and saves itself. */}
+              <div style={{ marginTop: 8 }}>
+                <VoiceWorkflow deviceId={device.device_id} isAdmin={isAdmin}/>
+              </div>
             </div>
           )}
 

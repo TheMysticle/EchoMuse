@@ -19,13 +19,14 @@ ROUTES = {
     ("GET", "/api/schedules"),
     ("POST", "/api/devices/{id}/schedules"),
     ("POST", "/api/devices/{id}/schedule-assets"),
+    ("POST", "/api/devices/{id}/voice-workflow/mcp"),
 }
 
 
-def issue(device_id):
+def issue(device_id, *, voice=False):
     encoded = base64.urlsafe_b64encode(device_id.encode()).decode().rstrip("=")
-    token = PREFIX + encoded + "." + secrets.token_urlsafe(48)
-    db.set_config("schedule_key:" + device_id, hashlib.sha256(token.encode()).hexdigest())
+    token = ("emvoice." if voice else PREFIX) + encoded + "." + secrets.token_urlsafe(48)
+    db.set_config(("voice_schedule_key:" if voice else "schedule_key:") + device_id, hashlib.sha256(token.encode()).hexdigest())
     return token
 
 
@@ -34,7 +35,7 @@ def revoke(device_id):
 
 
 def _resolve(token):
-    if not token.startswith(PREFIX) or len(token) > 1024:
+    if not token.startswith((PREFIX, "emvoice.")) or len(token) > 1024:
         return None
     try:
         _, encoded, secret = token.split(".")
@@ -43,7 +44,7 @@ def _resolve(token):
         return None
     if not secret or not device_id:
         return None
-    stored = db.get_config("schedule_key:" + device_id)
+    stored = db.get_config(("voice_schedule_key:" if token.startswith("emvoice.") else "schedule_key:") + device_id)
     if not stored or not secrets.compare_digest(stored, hashlib.sha256(token.encode()).hexdigest()):
         return None
     device = db.get_device(device_id)
@@ -55,7 +56,9 @@ async def authorize(request):
     if route is None or (request.method, route.canonical) not in ROUTES:
         return None
     token = request.headers.get("Authorization", "").removeprefix("Bearer ")
-    if not token.startswith(PREFIX):
+    if token.startswith("emvoice.") and route.canonical != "/api/devices/{id}/voice-workflow/mcp":
+        return None
+    if not token.startswith((PREFIX, "emvoice.")):
         return None
     satellite = await asyncio.to_thread(_resolve, token)
     if satellite is not None and ("id" not in request.match_info or request.match_info["id"] == satellite):

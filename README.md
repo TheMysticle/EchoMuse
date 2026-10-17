@@ -177,6 +177,7 @@ Everything else is in the [issue tracker](https://github.com/wilbowes/EchoMuse/i
 | [Quickstart](docs/quickstart.md) | From nothing to talking to your Dot. |
 | [Rooting](docs/rooting.md) | Unlocking the Dot, and which amonet version to use. |
 | [Configuration](docs/configuration.md) | Every setting, in plain language. |
+| [Voice Workflow](docs/voice-workflow.md) | Per-satellite native Assist or Pipecat full-duplex WebSocket audio. |
 | [FAQ](docs/faq.md) | Common problems and their fixes. |
 | [emOS](emos/README.md) | How our own userspace on the Dot works. |
 | [How the voice pipeline works](docs/voice-pipeline.md) | The path from wake word to answer. |

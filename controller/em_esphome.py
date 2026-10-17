@@ -1375,6 +1375,8 @@ class EchoMuseSatellite(SatelliteServerProtocol):
         self._continue_conversation after this returns to decide whether to
         re-trigger — see trigger_voice_turn().
         """
+        if getattr(getattr(device, "workflow", None), "blocks_native", False):
+            return
         if not self._transport or self._transport.is_closing():
             log.warning(f"[{self._log_name}] No active HA connection — cannot start voice turn")
             return
@@ -1845,7 +1847,8 @@ class EchoMuseSatellite(SatelliteServerProtocol):
 
         try:
             while True:
-                if device.cancel_event.is_set():
+                if (device.cancel_event.is_set()
+                        or getattr(getattr(device, "workflow", None), "blocks_native", False)):
                     self._turn_cancelled = True
                     return
 
@@ -2060,6 +2063,8 @@ class EchoMuseSatellite(SatelliteServerProtocol):
                     while len(pcm_buf) >= AUDIO_CHUNK:
                         chunk = bytes(pcm_buf[:AUDIO_CHUNK])
                         del pcm_buf[:AUDIO_CHUNK]
+                        if getattr(getattr(device, "workflow", None), "blocks_native", False):
+                            return
                         self._send_one(api_pb2.VoiceAssistantAudio(data=chunk))
         finally:
             # What the gate actually did to this turn. Logged unconditionally

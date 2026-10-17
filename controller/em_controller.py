@@ -85,6 +85,7 @@ import em_pairing
 import em_config_types
 import em_dbwriter
 import em_tasks
+import em_workflow
 import em_pacing
 import em_platform
 import em_tcp
@@ -478,6 +479,7 @@ class Device:
         # bundle's 2000-line ring (#351).
         self._data_gone_frames: int = 0
         self._data_gone_logged: bool = False
+        self.workflow = em_workflow.Bridge(self)
         self.voice_lock   = asyncio.Lock()
         self.cancel_event = asyncio.Event()
         self.mic_queue:   asyncio.Queue[bytes] = asyncio.Queue(maxsize=64)
@@ -1341,7 +1343,48 @@ class Device:
         await self.send_control({"type": "play_cue", "cue": name})
 
     async def push_config(self, **kwargs):
-        await self.send_control({"type": "config", **kwargs})
+        await self.send_control({"type": "config", **self.workflow.wire_config(kwargs)})
+
+    async def workflow_wake(self, ev):
+        # The native arbitration uses capture time/level, not network arrival.
+        if self.wake_arb_ms > 0 and len(_devices) > 1:
+            winner = await _claim_wake(self, _wake_heard_at(self, ev),
+                _device_level(ev), by="device", over_playback=bool(ev.get("barge")))
+            if winner != self.device_id:
+                await self.listen_close(ev["session"], "ceded")
+                await leds_off(self)
+                return False
+        return await self.workflow.wake(ev["session"], age_ms=ev["age_ms"])
+
+    async def workflow_release(self):
+        await self.beam_unlock()
+        _wake_arbiter.release(self.device_id)
+
+    async def workflow_phase(self, phase: str):
+        """Use the same scene and thinking animation as native Assist."""
+        task, self.workflow.scene_task = self.workflow.scene_task, None
+        if task:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        self.listening = phase == "listening"
+        self.thinking = phase == "thinking"
+        if phase == "listening":
+            await leds_listening(self)
+        elif phase == "thinking":
+            self.workflow.scene_task = asyncio.create_task(leds_spin_green(self, asyncio.Event()))
+        elif phase in {"idle", "thanks"}:
+            await _leds_turn_end(self)
+        await _push_device_state(self)
+
+    async def workflow_playback(self, chunks):
+        # Keep the meter alive until device-confirmed drain, as in native Assist.
+        await self.workflow_phase("speaking")
+        self.speaker_busy += 1
+        try:
+            async with _voice_metered_chunks(self, chunks) as source:
+                return await _run_streaming_post_turn_playback(self, source)
+        finally:
+            self.speaker_busy -= 1
 
     async def _set_speaking(self, value: bool) -> None:
         """
@@ -2708,6 +2751,36 @@ async def _meter_at_playback_start(pcm_chunks, on_start):
         await on_start()
 
 
+@contextlib.asynccontextmanager
+async def _voice_metered_chunks(device: Device, pcm_chunks):
+    """Shared Assist/Pipecat response meter, including the bounded refresh."""
+    if not device.led_anim_capable:
+        # No meter to raise: the stream goes through exactly as it did before
+        # this was shared, without a wrapper generator in the audio path.
+        yield pcm_chunks
+        return
+    refresh = None
+    async def start():
+        nonlocal refresh
+        meter = dict(device.led_scene["meter_anim"])
+        meter["ttlSec"] = em_scenes.meter_ttl(0.0)
+        await device.send_led_anim(meter)
+        async def keep_alive():
+            while True:
+                await asyncio.sleep(max(1.0, meter["ttlSec"] / 2))
+                await device.send_led_anim(meter)
+        refresh = asyncio.create_task(keep_alive())
+    try:
+        yield _meter_at_playback_start(pcm_chunks, start)
+    finally:
+        if refresh:
+            refresh.cancel()
+            await asyncio.gather(refresh, return_exceptions=True)
+        close = getattr(pcm_chunks, "aclose", None)
+        if close:
+            await close()
+
+
 async def _run_streaming_post_turn_playback(device: Device, pcm_chunks) -> int:
     """
     Play decoded HA TTS while the HTTP response is still arriving.
@@ -2858,6 +2931,8 @@ async def _run_voice_locked(device: Device, trigger_label: str = "unknown",
     trace display, not a control-flow key) so a future change to the label
     format can't silently change behaviour here.
     """
+    if device.workflow.blocks_native:
+        return
     drained = 0
     while not device.mic_queue.empty():
         try:
@@ -2972,50 +3047,6 @@ async def _run_voice_locked(device: Device, trigger_label: str = "unknown",
                     spin_task = asyncio.create_task(
                         leds_spin_green(device, stop_spin)
                     )
-                meter_refresh_task = None
-                if device.led_anim_capable:
-                    # Playback ring: throb with the response's live audio
-                    # level (device-side "meter" pattern, RMS measured at
-                    # the ALSA write). Replaces the thinking spinner on
-                    # the device; spin_task keeps waiting on stop_event
-                    # and its finally still clears the ring at turn end.
-                    #
-                    # RAISED WHEN AUDIO STARTS, NOT WHEN PLAYBACK IS SET UP.
-                    # The meter renders the live speaker RMS, so before the
-                    # device's ALSA write begins it draws an unlit ring. On
-                    # the buffered path that was invisible (the fetch had
-                    # already completed, so frames flushed at socket speed),
-                    # but streaming moves the fetch+decode INSIDE playback:
-                    # sending it here left the ring dark from the end of the
-                    # spinner until HA returned audio — seconds on a slow
-                    # response, and indistinguishable from a failed turn
-                    # (user report 2026-07-31). The spinner keeps running
-                    # until _meter_on fires, so the handover is continuous.
-                    #
-                    # A streamed response has no known duration up front.
-                    # Refresh the same bounded dead-man TTL while PCM arrives:
-                    # long speech cannot outlive its meter, but a controller
-                    # crash still lets the device clear the ring on its own.
-                    meter = dict(device.led_scene["meter_anim"])
-                    meter["ttlSec"] = em_scenes.meter_ttl(0.0)
-
-                    async def _refresh_meter_dead_man() -> None:
-                        refresh_seconds = max(1.0, meter["ttlSec"] / 2)
-                        while True:
-                            await asyncio.sleep(refresh_seconds)
-                            await device.send_led_anim(meter)
-
-                    async def _meter_on() -> None:
-                        nonlocal meter_refresh_task
-                        if meter_refresh_task is not None:
-                            return
-                        await device.send_led_anim(meter)
-                        meter_refresh_task = asyncio.create_task(
-                            _refresh_meter_dead_man()
-                        )
-
-                    pcm_chunks = _meter_at_playback_start(pcm_chunks, _meter_on)
-
                 if device.private_listening:
                     # Nothing is streaming (closed at end of speech), and the
                     # Echo hears a barge-in itself. Defensive for a turn that
@@ -3055,16 +3086,8 @@ async def _run_voice_locked(device: Device, trigger_label: str = "unknown",
                     # wake listener / button handler as before.
                     await device.mic_stop()
 
-                try:
-                    return await _run_streaming_post_turn_playback(
-                        device, pcm_chunks
-                    )
-                finally:
-                    if meter_refresh_task is not None:
-                        meter_refresh_task.cancel()
-                        await asyncio.gather(
-                            meter_refresh_task, return_exceptions=True
-                        )
+                async with _voice_metered_chunks(device, pcm_chunks) as source:
+                    return await _run_streaming_post_turn_playback(device, source)
 
             # P0-1: no mic_start_turn() here on the initial (wake/button)
             # entry — for a wake turn the stream is already running on
@@ -3370,7 +3393,9 @@ async def wake_word_listener(device: Device):
     a superseded connection ends this loop.
     """
     while _devices.get(device.device_id) is device:
-        if device.private_listening:
+        if device.workflow.switching or (device.workflow.active and device.workflow.awake):
+            await device.workflow.poll()
+        elif device.private_listening:
             await _private_listen(device)
         else:
             await _stream_listen(device)
@@ -3391,7 +3416,9 @@ async def _private_listen(device: Device) -> None:
     log.info(f"[{device.device_id}] listening privately — the Echo detects its "
              f"own wake word and streams nothing until it does")
     await device.mic_start()
-    while _devices.get(device.device_id) is device and device.private_listening:
+    while (_devices.get(device.device_id) is device and device.private_listening
+           and not device.workflow.switching
+           and not (device.workflow.active and device.workflow.awake)):
         try:
             ev = await asyncio.wait_for(device.listen_wakes.get(), timeout=1.0)
         except asyncio.TimeoutError:
@@ -3405,6 +3432,9 @@ async def _private_listen(device: Device) -> None:
                      f"ignored — already closed on the Echo "
                      f"({(asyncio.get_event_loop().time() - ev['arrived']) * 1000:.0f}ms "
                      f"after it arrived, {ev['age_ms']}ms old when sent)")
+            continue
+        if device.workflow.active:
+            await device.workflow_wake(ev)
             continue
         busy = (device.voice_lock.locked()
                 or (device.private_turn_task is not None
@@ -3500,6 +3530,8 @@ async def _private_wake_turn(device: Device, ev: dict) -> None:
     `_stream_listen` step for step; the differences are where the audio comes
     from and that nothing here was scored by this controller.
     """
+    if device.workflow.blocks_native:
+        return
     session = ev["session"]
     score = ev["score"]
     threshold = ev["threshold"] if ev["threshold"] is not None else device.oww_threshold
@@ -3691,6 +3723,8 @@ async def _stream_listen(device: Device):
     stray_stopped_at = 0.0  # last mic_stop sent for a stream up with the wake word off
     try:
         while True:
+            if device.workflow.switching or (device.workflow.active and device.workflow.awake):
+                return
             # Now that the model is shared via the module cache (#512), a
             # superseded listener must not score into it: on a reconnect the
             # old listener can still loop for a moment before its connection's
@@ -3854,6 +3888,10 @@ async def _stream_listen(device: Device):
                 continue
 
             dead_streak = 0
+            if device.workflow.switching or (device.workflow.active and device.workflow.awake):
+                device.frames_seen_this_connection = True
+                buf.clear()
+                continue
 
             # VAD sentinel (string; None accepted defensively — the pre-B5
             # encoding) — flush partial audio so OWW never scores across a
@@ -4048,6 +4086,9 @@ async def _stream_listen(device: Device):
                     device.ctrl_shadow.active = True
 
                 if source != "none":
+                    if device.workflow.active:
+                        await device.workflow.wake()
+                        continue
                     if source == "device":
                         score      = dev_wake["score"]
                         # The bar the DEVICE cleared, which during playback is
@@ -4377,6 +4418,13 @@ async def handle_button_event(device: Device, event: dict):
             # Only the TURN is blocked. The hold and tap-event above have
             # already been forwarded, muted or not.
             log.info(f"[{device.device_id}] Dot button tap ignored — mic is muted")
+            return
+
+        if device.workflow.blocks_native:
+            if device.workflow.awake:
+                await device.workflow.interrupt()
+            else:
+                await device.workflow.wake(button=True)
             return
 
         if action == em_button.CANCEL:
@@ -4884,6 +4932,8 @@ async def handle_control(ws: WebSocketServerProtocol, secure: bool = False):
         async def _stop_alarm(_d=_device_ref) -> None:
             await stop_timer_alarm(_d)
         async def _start_conversation(_d=_device_ref) -> None:
+            if _d.workflow.blocks_native:
+                return
             # HA has finished asking; the answer is whatever is said next.
             # Same shape as the button turn — a deliberate act with no wake
             # word, so mic_stop/mic_start_turn to get the beam-locked stream,
@@ -5018,9 +5068,14 @@ async def handle_control(ws: WebSocketServerProtocol, secure: bool = False):
                 device.ping_busy[seq] = device.is_busy()
                 await device.send_control({"type": "ping", "id": seq})
 
+        workflow_config = await asyncio.to_thread(db.get_voice_workflow, device_id)
+        device.workflow.config = workflow_config
         ping_task = asyncio.create_task(ping_loop())
         oww_task  = _supervise_wake_listener(device)
         device.oww_task = oww_task
+        if workflow_config["mode"] == em_workflow.PIPECAT:
+            async with device.workflow.lock:
+                await device.workflow.apply(workflow_config)
 
         try:
             async for raw in ws:
@@ -5531,6 +5586,8 @@ async def handle_control(ws: WebSocketServerProtocol, secure: bool = False):
                         sess = msg.get("session")
                         if isinstance(sess, int) and sess:
                             device.listen_router.close(sess)
+                            if device.workflow.active:
+                                await device.workflow.end_session(sess, reason="device_ended")
                             if device.listen_session == sess:
                                 device.listen_session = None
                             # #696 review: nothing of this session belongs in a
@@ -5628,6 +5685,8 @@ async def handle_control(ws: WebSocketServerProtocol, secure: bool = False):
 
     finally:
         if device:
+            if device.workflow.active or device.workflow.task is not None:
+                await device.workflow.stop()
             # Above the stale check on purpose: per-connection state, and
             # send_button_event resolves by device_id, so an orphaned timer
             # would fire a phantom tap at the replacement connection.
@@ -5843,6 +5902,11 @@ async def handle_data(ws: WebSocketServerProtocol, secure: bool = False):
                     if parsed is None:
                         continue
                     session, _seq, pcm = parsed
+                    if device.workflow.blocks_native:
+                        for chunk in device.listen_router.frame(
+                                session, pcm, asyncio.get_running_loop().time()):
+                            device.workflow.feed(chunk, session)
+                        continue
                     device.frames_seen_this_connection = True
                     # Never fed to wake_capture: this is private-session audio,
                     # already past the user's own wake word, and its pre-roll
@@ -5862,6 +5926,13 @@ async def handle_data(ws: WebSocketServerProtocol, secure: bool = False):
                         if raw[MIC_HEADER_LEN] == VAD_NO_SPEECH_TIMEOUT_TYPE
                         else esphome.VAD_SENTINEL_END
                     )
+                    if device.workflow.blocks_native:
+                        # Pipecat has no turn queue to put it in: the Echo's
+                        # endpointer saying the talker stopped is passed to the
+                        # server as silence, and a timeout means nothing here.
+                        if sentinel == esphome.VAD_SENTINEL_END:
+                            device.workflow.device_endpoint()
+                        continue
                     q = device.voice_queue if device.oww_paused.is_set() else device.mic_queue
                     if q.full():
                         try:
@@ -5876,6 +5947,7 @@ async def handle_data(ws: WebSocketServerProtocol, secure: bool = False):
                     continue
                 _now = asyncio.get_event_loop().time()
                 pcm = raw[MIC_HEADER_LEN:]
+                device.workflow.feed(pcm)
                 # Keep bounded pre-roll only while capture is enabled. The
                 # capture object owns the ring and post-roll limits.
                 if device.wake_clip_capture or device.wake_capture.active is not None:
@@ -5931,6 +6003,8 @@ async def handle_data(ws: WebSocketServerProtocol, secure: bool = False):
     finally:
         if device:
             if device.data_ws is ws:
+                if device.workflow.active:
+                    await device.workflow.end_session(reason="data_disconnected")
                 device.data_ws = None
                 device.data_ready.clear()
             _msg = (f"[data] Data connection closed: {device.device_id} — "

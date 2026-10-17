@@ -433,8 +433,12 @@ def test_meter_ring_is_raised_when_audio_starts_not_at_playback_setup():
     fn = src[src.index("async def post_turn_play_esphome"):]
     fn = fn[:fn.index("\n            # P0-1")]
 
-    assert "_meter_at_playback_start(pcm_chunks" in fn, \
-        "the meter must be gated on the first audio reaching the device"
+    assert "_voice_metered_chunks(device, pcm_chunks)" in fn, \
+        "native playback must use the shared, audio-gated meter"
+    shared = src[src.index("async def _voice_metered_chunks"):]
+    shared = shared[:shared.index("\nasync def ", 1)]
+    assert "yield _meter_at_playback_start(pcm_chunks, start)" in shared, \
+        "the shared meter must be gated on the first audio reaching the device"
 
     # A meter send is legitimate inside the nested helpers (_meter_on, and the
     # dead-man refresher). What must not exist is one in the function's OWN

@@ -121,7 +121,9 @@ def _legacy_fleet(tmp_path, serials):
     import re
     with db._tx() as conn:
         conn.execute("UPDATE devices SET esphome_mac = NULL")
-        for sql in db.MIGRATIONS[18:]:
+        for sql in reversed(db.MIGRATIONS[18:]):
+            for table in re.findall(r"CREATE TABLE (?!IF)(\w+)", sql):
+                conn.execute(f"DROP TABLE IF EXISTS {table}")
             for table, col in re.findall(
                     r"ALTER TABLE (\w+)\s+ADD COLUMN (\w+)", sql):
                 conn.execute(f"ALTER TABLE {table} DROP COLUMN {col}")
@@ -176,7 +178,9 @@ def test_migrations_are_append_only():
     rather than edited — which is the mistake this guards, and the one that
     broke every stats write and disconnect-looped the fleet when it happened.
     """
-    assert len(db.MIGRATIONS) == 31
+    assert len(db.MIGRATIONS) == 32
+    assert "voice_workflows" in db.MIGRATIONS[31]
+    assert "voice_workflows" not in db.MIGRATIONS[30]
     # v30 is its own entry (emos_version, emos_build), not appended onto v29.
     assert "emos_version" in db.MIGRATIONS[29]
     assert "emos_version" not in db.MIGRATIONS[28]
