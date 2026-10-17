@@ -218,3 +218,31 @@ def test_for_three_days_in_the_task_is_not_the_clock():
 ])
 def test_only_a_leading_duration_counts(text, expected):
     assert starts_with_duration(text) is expected
+
+
+_LA = "America/Los_Angeles"
+_SATURDAY_NIGHT = _dt(2026, 3, 7, 22, 30, tzinfo=_Z(_LA))      # clocks go forward at 02:00 on Sunday
+_SUNDAY_SMALL_HOURS = _dt(2026, 3, 8, 0, 10, tzinfo=_Z(_LA))
+
+
+@pytest.mark.parametrize("kind,text,now", [
+    ("alarm", "at 2:30 am tomorrow", _SATURDAY_NIGHT),
+    ("alarm", "at 2:30 am sunday", _SATURDAY_NIGHT),
+    ("alarm", "at 2:30 am today", _SUNDAY_SMALL_HOURS),
+    ("reminder", "to feed the cat at 2:15 am tomorrow", _SATURDAY_NIGHT),
+])
+def test_a_time_the_clocks_skip_is_refused_not_moved(kind, text, now):
+    with pytest.raises(ValueError, match="clocks change"):
+        _parse(kind, text, _LA, now=now)
+
+
+def test_times_either_side_of_the_skipped_hour_and_other_days_are_fine():
+    for text, hour in (("at 1:30 am tomorrow", 1), ("at 3:30 am tomorrow", 3)):
+        item = _parse("alarm", text, _LA, now=_SATURDAY_NIGHT)
+        assert _dt.fromtimestamp(item["due"], _Z(_LA)).hour == hour
+    # The same wall time on an ordinary day exists.
+    item = _parse("alarm", "at 2:30 am tomorrow", _LA, now=_dt(2026, 3, 9, 22, 30, tzinfo=_Z(_LA)))
+    assert _dt.fromtimestamp(item["due"], _Z(_LA)).hour == 2
+    # A recurring alarm is left to the firmware, which moves a skipped time forward.
+    item = _parse("alarm", "at 2:30 am every day", _LA, now=_SATURDAY_NIGHT)
+    assert item["rule"]["hour"] == 2 and item["due"] == 0

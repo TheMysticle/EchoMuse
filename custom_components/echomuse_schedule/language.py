@@ -72,6 +72,16 @@ def calendar_day(text):
     return day, text[:match.start()] + " " + text[match.end():]
 
 
+CLOCK_GAP = "That local time does not exist because the clocks change; please choose another time"
+
+
+def require_local_time(due):
+    """Reject a wall-clock time the zone skips (the hour lost when clocks go forward)."""
+    if datetime.fromtimestamp(due.timestamp(), due.tzinfo).replace(tzinfo=None) != due.replace(tzinfo=None):
+        raise ValueError(CLOCK_GAP)
+    return due
+
+
 def next_calendar_day(now, day, hour, minute):
     """Next occurrence of this day and local clock, skipping short months."""
     year, month = now.year, now.month
@@ -80,9 +90,7 @@ def next_calendar_day(now, day, hour, minute):
             due = now.replace(year=year, month=month, day=day,
                               hour=hour, minute=minute, second=0, microsecond=0)
             if due > now:
-                if datetime.fromtimestamp(due.timestamp(), now.tzinfo).replace(tzinfo=None) != due.replace(tzinfo=None):
-                    raise ValueError("That local time does not exist because the clocks change; please choose another time")
-                return due
+                return require_local_time(due)
         month = month % 12 + 1
         year += month == 1
     raise ValueError("Could not resolve that calendar date")
@@ -288,8 +296,7 @@ def parse_item(kind, request, zone, now=None):
             due = date.replace(hour=hour, minute=minute, second=0, microsecond=0)
             if due <= now:
                 raise ValueError("That date and time have already passed")
-            if datetime.fromtimestamp(due.timestamp(), now.tzinfo).replace(tzinfo=None) != due.replace(tzinfo=None):
-                raise ValueError("That local time does not exist because the clocks change; please choose another time")
+            require_local_time(due)
         elif day is not None:
             due = next_calendar_day(now, day, hour, minute)
         elif "tomorrow" in normalized:
@@ -309,6 +316,8 @@ def parse_item(kind, request, zone, now=None):
             rule.update(hour=hour, minute=minute)
             # Firmware computes calendar recurrence, including DST.
             due = None
+        else:
+            require_local_time(due)
         item["due"] = int(due.timestamp()) if due else 0
         message = normalized[:clock.start()] + " " + normalized[clock.end():]
         message = re.sub(r"\b(?:in the|this) (?:morning|afternoon|evening)\b", " ", message)
