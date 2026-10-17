@@ -129,7 +129,8 @@ def normalize_clock(text):
 
 
 def clock_match(text):
-    return re.search(r"(?:\b(?:at|for)\s+|^\s*)(\d{1,2})(?:(?::|\s+)(\d{2}))?\s*(am|pm)?(?:\b|$)(?!:)", text)
+    # "for 3 days" is a duration inside the task, not a clock time.
+    return re.search(r"(?:\b(?:at|for)\s+|^\s*)(\d{1,2})(?!\s*(?:seconds?|minutes?|hours?|days?|weeks?)\b)(?:(?::|\s+)(\d{2}))?\s*(am|pm)?(?:\b|$)(?!:)", text)
 
 
 def numbers(text):
@@ -169,9 +170,20 @@ def duration(text):
     seconds = sum(float(m[1]) * factors[m[2].rstrip("s")] for m in matches)
     if seconds < 1 or seconds > 315360000 or seconds != int(seconds):
         raise ValueError("Duration must be whole seconds between one second and 3650 days")
-    remaining = re.sub(r"(\d+(?:\.\d+)?)\s*(seconds?|minutes?|hours?|days?|weeks?)\b", " ", text)
-    remaining = re.sub(r"\b(and|in|after|for)\b", " ", remaining)
+    # Remove the duration and only the connectors that belong to it ("in",
+    # "after", "for" before it, "and" between two of them). Stripping every
+    # such word left in the text turned "take salt and pepper" into
+    # "take salt pepper" and "call mum in London" into "call mum London".
+    unit = r"\d+(?:\.\d+)?\s*(?:seconds?|minutes?|hours?|days?|weeks?)\b"
+    remaining = re.sub(r"(?:\b(?:in|after|for)\s+)?(?:" + unit + r"(?:\s+and(?=\s+\d))?\s*)+", " ", text)
     return int(seconds), " ".join(remaining.split())
+
+
+def starts_with_duration(text):
+    """Whether the text opens with a duration ("five minutes", "an hour and a half")."""
+    return bool(re.match(
+        r"(?:\d+(?:\.\d+)?|an?|half|quarter)(?:\s+(?:and|a|an|of|half|\d+(?:\.\d+)?))*"
+        r"\s+(?:seconds?|minutes?|hours?|days?|weeks?)\b", numbers(text)))
 
 
 def reminder_message(text):
@@ -238,9 +250,14 @@ def parse_item(kind, request, zone, now=None):
             item["message"] = reminder_message(raw)
         item["label"] = item.get("message") or kind
         return item
-    relative = re.search(r"\b(in|after)\s+(?!(?:the )?(?:morning|afternoon|evening|midnight|noon|midday)\b)(.+)$", low)
+    # The LAST "in"/"after" that opens a duration: an earlier one belongs to
+    # the task ("call mum in London in five minutes").
+    relative = None
+    for found in re.finditer(r"\b(in|after)\s+(?!(?:the )?(?:morning|afternoon|evening|midnight|noon|midday)\b)", low):
+        if starts_with_duration(low[found.end():]):
+            relative = found
     if relative:
-        seconds, rest = duration(relative[2])
+        seconds, rest = duration(low[relative.end():])
         # Support "in five minutes remind me to ..." handled by grammar slot.
         message = (raw[:relative.start()] + " " + rest).strip()
         item["duration"] = seconds

@@ -178,3 +178,43 @@ def test_supplied_time_survives_real_dialogue_until_task_is_provided(tmp_path, t
         await hass.async_stop(force=True)
 
     asyncio.run(run())
+
+
+from zoneinfo import ZoneInfo as _Z
+from datetime import datetime as _dt
+from custom_components.echomuse_schedule.language import parse_item as _parse, starts_with_duration
+
+_NOW = _dt(2026, 10, 15, 8, 0, tzinfo=_Z("UTC"))
+
+
+@pytest.mark.parametrize("request_text,label,seconds", [
+    ("in five minutes to take salt and pepper", "take salt and pepper", 300),
+    ("to buy bread and milk in ten minutes", "buy bread and milk", 600),
+    ("to call mum in London in five minutes", "call mum in London", 300),
+    ("to take medicine in the kitchen in five minutes", "take medicine in the kitchen", 300),
+    ("to take out the bins after dinner in an hour", "take out the bins after dinner", 3600),
+    ("to wait for the plumber in 2 hours", "wait for the plumber", 7200),
+])
+def test_a_duration_removes_only_its_own_connectors_from_the_reminder(request_text, label, seconds):
+    item = _parse("reminder", request_text, "UTC", now=_NOW)
+    assert item["message"] == label and item["duration"] == seconds
+
+
+def test_a_timer_keeps_its_name_and_both_parts_of_a_compound_duration():
+    assert _parse("timer", "called pasta for twelve minutes", "UTC", now=_NOW)["label"] == "pasta"
+    assert _parse("timer", "for ten minutes and thirty seconds", "UTC", now=_NOW)["duration"] == 630
+
+
+def test_for_three_days_in_the_task_is_not_the_clock():
+    item = _parse("reminder", "to take 2 pills for 3 days at 8 pm", "UTC", now=_NOW)
+    assert item["message"] == "take 2 pills for 3 days"
+    assert _dt.fromtimestamp(item["due"], _Z("UTC")).hour == 20
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("five minutes", True), ("an hour and a half", True), ("half an hour", True),
+    ("quarter of an hour", True), ("2 hours and 30 minutes", True),
+    ("the car for ten minutes", False), ("a car for ten minutes", False), ("london", False),
+])
+def test_only_a_leading_duration_counts(text, expected):
+    assert starts_with_duration(text) is expected
