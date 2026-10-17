@@ -1185,16 +1185,29 @@ function WakeSampleReview({ deviceId, isAdmin }) {
   return <div style={{ marginTop: 16, borderTop: '1px solid var(--track)', paddingTop: 12 }}>
     <div className="em-label" style={{ marginBottom: 8 }}>Wake-word samples · newest 50</div>
     <div style={{ maxHeight: 220, overflowY: 'auto' }}>
-      {samples.map(sample => <div key={sample.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '5px 2px', borderBottom: '1px solid var(--hairline)', fontFamily: mono, fontSize: 10 }}>
-        <span style={{ color: 'var(--muted)', width: 72, flexShrink: 0 }}>{new Date(sample.ts * 1000).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>
-        <button onClick={() => play(sample)} title="Play wake sample" style={{ background: 'none', border: 0, color: 'var(--text2)', cursor: 'pointer' }}>{playing === sample.id ? '▮' : '▶'}</button>
-        <span style={{ flex: 1, color: 'var(--text2)' }}>{sample.kind}{sample.score != null ? ` · controller ${sample.score.toFixed(3)}` : ''}{sample.threshold != null ? ` / ${sample.threshold.toFixed(2)}` : ''}{sample.device_score != null ? ` · Echo ${sample.device_score.toFixed(3)}` : ''}{sample.trigger_source ? ` · ${sample.trigger_source}` : ''}</span>
-        <select value={sample.label} onChange={e => label(sample, e.target.value)} aria-label="Wake sample label" style={{ fontSize: 10, maxWidth: 105 }}>
-          <option value="unreviewed">Review…</option><option value="wake">Wake word</option><option value="not_wake">Not wake word</option><option value="uncertain">Unsure</option>
-        </select>
-        <button onClick={() => download(sample)} title="Download WAV" style={{ background: 'none', border: 0, color: 'var(--muted)', cursor: 'pointer' }}>⤓</button>
-        <button onClick={() => remove(sample)} title="Delete sample" style={{ background: 'none', border: 0, color: 'var(--muted)', cursor: 'pointer' }}>×</button>
-      </div>)}
+      {samples.map(sample => {
+        const isPryon = sample.model === 'pryon_alexa' || (sample.trigger_source === 'device' && (sample.model === 'alexa_v0.1' || !sample.model));
+        const modelLabel = isPryon ? "Alexa (Echo's own)" : (sample.model ? wwModelLabel(sample.model) : null);
+        return (
+          <div key={sample.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '5px 2px', borderBottom: '1px solid var(--hairline)', fontFamily: mono, fontSize: 10 }}>
+            <span style={{ color: 'var(--muted)', width: 72, flexShrink: 0 }}>{new Date(sample.ts * 1000).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>
+            <button onClick={() => play(sample)} title="Play wake sample" style={{ background: 'none', border: 0, color: 'var(--text2)', cursor: 'pointer' }}>{playing === sample.id ? '▮' : '▶'}</button>
+            <span style={{ flex: 1, color: 'var(--text2)' }}>
+              {sample.kind}
+              {modelLabel ? ` · ${modelLabel}` : ''}
+              {sample.device_score != null ? ` · Echo ${sample.device_score.toFixed(3)}` : ''}
+              {sample.score != null ? ` · controller ${sample.score.toFixed(3)}` : ''}
+              {sample.threshold != null ? ` / ${sample.threshold.toFixed(2)}` : ''}
+              {sample.trigger_source ? ` · ${sample.trigger_source}` : ''}
+            </span>
+            <select value={sample.label} onChange={e => label(sample, e.target.value)} aria-label="Wake sample label" style={{ fontSize: 10, maxWidth: 105 }}>
+              <option value="unreviewed">Review…</option><option value="wake">Wake word</option><option value="not_wake">Not wake word</option><option value="uncertain">Unsure</option>
+            </select>
+            <button onClick={() => download(sample)} title="Download WAV" style={{ background: 'none', border: 0, color: 'var(--muted)', cursor: 'pointer' }}>⤓</button>
+            <button onClick={() => remove(sample)} title="Delete sample" style={{ background: 'none', border: 0, color: 'var(--muted)', cursor: 'pointer' }}>×</button>
+          </div>
+        );
+      })}
     </div>
   </div>;
 }
@@ -1361,12 +1374,15 @@ function TurnObservability({ turns, deviceId, deviceLabel, recordingsOn, nearMis
           {/* Hover detail */}
           {hover != null && recent[hover] && (() => {
             const t = recent[hover]; const seg = turnSegments(t);
+            const isPryon = t.wake_model === 'pryon_alexa' || ((t.trigger?.startsWith('wakeword-dev') || t.trigger?.startsWith('barge-in')) && (t.wake_model === 'alexa_v0.1' || !t.wake_model));
+            const modelLabel = isPryon ? "Alexa (Echo's own)" : (t.wake_model ? wwModelLabel(t.wake_model) : null);
+            const thrLabel = isPryon ? '(bars 0.923 / 0.864)' : (t.wake_threshold != null ? `(thr ${t.wake_threshold.toFixed(2)})` : '');
             return (
               <div style={{ marginTop: 10, background: 'var(--hairline)', border: '1px solid var(--track)', borderRadius: 6, padding: '8px 12px', fontFamily: mono, fontSize: 10, color: 'var(--text2)', lineHeight: 1.7 }}>
                 <span style={{ color: 'var(--muted)' }}>{t.trigger}</span>
                 {' · '}listening {fmtS(seg.listen)} · transcribe {fmtS(seg.transcribe)} · respond {fmtS(seg.respond)} · total {fmtS(Math.max(t.total_ms, 0))}
-                {t.wake_model ? <><br/>wake {t.wake_model.replace(/\.[a-z]+$/, '').split('/').pop()} score {t.wake_score?.toFixed(3)} (thr {t.wake_threshold?.toFixed(2)}) · noise floor {t.noise_floor?.toFixed(4)}</> : null}
-                {t.underruns != null ? <>{t.wake_model ? ' · ' : <br/>}underruns <span style={{ color: t.underruns > 0 ? 'var(--warn)' : 'inherit' }}>{t.underruns}</span></> : null}
+                {modelLabel ? <><br/>wake {modelLabel}{t.wake_score != null ? ` score ${t.wake_score.toFixed(3)}` : ''}{thrLabel ? ` ${thrLabel}` : ''}{t.noise_floor != null ? ` · noise floor ${t.noise_floor.toFixed(4)}` : ''}</> : null}
+                {t.underruns != null ? <>{modelLabel ? ' · ' : <br/>}underruns <span style={{ color: t.underruns > 0 ? 'var(--warn)' : 'inherit' }}>{t.underruns}</span></> : null}
                 {t.stt_text ? <><br/>“{t.stt_text.length > 90 ? t.stt_text.slice(0, 90) + '…' : t.stt_text}”</> : null}
               </div>
             );
@@ -2390,7 +2406,7 @@ function Detail({ device, token, onClose, onApprove, isAdmin, globalConfig, onDe
             const wwLabel = wwModelLabel(cfgEff.owwModel);
             return (
               <div style={{ minHeight:'100%', display:'flex', flexDirection:'column' }}>
-                <Panel label={`Voice activity — ${wwLabel} @ ${cfgEff.owwThreshold != null ? cfgEff.owwThreshold.toFixed(2) : '—'}`} style={{ flex:1 }}>
+                <Panel label={`Voice activity — ${wwLabel}${cfgEff.owwModel === 'pryon_alexa' ? ' (bars 0.923 / 0.864)' : (cfgEff.owwThreshold != null ? ` @ ${cfgEff.owwThreshold.toFixed(2)}` : '')}`} style={{ flex:1 }}>
                   <TurnObservability
                     turns={turns}
                     deviceId={device.device_id}

@@ -67,6 +67,20 @@ def prediction_key(model_name: str) -> str:
     return model_name
 
 
+def recorded_model_key(model_name: str) -> str:
+    """
+    The identifier recorded on a turn or wake sample. Unlike prediction_key,
+    a device-only engine preserves its own name ('pryon_alexa') so Activity
+    and observability can report which engine actually woke the device.
+    """
+    name = (model_name or "").strip()
+    if is_device_only(name):
+        return name
+    if name.endswith(".onnx"):
+        return Path(name).stem
+    return name
+
+
 # openWakeWord ships its stock models with a version suffix in the FILENAME
 # ("hey_jarvis_v0.1.onnx"). That is a packaging convention, not part of the
 # wake word, and it has no business in a string a user reads.

@@ -36,6 +36,12 @@ def test_other_names_key_exactly_as_before():
     assert M.prediction_key("/data/oww_models/scooby.onnx") == "scooby"
 
 
+def test_recorded_model_key_preserves_device_only_engine():
+    assert M.recorded_model_key("pryon_alexa") == "pryon_alexa"
+    assert M.recorded_model_key("hey_jarvis_v0.1") == "hey_jarvis_v0.1"
+    assert M.recorded_model_key("/data/oww_models/scooby.onnx") == "scooby"
+
+
 def test_the_asset_planner_looks_for_the_stand_in_not_a_file_called_pryon(tmp_path):
     res = tmp_path / "res"
     res.mkdir()

@@ -2122,7 +2122,7 @@ async def _barge_watcher(device: Device, playback_started: asyncio.Event):
                     # the no_ha branch below, which carries this one off
                     # instead.
                     device.last_wake = {
-                        "model":       barge_pred_key,
+                        "model":       em_oww_models.recorded_model_key(name),
                         "score":       round(float(score), 4),
                         "threshold":   float(threshold),
                         "noise_floor": round(device.noise_floor, 5),
@@ -3533,7 +3533,7 @@ async def _private_wake_turn(device: Device, ev: dict) -> None:
         await _hold_alarms()
     device.last_wake_mono = em_shadow.now() - age_s
     device.last_wake = {
-        "model":       em_oww_models.prediction_key(device.oww_model),
+        "model":       em_oww_models.recorded_model_key(device.oww_model),
         "score":       round(float(score), 4),
         "threshold":   round(float(threshold), 4),
         "noise_floor": round(device.noise_floor, 5),
@@ -3632,7 +3632,7 @@ async def _private_barge(device: Device, ev: dict) -> None:
     if ev["floor"] is not None:
         device.noise_floor = float(ev["floor"])
     device.last_wake = {
-        "model":       em_oww_models.prediction_key(device.oww_model),
+        "model":       em_oww_models.recorded_model_key(device.oww_model),
         "score":       round(float(score), 4),
         "threshold":   float(threshold),
         "noise_floor": round(device.noise_floor, 5),
@@ -4023,7 +4023,7 @@ async def _stream_listen(device: Device):
                         enabled=device.wake_clip_capture,
                         minimum=device.wake_clip_min_score,
                         score=float(score), threshold=float(eff_threshold),
-                        model=current_model_name,
+                        model=em_oww_models.recorded_model_key(current_model_name),
                         device_score=(dev_wake["score"] if dev_wake is not None else None),
                         trigger_source=(source if source != "none" else None),
                     )
@@ -4121,8 +4121,13 @@ async def _stream_listen(device: Device):
                         device.last_wake_mono = (
                             dev_wake["at"] if source == "device" else em_shadow.now()
                         )
+                        model_name = (
+                            device.oww_model
+                            if (source == "device" and em_oww_models.is_device_only(device.oww_model))
+                            else model_key
+                        )
                         device.last_wake = {
-                            "model":       model_key,
+                            "model":       em_oww_models.recorded_model_key(model_name),
                             "score":       round(float(score), 4),
                             # The EFFECTIVE threshold this wake actually cleared,
                             # not the nominal one. During playback with barge-in
@@ -5710,7 +5715,7 @@ def _consider_on_device_wake_sample(device, msg: dict, threshold) -> None:
             minimum=device.wake_clip_min_score,
             score=None,
             threshold=float(threshold or device.oww_threshold),
-            model=device.oww_model,
+            model=em_oww_models.recorded_model_key(device.oww_model),
             device_score=float(msg.get("score") or 0.0),
             trigger_source="device",
         )
