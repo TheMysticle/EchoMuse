@@ -49,7 +49,8 @@ use std::sync::mpsc::{Receiver as StdReceiver, TryRecvError};
 use std::sync::Arc;
 use std::time::Duration;
 
-use futures_util::StreamExt;
+use futures_util::{Stream, StreamExt};
+use librespot_connect::PlaybackSnapshot;
 use librespot_connect::{ConnectConfig, LoadRequest, LoadRequestOptions, Spirc};
 use librespot_core::authentication::Credentials;
 use librespot_core::cache::Cache;
@@ -91,6 +92,8 @@ const RETRY_MAX: Duration = Duration::from_secs(60);
 /// learning it. Not a failure if it never arrives — a session that works is
 /// evidence enough that the account can stream.
 const ACCOUNT_TYPE_WAIT: Duration = Duration::from_secs(10);
+const SESSION_SETUP_TIMEOUT: Duration = Duration::from_secs(30);
+const SESSION_CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
 
 fn main() {
     let args = match Args::parse(std::env::args().skip(1)) {
@@ -468,6 +471,7 @@ async fn session_loop(
             .map_err(|e| format!("could not advertise over zeroconf: {e}"))?;
 
     let mut backoff = RETRY_START;
+    let mut playback = None;
     let mut credentials = cache.credentials();
     if credentials.is_none() {
         shared
@@ -505,15 +509,18 @@ async fn session_loop(
             &shared,
             &mut jobs,
             &mut discovery,
+            &mut playback,
         )
         .await
         {
             SessionEnd::Relink(new_creds) => {
+                discard_playback(&mut playback);
                 log::info!("relinking: a Spotify client handed over new credentials");
                 credentials = Some(new_creds);
                 backoff = RETRY_START;
             }
             SessionEnd::Refused(detail) => {
+                discard_playback(&mut playback);
                 // Positive evidence that the stored credential is no good.
                 // Dropping it is what turns a device that will never work
                 // again into one the user can re-link, and the status says
@@ -531,6 +538,7 @@ async fn session_loop(
                 credentials = None;
             }
             SessionEnd::PremiumRequired => {
+                discard_playback(&mut playback);
                 shared
                     .emit(Event::Link {
                         status: LinkStatus::PremiumRequired,
@@ -557,10 +565,38 @@ async fn session_loop(
                 // The credential is still believed good, so keep it and
                 // retry. This is the WiFi-came-back case.
                 credentials = cache.credentials();
-                tokio::time::sleep(backoff).await;
+                // Keep local pause, stop, volume, logout and status responsive
+                // while offline. A cancelled recovery cannot later autoplay.
+                if let Some(end) =
+                    wait_to_retry(backoff, &shared, &mut jobs, &mut discovery, &playback).await
+                {
+                    match end {
+                        SessionEnd::Relink(c) => {
+                            discard_playback(&mut playback);
+                            credentials = Some(c);
+                            backoff = RETRY_START;
+                            continue;
+                        }
+                        SessionEnd::LoggedOut => {
+                            discard_playback(&mut playback);
+                            if let Err(e) = clear_credentials(&args.cache_dir) {
+                                log::warn!("could not remove the credentials: {e}");
+                            }
+                            credentials = None;
+                            shared
+                                .emit(Event::Link {
+                                    status: LinkStatus::AwaitingLink,
+                                    detail: Some("disconnected".into()),
+                                })
+                                .await;
+                        }
+                        _ => return Err("the control plane went away".into()),
+                    }
+                }
                 backoff = (backoff * 2).min(RETRY_MAX);
             }
             SessionEnd::LoggedOut => {
+                discard_playback(&mut playback);
                 log::info!("logged out at the firmware's request");
                 if let Err(e) = clear_credentials(&args.cache_dir) {
                     log::warn!("could not remove the credentials: {e}");
@@ -652,6 +688,139 @@ enum SessionEnd {
     LoggedOut,
 }
 
+fn discard_playback(playback: &mut Option<Arc<PlaybackSnapshot>>) {
+    if let Some(snapshot) = playback.take() {
+        snapshot.cancel();
+    }
+}
+
+async fn offline_reply(
+    req: Request,
+    playback: &Option<Arc<PlaybackSnapshot>>,
+    shared: &Shared,
+) -> (Reply, bool) {
+    let id = req.id;
+    match req.command {
+        Command::Status => {
+            for e in shared.snapshot.lock().await.replay() {
+                let _ = shared.events.send(e);
+            }
+        }
+        Command::Volume { level } => shared.note_device_volume(level).await,
+        Command::Pause | Command::Stop => {
+            if let Some(snapshot) = playback {
+                if matches!(req.command, Command::Stop) {
+                    snapshot.stop();
+                } else {
+                    snapshot.pause();
+                }
+            }
+        }
+        Command::Logout => return (Reply::Ok { id }, true),
+        command => {
+            if matches!(
+                command,
+                Command::Load { .. } | Command::LoadTracks { .. } | Command::Disconnect { .. }
+            ) {
+                if let Some(snapshot) = playback {
+                    snapshot.cancel();
+                }
+            }
+            return (
+                Reply::Error {
+                    id,
+                    message: "Spotify is reconnecting; try this command again shortly".into(),
+                },
+                false,
+            );
+        }
+    }
+    (Reply::Ok { id }, false)
+}
+
+async fn wait_to_retry<D: Stream<Item = Credentials> + Unpin>(
+    delay: Duration,
+    shared: &Shared,
+    jobs: &mut mpsc::Receiver<Job>,
+    discovery: &mut D,
+    playback: &Option<Arc<PlaybackSnapshot>>,
+) -> Option<SessionEnd> {
+    let deadline = tokio::time::Instant::now() + delay;
+    let sleep = tokio::time::sleep(delay);
+    tokio::pin!(sleep);
+    let mut discovery_open = true;
+    loop {
+        if tokio::time::Instant::now() >= deadline {
+            return None;
+        }
+        tokio::select! {
+            biased;
+            job = jobs.recv() => {
+                let Some((req, reply)) = job else {
+                    return Some(SessionEnd::Dropped("the control plane went away".into()));
+                };
+                let (answer, logout) = offline_reply(req, playback, shared).await;
+                let _ = reply.send(answer);
+                if logout { return Some(SessionEnd::LoggedOut); }
+            }
+            creds = discovery.next(), if discovery_open => {
+                match creds {
+                    Some(c) => return Some(SessionEnd::Relink(c)),
+                    None => discovery_open = false,
+                }
+            }
+            _ = &mut sleep => return None,
+        }
+    }
+}
+
+async fn responsive_setup<T, F, D>(
+    setup: F,
+    timeout: Duration,
+    shared: &Shared,
+    jobs: &mut mpsc::Receiver<Job>,
+    discovery: &mut D,
+    playback: &Option<Arc<PlaybackSnapshot>>,
+) -> Result<T, SessionEnd>
+where
+    F: std::future::Future<Output = Result<T, librespot_core::Error>>,
+    D: Stream<Item = Credentials> + Unpin,
+{
+    let deadline = tokio::time::Instant::now() + timeout;
+    let setup = tokio::time::timeout(timeout, setup);
+    tokio::pin!(setup);
+    let mut discovery_open = true;
+    loop {
+        if tokio::time::Instant::now() >= deadline {
+            return Err(SessionEnd::Dropped(
+                "Spotify session setup timed out".into(),
+            ));
+        }
+        tokio::select! {
+            biased;
+            job = jobs.recv() => {
+                let Some((req, reply)) = job else {
+                    return Err(SessionEnd::Dropped("the control plane went away".into()));
+                };
+                let (answer, logout) = offline_reply(req, playback, shared).await;
+                let _ = reply.send(answer);
+                if logout { return Err(SessionEnd::LoggedOut); }
+            }
+            creds = discovery.next(), if discovery_open => {
+                match creds {
+                    Some(c) => return Err(SessionEnd::Relink(c)),
+                    None => discovery_open = false,
+                }
+            }
+            result = &mut setup => return match result {
+                Ok(Ok(connected)) => Ok(connected),
+                Ok(Err(e)) => Err(classify_login_error(&e)),
+                Err(_) => Err(SessionEnd::Dropped("Spotify session setup timed out".into())),
+            },
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn hold_session(
     args: &Args,
@@ -661,6 +830,7 @@ async fn hold_session(
     shared: &Arc<Shared>,
     jobs: &mut mpsc::Receiver<Job>,
     discovery: &mut Discovery,
+    playback: &mut Option<Arc<PlaybackSnapshot>>,
 ) -> SessionEnd {
     let session = Session::new(session_config.clone(), Some(cache.clone()));
 
@@ -701,18 +871,44 @@ async fn hold_session(
     // Spirc::new calls session.connect(credentials, true) itself, so this
     // is where a login failure surfaces — and where the credential gets
     // written into the cache on success.
-    let (spirc, spirc_task) = match Spirc::new(
+    let setup = Spirc::with_playback(
         connect_config,
         session.clone(),
         creds.clone(),
         player.clone(),
         mixer.clone(),
+        playback.clone(),
+    );
+    let result = responsive_setup(
+        setup,
+        SESSION_SETUP_TIMEOUT,
+        shared,
+        jobs,
+        discovery,
+        playback,
     )
-    .await
-    {
+    .await;
+    let (spirc, spirc_task) = match result {
         Ok(pair) => pair,
-        Err(e) => return classify_login_error(&e),
+        Err(end) => {
+            session.shutdown();
+            return end;
+        }
     };
+    // Volume buttons can change the device while login is in flight. Suppress
+    // only the constructor's obsolete initial-volume event, then let the usual
+    // activation gate synchronize the current level when Connect activates.
+    if let Some(level) = shared.volume.last() {
+        if level != mixer.volume() {
+            mixer.accept_device_level(level);
+            let mut activation = false;
+            while let Ok(event) = player_events.try_recv() {
+                if !matches!(event, PlayerEvent::VolumeChanged { .. }) {
+                    let _ = handle_player_event(event, shared, &mixer, &mut activation).await;
+                }
+            }
+        }
+    }
 
     shared
         .emit(Event::Link {
@@ -735,12 +931,15 @@ async fn hold_session(
     let mut account_check = Box::pin(tokio::time::sleep(ACCOUNT_TYPE_WAIT));
     let mut account_checked = false;
     let mut activation_volume_pending = false;
+    let mut completed = false;
+    let mut discovery_open = true;
 
     let outcome = loop {
         tokio::select! {
             // The Connect state machine. When this returns the session is
             // over, whatever the reason.
             _ = &mut spirc_task => {
+                completed = true;
                 break SessionEnd::Dropped("the Connect session ended".into());
             }
 
@@ -763,6 +962,13 @@ async fn hold_session(
                 let Some((req, reply)) = job else {
                     break SessionEnd::Dropped("the control plane went away".into());
                 };
+                let recovering = spirc.disconnected_playback();
+                if recovering.is_some() {
+                    let (answer, logout) = offline_reply(req, &recovering, shared).await;
+                    let _ = reply.send(answer);
+                    if logout { break SessionEnd::LoggedOut; }
+                    continue;
+                }
                 let id = req.id;
                 match apply(&spirc, &mixer, shared, req, cache).await {
                     Ok(Some(end)) => {
@@ -774,13 +980,16 @@ async fn hold_session(
                 }
             }
 
-            creds = discovery.next() => {
+            creds = discovery.next(), if discovery_open => {
                 match creds {
                     Some(c) => break SessionEnd::Relink(c),
                     // Discovery stopping is not fatal to a session that is
                     // already working; it only means nobody new can link
                     // until the process restarts.
-                    None => log::warn!("zeroconf discovery stopped; relinking will need a restart"),
+                    None => {
+                        discovery_open = false;
+                        log::warn!("zeroconf discovery stopped; relinking will need a restart");
+                    }
                 }
             }
 
@@ -802,14 +1011,27 @@ async fn hold_session(
         if drain_notes(&sink_notes, &volume_notes, shared).await {
             break SessionEnd::Dropped("the audio sink reported a fatal error".into());
         }
+        if playback.is_some() && spirc.disconnected_playback().is_none() {
+            // Registration consumed or rejected it. Avoid retaining a second
+            // full playlist in RAM for the rest of a healthy session.
+            *playback = None;
+        }
     };
 
     // Whatever happened, stop being a Connect device cleanly. Leaving the
     // Spirc up would keep this Echo in everybody's Spotify app while it is
     // unable to play.
-    if let Err(e) = spirc.shutdown() {
-        log::debug!("spirc shutdown: {e}");
+    if completed {
+        *playback = spirc.disconnected_playback();
+    } else {
+        discard_playback(playback);
+        if let Err(e) = spirc.shutdown() {
+            log::debug!("spirc shutdown: {e}");
+        }
+        let _ = tokio::time::timeout(SESSION_CLOSE_TIMEOUT, &mut spirc_task).await;
     }
+    session.shutdown();
+    let _ = tokio::time::timeout(SESSION_CLOSE_TIMEOUT, session.dealer().close()).await;
     shared
         .emit(Event::Session {
             connected: false,
@@ -1160,6 +1382,181 @@ mod tests {
             snapshot: Mutex::new(Snapshot::default()),
             volume: VolumeGate::default(),
         })
+    }
+
+    #[tokio::test]
+    async fn local_controls_remain_responsive_during_stalled_session_setup() {
+        let shared = shared_state();
+        let (tx, mut jobs) = mpsc::channel(8);
+        let mut discovery = futures_util::stream::pending();
+        let controls = async {
+            for command in [
+                Command::Status,
+                Command::Pause,
+                Command::Stop,
+                Command::Volume { level: 0 },
+                Command::Logout,
+            ] {
+                let (reply, receive) = oneshot::channel();
+                tx.send((
+                    Request {
+                        id: Some(7),
+                        command,
+                    },
+                    reply,
+                ))
+                .await
+                .unwrap();
+                let answer = tokio::time::timeout(Duration::from_millis(200), receive)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(answer, Reply::Ok { id: Some(7) });
+            }
+        };
+        let pending = futures_util::future::pending::<Result<(), librespot_core::Error>>();
+        let playback = None;
+        let setup = responsive_setup(
+            pending,
+            Duration::from_secs(10),
+            &shared,
+            &mut jobs,
+            &mut discovery,
+            &playback,
+        );
+        let (result, ()) = tokio::join!(setup, controls);
+        assert!(matches!(result, Err(SessionEnd::LoggedOut)));
+        assert_eq!(shared.volume.last(), Some(0));
+    }
+
+    #[tokio::test]
+    async fn a_closed_discovery_stream_does_not_spin_or_disable_setup_deadline() {
+        let shared = shared_state();
+        let (_tx, mut jobs) = mpsc::channel(8);
+        let mut discovery = futures_util::stream::empty();
+        let pending = futures_util::future::pending::<Result<(), librespot_core::Error>>();
+        let result = responsive_setup(
+            pending,
+            Duration::from_millis(15),
+            &shared,
+            &mut jobs,
+            &mut discovery,
+            &None,
+        )
+        .await;
+        assert!(
+            matches!(result, Err(SessionEnd::Dropped(message)) if message.contains("setup timed out"))
+        );
+    }
+
+    #[tokio::test]
+    async fn queued_controls_win_over_a_setup_that_just_completed() {
+        let shared = shared_state();
+        let (tx, mut jobs) = mpsc::channel(8);
+        let mut discovery = futures_util::stream::pending();
+        let (reply, receive) = oneshot::channel();
+        tx.send((
+            Request {
+                id: None,
+                command: Command::Logout,
+            },
+            reply,
+        ))
+        .await
+        .unwrap();
+        let result = responsive_setup(
+            async { Ok::<_, librespot_core::Error>(()) },
+            SESSION_SETUP_TIMEOUT,
+            &shared,
+            &mut jobs,
+            &mut discovery,
+            &None,
+        )
+        .await;
+        assert!(matches!(result, Err(SessionEnd::LoggedOut)));
+        assert_eq!(receive.await.unwrap(), Reply::Ok { id: None });
+    }
+
+    #[tokio::test]
+    async fn retry_backoff_serves_commands_without_resetting_its_deadline() {
+        let shared = shared_state();
+        let (tx, mut jobs) = mpsc::channel(8);
+        let mut discovery = futures_util::stream::pending();
+        let (reply, receive) = oneshot::channel();
+        tx.send((
+            Request {
+                id: None,
+                command: Command::Volume { level: 123 },
+            },
+            reply,
+        ))
+        .await
+        .unwrap();
+        let retry = wait_to_retry(
+            Duration::from_millis(15),
+            &shared,
+            &mut jobs,
+            &mut discovery,
+            &None,
+        );
+        let answer = async {
+            assert_eq!(receive.await.unwrap(), Reply::Ok { id: None });
+        };
+        let (end, ()) = tokio::join!(retry, answer);
+        assert!(end.is_none());
+        assert_eq!(shared.volume.last(), Some(123));
+    }
+
+    #[tokio::test]
+    async fn relinking_preempts_a_pending_session_setup() {
+        let shared = shared_state();
+        let (_tx, mut jobs) = mpsc::channel(8);
+        let mut discovery =
+            futures_util::stream::iter([Credentials::with_password("new-account", "unused")]);
+        let pending = futures_util::future::pending::<Result<(), librespot_core::Error>>();
+        let result = responsive_setup(
+            pending,
+            SESSION_SETUP_TIMEOUT,
+            &shared,
+            &mut jobs,
+            &mut discovery,
+            &None,
+        )
+        .await;
+        assert!(matches!(result, Err(SessionEnd::Relink(_))));
+    }
+
+    #[tokio::test]
+    async fn offline_load_is_reported_honestly_and_silence_is_retained() {
+        let shared = shared_state();
+        let (answer, logout) = offline_reply(
+            Request {
+                id: Some(1),
+                command: Command::Load {
+                    uri: "spotify:track:0000000000000000000001".into(),
+                    start_playing: true,
+                    seek_to_ms: 0,
+                },
+            },
+            &None,
+            &shared,
+        )
+        .await;
+        assert!(!logout);
+        assert!(matches!(answer, Reply::Error { id: Some(1), .. }));
+        offline_reply(
+            Request {
+                id: None,
+                command: Command::Volume { level: 0 },
+            },
+            &None,
+            &shared,
+        )
+        .await;
+        assert_eq!(
+            session_connect_config(&args(REQUIRED).unwrap(), &shared).initial_volume,
+            0
+        );
     }
 
     #[tokio::test]

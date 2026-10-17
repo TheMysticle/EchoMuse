@@ -114,7 +114,8 @@ strip = true
 # still holds the music source. Also removes the unwinding tables.
 panic = "abort"
 
-# Keep librespot 0.8.0's API and behavior, with bounded/retryable Dealer
-# reconnection. See vendor/librespot-core/ECHOMUSE_PATCH.md.
+# Pin the released base with bounded Dealer recovery and account-scoped
+# playback snapshots. Each vendored crate documents its local patch.
 [patch.crates-io]
 librespot-core = { path = "vendor/librespot-core" }
+librespot-connect = { path = "vendor/librespot-connect" }

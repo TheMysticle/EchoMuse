@@ -35,6 +35,24 @@ the server and HA integrations do not need rebuilding for it. Patch provenance
 and local fault-injection tests are documented in
 [`ECHOMUSE_PATCH.md`](../device/spotify/vendor/librespot-core/ECHOMUSE_PATCH.md).
 
+Unexpected Spotify **session** loss also retains an in-memory snapshot of the
+full queue, shuffle order, repeat/autoplay context and last reported position.
+After reconnecting, the new player reloads that track if Spotify confirms no
+other device has taken over. Paused music stays paused. After two minutes from
+detected session loss, the recovered queue stays paused until you ask to play.
+Pause/stop during recovery take precedence; logout, relinking and replacement
+playback discard the old recovery. The latest device volume is retained.
+
+Recovery timing depends on which connection fails: a silent Dealer failure can
+take about 33 seconds to detect; the separate Spotify AP heartbeat can take
+around 80 seconds. Dealer attempts have a 30-second deadline and ten-second
+retry delay. Full session setup has a 30-second deadline, with retries backing
+off from two seconds to a maximum of 60 seconds. Neither is a scheduled full
+process restart. Local status, pause, stop, volume and logout remain responsive
+during setup and retry delays. Playback can pause while a session is replaced;
+full process crashes/reboots do not retain the RAM-only snapshot. Details and
+tests are in the [Connect patch notes](../device/spotify/vendor/librespot-connect/ECHOMUSE_PATCH.md).
+
 The playback engine is a separate binary, not part of the firmware. It is
 ~4 MB and would double the size of every firmware update across both A/B
 slots whether or not Spotify changed, which is the same reason the wake word
