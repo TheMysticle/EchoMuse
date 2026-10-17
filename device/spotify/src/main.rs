@@ -68,9 +68,9 @@ use tokio::net::UnixStream;
 use tokio::sync::{broadcast, mpsc, oneshot, Mutex};
 
 use em_spotify::mixer::{ReportingMixer, VolumeNote};
-use em_spotify::volume::VolumeGate;
 use em_spotify::proto::{Command, Event, LinkStatus, PlayState, Reply, Request};
 use em_spotify::sink::{PeriodSink, SinkNote};
+use em_spotify::volume::VolumeGate;
 
 /// How many events to hold for a control connection that is not reading.
 ///
@@ -620,6 +620,13 @@ async fn await_link(
                         Reply::Ok { id: req.id }
                     }
                     Command::Logout => Reply::Ok { id: req.id },
+                    Command::Volume { level } => {
+                        // The Echo's volume exists before Spotify is linked.
+                        // Keep it for the first session instead of reverting
+                        // to the process's (possibly boot-time) argument.
+                        shared.note_device_volume(level).await;
+                        Reply::Ok { id: req.id }
+                    }
                     _ => Reply::Error {
                         id: req.id,
                         message: "this Echo is not linked to a Spotify account yet".into(),
@@ -662,7 +669,10 @@ async fn hold_session(
     let (sink_notes_tx, sink_notes) = std::sync::mpsc::channel::<SinkNote>();
     let (volume_notes_tx, volume_notes) = std::sync::mpsc::channel::<VolumeNote>();
 
-    let mixer = ReportingMixer::new(args.initial_volume, volume_notes_tx);
+    // A login/relink may happen hours after process startup. The CLI value
+    // is only a fallback; the device's latest level must seed BOTH halves.
+    let connect_config = session_connect_config(args, shared);
+    let mixer = ReportingMixer::new(connect_config.initial_volume, volume_notes_tx);
 
     let player_config = PlayerConfig {
         bitrate: args.bitrate,
@@ -687,12 +697,6 @@ async fn hold_session(
         move || Box::new(PeriodSink::new(audio_socket, sink_notes_tx)),
     );
     let mut player_events = player.get_player_event_channel();
-
-    let connect_config = ConnectConfig {
-        name: args.name.clone(),
-        initial_volume: args.initial_volume,
-        ..ConnectConfig::default()
-    };
 
     // Spirc::new calls session.connect(credentials, true) itself, so this
     // is where a login failure surfaces — and where the credential gets
@@ -730,6 +734,7 @@ async fn hold_session(
     // than only killing the process from inside librespot.
     let mut account_check = Box::pin(tokio::time::sleep(ACCOUNT_TYPE_WAIT));
     let mut account_checked = false;
+    let mut activation_volume_pending = false;
 
     let outcome = loop {
         tokio::select! {
@@ -741,7 +746,15 @@ async fn hold_session(
 
             event = player_events.recv() => {
                 match event {
-                    Some(e) => handle_player_event(e, shared).await,
+                    Some(e) => {
+                        if let Some(level) = handle_player_event(
+                            e, shared, &mixer, &mut activation_volume_pending,
+                        ).await {
+                            if let Err(e) = spirc.set_volume(level) {
+                                log::warn!("could not synchronize activation volume: {e}");
+                            }
+                        }
+                    }
                     None => break SessionEnd::Dropped("the player stopped".into()),
                 }
             }
@@ -907,7 +920,21 @@ async fn apply(
     r.map(|()| None).map_err(|e| e.to_string())
 }
 
-async fn handle_player_event(e: PlayerEvent, shared: &Arc<Shared>) {
+fn session_connect_config(args: &Args, shared: &Shared) -> ConnectConfig {
+    ConnectConfig {
+        name: args.name.clone(),
+        initial_volume: shared.volume.last().unwrap_or(args.initial_volume),
+        ..ConnectConfig::default()
+    }
+}
+
+// Returns a device volume to synchronize now that Connect is active.
+async fn handle_player_event(
+    e: PlayerEvent,
+    shared: &Arc<Shared>,
+    mixer: &ReportingMixer,
+    activation_volume_pending: &mut bool,
+) -> Option<u16> {
     match e {
         PlayerEvent::Playing {
             position_ms,
@@ -1022,7 +1049,21 @@ async fn handle_player_event(e: PlayerEvent, shared: &Arc<Shared>) {
                 })
                 .await
         }
-        PlayerEvent::VolumeChanged { volume } => shared.emit(Event::Volume { level: volume }).await,
+        PlayerEvent::VolumeChanged { volume } => {
+            // librespot 0.8's handle_activate emits its stored Connect
+            // volume immediately after SessionConnected/SessionClientChanged.
+            // That is a snapshot, not a slider command. While inactive,
+            // Spirc ignores SetVolume even though our mixer tracks it, so
+            // applying this snapshot would restore an old (often boot) level.
+            if std::mem::take(activation_volume_pending) {
+                let current = mixer.volume();
+                if current != volume {
+                    return Some(current);
+                }
+            } else {
+                shared.emit(Event::Volume { level: volume }).await;
+            }
+        }
         PlayerEvent::ShuffleChanged { shuffle } => {
             shared.emit(Event::Shuffle { on: shuffle }).await
         }
@@ -1038,18 +1079,20 @@ async fn handle_player_event(e: PlayerEvent, shared: &Arc<Shared>) {
                 .await
         }
         PlayerEvent::SessionConnected { user_name, .. } => {
+            *activation_volume_pending = true;
             shared
                 .emit(Event::Session {
                     connected: true,
                     user: Some(user_name),
                 })
-                .await
+                .await;
         }
         // Preload, play-request ids, end-of-track and the rest are
         // librespot's own bookkeeping. Forwarding them would give the
         // firmware things to react to that mean nothing to it.
         _ => {}
     }
+    None
 }
 
 /// Move whatever the sink and mixer have reported onto the event stream.
@@ -1109,6 +1152,130 @@ mod tests {
         "--audio-socket",
         "/tmp/pcm",
     ];
+
+    fn shared_state() -> Arc<Shared> {
+        let (events, _) = broadcast::channel(EVENT_BUFFER);
+        Arc::new(Shared {
+            events,
+            snapshot: Mutex::new(Snapshot::default()),
+            volume: VolumeGate::default(),
+        })
+    }
+
+    #[tokio::test]
+    async fn a_new_session_uses_the_latest_volume_including_silence() {
+        let a = args(REQUIRED).unwrap();
+        let shared = shared_state();
+        assert_eq!(
+            session_connect_config(&a, &shared).initial_volume,
+            a.initial_volume
+        );
+        // These may arrive before linking or between Spotify sessions.
+        for level in [18000, 0, 42000] {
+            shared.note_device_volume(level).await;
+            let config = session_connect_config(&a, &shared);
+            let (tx, rx) = std::sync::mpsc::channel();
+            let mixer = ReportingMixer::new(config.initial_volume, tx);
+            assert_eq!(config.initial_volume, level);
+            // Spirc::new sets the mixer to ConnectConfig's initial volume.
+            mixer.set_volume(config.initial_volume);
+            assert_eq!(mixer.volume(), level);
+            assert!(rx.try_recv().is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn activation_keeps_device_volume_and_later_slider_changes_work() {
+        for device_level in [0, 18000, 47000, u16::MAX] {
+            let shared = shared_state();
+            let mut events = shared.events.subscribe();
+            let (tx, _rx) = std::sync::mpsc::channel();
+            let boot_level = 47000;
+            let mixer = ReportingMixer::new(boot_level, tx);
+            let mut pending = false;
+            // While inactive, our mixer accepts this but Spirc ignores
+            // SetVolume, leaving its Connect state at the boot level.
+            mixer.accept_device_level(device_level);
+            shared.note_device_volume(device_level).await;
+
+            // Repeat to cover transferring away and back to this Echo.
+            for _ in 0..2 {
+                let sync = handle_player_event(
+                    PlayerEvent::SessionConnected {
+                        connection_id: "test".into(),
+                        user_name: "listener".into(),
+                    },
+                    &shared,
+                    &mixer,
+                    &mut pending,
+                )
+                .await;
+                assert_eq!(sync, None);
+                assert!(matches!(
+                    events.try_recv(),
+                    Ok(Event::Session {
+                        connected: true,
+                        ..
+                    })
+                ));
+                handle_player_event(
+                    PlayerEvent::SessionClientChanged {
+                        client_id: "test".into(),
+                        client_name: "phone".into(),
+                        client_brand_name: String::new(),
+                        client_model_name: String::new(),
+                    },
+                    &shared,
+                    &mixer,
+                    &mut pending,
+                )
+                .await;
+                // handle_activate's automatic snapshot must not reach Go.
+                let sync = handle_player_event(
+                    PlayerEvent::VolumeChanged { volume: boot_level },
+                    &shared,
+                    &mixer,
+                    &mut pending,
+                )
+                .await;
+                assert_eq!(sync, (device_level != boot_level).then_some(device_level));
+                assert!(!pending);
+                assert!(events.try_recv().is_err());
+                // The resynchronization's own echo must also stay local.
+                handle_player_event(
+                    PlayerEvent::VolumeChanged {
+                        volume: device_level,
+                    },
+                    &shared,
+                    &mixer,
+                    &mut pending,
+                )
+                .await;
+                assert!(events.try_recv().is_err());
+                assert_eq!(shared.volume.last(), Some(device_level));
+            }
+
+            // Genuine phone changes still arrive on BOTH paths. Report
+            // once, including a later deliberate selection of the old level.
+            for phone_level in [25000, boot_level, 0] {
+                mixer.set_volume(phone_level);
+                shared.emit(Event::Volume { level: phone_level }).await;
+                handle_player_event(
+                    PlayerEvent::VolumeChanged {
+                        volume: phone_level,
+                    },
+                    &shared,
+                    &mixer,
+                    &mut pending,
+                )
+                .await;
+                assert!(
+                    matches!(events.try_recv(), Ok(Event::Volume { level }) if level == phone_level)
+                );
+                assert!(events.try_recv().is_err());
+            }
+        }
+    }
 
     #[test]
     fn the_required_arguments_are_required() {

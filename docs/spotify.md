@@ -50,6 +50,12 @@ will not run.
 The engine starts as soon as it is installed — no reboot, no toggling. If you
 upload a *newer* engine later, the running one is replaced automatically.
 
+Connecting preserves the Echo's current volume, including changes made while
+Spotify was inactive or before the account was linked. The engine synchronizes
+that level back to Spotify on activation; an old Connect volume must not reset
+the speaker to its boot level. This fix requires rebuilding and installing
+`em-spotify`; updating the Home Assistant integration alone does not install it.
+
 The toggle is greyed out on an Echo that cannot run it, and says which of the
 two reasons applies rather than simply refusing.
 
