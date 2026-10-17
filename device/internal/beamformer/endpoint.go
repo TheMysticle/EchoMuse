@@ -65,7 +65,7 @@ var (
 	// recordings' 5-14dB over the TV's quiet moments); a cough, a door or the tail of the last reply
 	// is over the median by 30dB and more, and as 3% of the history it set the
 	// reference. See quietRoomMoment in the test.
-	EPRefOverMedian = 8.0
+	EPRefOverMedian = 12.0
 )
 
 func init() {
