@@ -220,4 +220,5 @@ async def async_unload_entry(
     hass: HomeAssistant, entry: EchoMuseSpotifyEntry
 ) -> bool:
     """Unload one Spotify account."""
+    entry.runtime_data.begin_playback_command()
     return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)

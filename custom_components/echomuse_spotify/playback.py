@@ -36,6 +36,19 @@ ITEM_KINDS = frozenset({"track", "episode"})
 CONTEXT_KINDS = frozenset({"album", "artist", "playlist", "show"})
 
 
+def is_resume_request(text: str) -> bool:
+    """Generic transport requests are not catalogue names.
+
+    Exact phrases only: 'Music by Madonna' and explicit Spotify URIs remain
+    searchable/playable. Explicit artist/album requests bypass this helper.
+    """
+    return " ".join(text.casefold().strip(" .!?").split()) in {
+        "music", "the music", "my music", "some music", "play music",
+        "resume", "resume music", "continue", "continue music",
+        "continue playing", "continue playing music",
+    }
+
+
 def uri_kind(uri: str) -> str | None:
     """The kind in `spotify:<kind>:<id>`, or None if it is not one of those.
 

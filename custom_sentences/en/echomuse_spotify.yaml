@@ -1,0 +1,97 @@
+language: en
+lists:
+  em_spotify_query:
+    wildcard: true
+expansion_rules:
+  em_shuffle_on: "(shuffle|shuffle on|enable shuffle|turn [the] shuffle on|turn on shuffle|shuffle [the|my|this] (music|playlist|album))"
+  em_shuffle_off: "(shuffle off|disable shuffle|turn [the] shuffle off|turn off shuffle|stop shuffling)"
+  em_repeat_one: "(repeat [this|the|current|the current] (song|track)|repeat one|loop [this|the|current|the current] (song|track))"
+  em_repeat_all: "(repeat [the|this|my] (playlist|album)|repeat all|enable repeat|turn on repeat)"
+  em_repeat_off: "(disable repeat|turn [the] repeat off|turn off repeat|stop repeating [the] (song|track|playlist))"
+intents:
+  EchoMuseSpotifyShuffle:
+    data:
+      - sentences: ["<em_shuffle_on>"]
+        slots: {shuffle: true}
+        requires_context: {area: {slot: true}}
+      - sentences: ["<em_shuffle_off>"]
+        slots: {shuffle: false}
+        requires_context: {area: {slot: true}}
+      - sentences: ["<em_shuffle_on> on [the] {name}"]
+        slots: {shuffle: true}
+        requires_context: {domain: [media_player]}
+      - sentences: ["<em_shuffle_off> on [the] {name}"]
+        slots: {shuffle: false}
+        requires_context: {domain: [media_player]}
+      - sentences: ["<em_shuffle_on> in [the] {area}"]
+        slots: {shuffle: true}
+      - sentences: ["<em_shuffle_off> in [the] {area}"]
+        slots: {shuffle: false}
+  EchoMuseSpotifyRepeat:
+    data:
+      - sentences: ["<em_repeat_one>"]
+        slots: {repeat: one}
+        requires_context: {area: {slot: true}}
+      - sentences: ["<em_repeat_all>"]
+        slots: {repeat: all}
+        requires_context: {area: {slot: true}}
+      - sentences: ["<em_repeat_off>"]
+        slots: {repeat: 'off'}
+        requires_context: {area: {slot: true}}
+      - sentences: ["<em_repeat_one> on [the] {name}"]
+        slots: {repeat: one}
+        requires_context: {domain: [media_player]}
+      - sentences: ["<em_repeat_all> on [the] {name}"]
+        slots: {repeat: all}
+        requires_context: {domain: [media_player]}
+      - sentences: ["<em_repeat_off> on [the] {name}"]
+        slots: {repeat: 'off'}
+        requires_context: {domain: [media_player]}
+      - sentences: ["<em_repeat_one> in [the] {area}"]
+        slots: {repeat: one}
+      - sentences: ["<em_repeat_all> in [the] {area}"]
+        slots: {repeat: all}
+      - sentences: ["<em_repeat_off> in [the] {area}"]
+        slots: {repeat: 'off'}
+  # These are aliases for HA's own resume handler. Player selection,
+  # exposure, areas and last-paused tracking stay owned by Home Assistant.
+  # No wildcard catalogue query is captured here.
+  HassMediaUnpause:
+    data:
+      - sentences:
+          - (play|continue)
+          - (play|start|put on) [some|the|my] music
+          - continue [playing] [the|my] music
+        requires_context:
+          area:
+            slot: true
+      - sentences:
+          - (play|start|put on) [some|the|my] music on [the] {name}
+          - continue [playing] [the|my] music on [the] {name}
+        requires_context:
+          domain: [media_player]
+      - sentences:
+          - (play|start|put on) [some|the|my] music in [the] {area}
+          - continue [playing] [the|my] music in [the] {area}
+  # Mirror HA's existing search/play sentence shapes, not arbitrary commands.
+  # The adapter delegates to HA and only opts Spotify targets into LLM-local
+  # handling; non-Spotify/ambiguous/hidden targets retain their normal route.
+  EchoMuseSpotifySearchAndPlay:
+    data:
+      - sentences:
+          - play {em_spotify_query:search_query}
+          - play [the] {media_class} {em_spotify_query:search_query}
+          - play {em_spotify_query:search_query} {media_class}
+        requires_context:
+          area:
+            slot: true
+      - sentences:
+          - play {em_spotify_query:search_query} in [the] {area}
+          - play [the] {media_class} {em_spotify_query:search_query} in [the] {area}
+      - sentences:
+          - play {em_spotify_query:search_query} on [the] {name}
+          - play [the] {media_class} {em_spotify_query:search_query} on [the] {name}
+          - play {em_spotify_query:search_query} on [the] {name} in [the] {area}
+          - play [the] {media_class} {em_spotify_query:search_query} on [the] {name} in [the] {area}
+        requires_context:
+          domain: [media_player]

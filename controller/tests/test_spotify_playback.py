@@ -34,6 +34,16 @@ def _load():
 assert _PLAYBACK.exists(), f"the playback module is missing at {_PLAYBACK}"
 p = _load()
 
+
+@pytest.mark.parametrize("text", ["music", "the music", "Some Music", "play music", "continue", "resume music!"])
+def test_generic_music_words_mean_resume(text):
+    assert p.is_resume_request(text)
+
+
+@pytest.mark.parametrize("text", ["Music by Madonna", "Music Sounds Better With You", "Music for Airports", "musical", "spotify:artist:music", "music remix", "Please Don't Stop the Music", "dont stop the music"])
+def test_resume_does_not_capture_actual_titles_or_uris(text):
+    assert not p.is_resume_request(text)
+
 TRACK = "spotify:track:2EBCVPNAG46nbgs6jXPGvv"  # the one from the crash log
 ALBUM = "spotify:album:5GWoXPsTQ1g7qKNchhbQiI"
 

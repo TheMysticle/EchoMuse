@@ -415,10 +415,12 @@ class SpotifyAPI:
     """Cloud boundary simulator; the actual integration implementation runs."""
     def __init__(self):
         self.calls = []
+        self.cold_transfer = False
         self.device = {'id':'connect-id', 'name':'Studio speaker', 'type':'Speaker',
                        'is_active':True, 'volume_percent':50}
         self.playback_data = {'device':{'id':'connect-id'}, 'is_playing':True,
-                              'progress_ms':0, 'item':None}
+                              'progress_ms':0, 'item':None, 'shuffle_state':False,
+                              'repeat_state':'off', 'context':{'uri':'spotify:playlist:'+'p'*22}}
 
     async def devices(self): return [deepcopy(self.device)]
     async def playback(self): return deepcopy(self.playback_data)
@@ -437,13 +439,37 @@ class SpotifyAPI:
         self.calls.append(('volume',device,volume))
         self.device['volume_percent']=volume
 
+    async def set_shuffle(self, device, shuffle):
+        self.calls.append(('shuffle', device, shuffle))
+        self.playback_data['shuffle_state'] = shuffle
+
+    async def set_repeat(self, device, state):
+        self.calls.append(('repeat', device, state))
+        self.playback_data['repeat_state'] = state
+
     async def transfer(self, device, play):
         self.calls.append(('transfer',device,play))
         self.playback_data['device']={'id':device}
-        self.playback_data['is_playing']=play
+        self.playback_data['is_playing']=play and not self.cold_transfer
 
     async def search(self, params):
         self.calls.append(('search',params['q']))
+        query = params['q'].lower()
+        if query == 'beauty on the beat':
+            return {'tracks': {'items': [
+                {'uri': 'spotify:track:' + 'j'*22, 'name': 'Beauty And A Beat',
+                 'artists': [{'name': 'Justin Bieber'}]},
+                {'uri': 'spotify:track:' + 'l'*22, 'name': 'Beauty On The Beat',
+                 'artists': [{'name': 'Literal match'}]},
+            ]}}
+        if query == 'music' and params['type'] == 'artist':
+            return {'artists': {'items': [{'uri': 'spotify:artist:' + 'm'*22, 'name': 'Music'}]}}
+        if query in ('shuffle', 'repeat'):
+            return {'tracks': {'items': [{'uri':'spotify:track:'+'r'*22, 'name':query,
+                'artists':[{'name':'Test artist'}]}]}}
+        if 'stop the music' in query:
+            return {'tracks': {'items': [{'uri': 'spotify:track:' + 's'*22,
+                'name': "Please Don't Stop the Music", 'artists': [{'name': 'Test artist'}]}]}}
         return {'tracks':{'items':[{'id':'4uLU6hMCjMI75M1A2tKUQC',
             'uri':'spotify:track:4uLU6hMCjMI75M1A2tKUQC', 'name':'Jazz',
             'type':'track', 'artists':[{'name':'Test artist'}],
@@ -458,6 +484,9 @@ async def spotify_scenarios(hass, make_entry, kitchen, source, satellite, snapsh
     from custom_components.echomuse_spotify.coordinator import SpotifyCoordinator
     from custom_components.echomuse_spotify.media_player import SpotifyConnectPlayer
     from homeassistant.const import Platform
+
+    native_handlers = {handler.intent_type: handler for handler in intent.async_get(hass)}
+    repo = Path(__file__).resolve().parents[2]
 
     api=SpotifyAPI()
     spotify_entry=make_entry(hass,'echomuse_spotify','Verification Spotify',{})
@@ -479,6 +508,60 @@ async def spotify_scenarios(hass, make_entry, kitchen, source, satellite, snapsh
     async_expose_entity(hass,'conversation',player.entity_id,True)
     before=len(commands)
     try:
+        async def say(text, local):
+            if local:
+                user = ConversationInput(text=text, context=Context(), conversation_id=None,
+                    language='en', device_id=source.id, satellite_id=satellite.entity_id,
+                    agent_id='conversation.verification_llm')
+                with async_get_chat_session(hass, None) as session, async_get_chat_log(hass, session, user) as log:
+                    response = await conversation.async_handle_intents(hass, user, log,
+                        intent_filter=_async_local_fallback_intent_filter)
+            else:
+                response = (await conversation.async_converse(hass, text, None, Context(), language='en',
+                    device_id=source.id, satellite_id=satellite.entity_id)).response
+            await hass.async_block_till_done()
+            return response
+
+        primary = next(entity for entity in hass.data['media_player'].entities if isinstance(entity, Speaker))
+        appliance_events = next(iter(hass.data['light'].entities)).events
+        unchanged = [text for text in COMMANDS if text not in ('play', 'play music', 'continue')]
+        unchanged += ['play jazz on Kitchen music', 'play the album Music on Kitchen music',
+            "play Please Don't Stop the Music on Kitchen music", "please don't stop the music", "don't stop the music",
+            'repeat', 'repeat that', 'repeat after me', 'play Repeat on Kitchen music', 'play Shuffle on Kitchen music']
+
+        async def probe_command(text, local, ringing):
+            paused = text.startswith(('resume', 'unpause'))
+            primary.reset(paused=paused)
+            primary.async_write_ha_state()
+            native_handlers['HassMediaUnpause'].last_paused.clear()
+            api.playback_data['is_playing'] = not paused
+            await coordinator.async_refresh()
+            snapshot['active'] = 'alert' if ringing else ''
+            snapshot['items'] = [{'id':'alert','kind':'alarm','label':'alarm','state':'ringing',
+                'due':2000000000,'timezone':'UTC'}] if ringing else []
+            snapshot['revision'] += 1
+            api.calls.clear()
+            appliance_events.clear()
+            count = len(commands)
+            response = await say(text, local)
+            code = 'fallback' if response is None else str(response.error_code) if response.error_code else 'success'
+            return code, tuple(primary.events), tuple(api.calls), tuple(appliance_events), len(commands)-count, snapshot['active']
+
+        # Baseline with the actual Spotify player registered but no new
+        # sentence file, so extra entities cannot explain a changed result.
+        baseline = {}
+        for ringing in (False, True):
+            for local in (False, True):
+                for text in unchanged:
+                    baseline[ringing, local, text] = await probe_command(text, local, ringing)
+        shutil.copy(repo/'custom_sentences/en/echomuse_spotify.yaml',
+                    Path(hass.config.config_dir)/'custom_sentences/en/echomuse_spotify.yaml')
+        await conversation.async_get_agent(hass).async_reload()
+        for (ringing, local, text), expected in baseline.items():
+            actual = await probe_command(text, local, ringing)
+            assert actual == expected, (text, local, ringing, expected, actual)
+        print(f'PASS {len(baseline)} additional before/after Spotify-sentence comparisons with multiple players and ringing alerts', flush=True)
+        before = len(commands)
         for text,initial,expected in (
             ('pause Studio speaker',True,'pause'),
             ('resume Studio speaker',False,'play'),
@@ -536,14 +619,254 @@ async def spotify_scenarios(hass, make_entry, kitchen, source, satellite, snapsh
             ('volume_set',{'volume_level':0.4},'volume'), ('media_seek',{'seek_position':15},'seek'),
             ('play_media',{'media_content_type':'music',
                            'media_content_id':'spotify:track:4uLU6hMCjMI75M1A2tKUQC'},'load'),
+            ('shuffle_set', {'shuffle':True}, 'shuffle'),
+            ('shuffle_set', {'shuffle':False}, 'shuffle'),
+            ('repeat_set', {'repeat':'one'}, 'repeat'),
+            ('repeat_set', {'repeat':'all'}, 'repeat'),
+            ('repeat_set', {'repeat':'off'}, 'repeat'),
         ):
             api.calls.clear()
             await hass.services.async_call('media_player',service,{'entity_id':player.entity_id,**data},blocking=True)
             assert any(call[0]==expected for call in api.calls),(service,api.calls)
             assert len(commands)==before and snapshot['active']=='alert'
         print('PASS real Spotify entity direct stop/play/pause/next/previous/volume/seek/load services',flush=True)
+
+        for local in (False, True):
+            for text, expected in (
+                ('shuffle', ('shuffle','connect-id',True)),
+                ('enable shuffle on Studio speaker', ('shuffle','connect-id',True)),
+                ('shuffle off', ('shuffle','connect-id',False)),
+                ('disable shuffle in the Kitchen', ('shuffle','connect-id',False)),
+                ('repeat this song', ('repeat','connect-id','track')),
+                ('repeat the playlist', ('repeat','connect-id','context')),
+                ('repeat this album in the Kitchen', ('repeat','connect-id','context')),
+                ('turn off repeat on Studio speaker', ('repeat','connect-id','off')),
+            ):
+                api.calls.clear()
+                playing = api.playback_data['is_playing']
+                context = deepcopy(api.playback_data['context'])
+                response = await say(text, local)
+                assert response is not None and response.error_code is None, (text, local, response)
+                assert api.calls == [expected], (text, local, api.calls)
+                assert api.playback_data['is_playing'] == playing and api.playback_data['context'] == context
+                await coordinator.async_refresh()
+                assert player.shuffle == api.playback_data['shuffle_state']
+                assert player.repeat == {'track':'one','context':'all','off':'off'}[api.playback_data['repeat_state']]
+                assert len(commands) == before and snapshot['active'] == 'alert'
+            for text in ('play Repeat on Studio speaker', 'play Shuffle on Studio speaker'):
+                api.calls.clear()
+                response = await say(text, local)
+                assert response is not None and response.error_code is None
+                assert len(api.calls) == 2
+                assert api.calls[0][0] == 'search' and api.calls[0][1].casefold() == text.split()[1].casefold()
+                assert api.calls[1] == ('load','connect-id','spotify:track:'+'r'*22)
+        print('PASS local shuffle/repeat modes preserve playlist, playback state and ringing alerts; titles Repeat/Shuffle remain searches', flush=True)
+
+        for local in (False, True):
+            for text in ('play', 'play music', 'play some music', 'continue', 'continue playing music',
+                         'put on music', 'start music', 'play music on Studio speaker',
+                         'play some music in the Kitchen'):
+                primary.reset(paused=True)
+                primary.async_write_ha_state()
+                api.playback_data['is_playing'] = True
+                await coordinator.async_refresh()
+                await hass.async_block_till_done()
+                # Retain HA's last-paused selection, including when another
+                # media integration exposes a player in the same area.
+                paused = await say('pause Studio speaker', local)
+                assert paused is not None and paused.error_code is None
+                api.calls.clear()
+                response = await say(text, local)
+                assert response is not None and response.error_code is None, (text, local, response)
+                assert api.calls == [('play', 'connect-id')], (text, local, api.calls)
+                assert not primary.events, (text, local, primary.events)
+                assert len(commands) == before and snapshot['active'] == 'alert'
+            for text, uri in (
+                ('play Beauty on the Beat on Studio speaker', 'spotify:track:' + 'j'*22),
+                ("play Please Don't Stop the Music on Studio speaker", 'spotify:track:' + 's'*22),
+                ('play the artist Music on Studio speaker', 'spotify:artist:' + 'm'*22),
+            ):
+                api.calls.clear()
+                response = await say(text, local)
+                assert response is not None and response.error_code is None, (text, local, response)
+                assert ('load', 'connect-id', uri) in api.calls, (text, local, api.calls)
+                assert any(call[0] == 'search' for call in api.calls)
+            for text in ("please don't stop the music", 'dont stop the music'):
+                api.calls.clear()
+                primary.events.clear()
+                command_count = len(commands)
+                await say(text, local)
+                assert not api.calls and not primary.events and len(commands) == command_count, (text, local)
+        print('PASS generic music resumes locally, last-paused targeting, speech-tolerant search, explicit artist Music and titles containing stop', flush=True)
+
+        # A dormant Connect session can acknowledge transfer while restoring a
+        # paused queue. Exercise the real entity through both Assist and the
+        # exact service used by HA's standard media tile.
+        api.cold_transfer = True
+        for local in (False, True):
+            for text in ('play', 'play music'):
+                # Preserve native HA handling of any other paused player in
+                # this room; the Connect recovery must not change its routing.
+                api.cold_transfer = False
+                primary.reset(paused=True)
+                primary.async_write_ha_state()
+                native_handlers['HassMediaUnpause'].last_paused.clear()
+                api.playback_data.update(device={'id':'another-speaker'}, is_playing=False)
+                await coordinator.async_refresh()
+                warm_response = await say(text, local)
+                assert warm_response is not None and warm_response.error_code is None
+                await hass.async_block_till_done()
+                other_player_events = deepcopy(primary.events)
+                api.cold_transfer = True
+                primary.reset(paused=True)
+                primary.async_write_ha_state()
+                native_handlers['HassMediaUnpause'].last_paused.clear()
+                api.playback_data.update(device={'id':'another-speaker'}, is_playing=False,
+                    item={'uri':'spotify:track:'+'c'*22}, progress_ms=23456)
+                expected = deepcopy(api.playback_data)
+                await coordinator.async_refresh()
+                await hass.async_block_till_done()
+                api.calls.clear()
+                response = await say(text, local)
+                assert response is not None and response.error_code is None, (text,local,response)
+                # HA backgrounds media services after its short native intent
+                # timeout; wait for the same completion a media tile awaits.
+                await asyncio.sleep(1)
+                await hass.async_block_till_done()
+                assert api.playback_data['is_playing'], (text,local,api.calls)
+                assert api.calls == [('transfer','connect-id',True), ('play','connect-id')], (text,local,api.calls)
+                assert all(api.playback_data[key] == expected[key] for key in
+                    ('item','context','progress_ms','shuffle_state','repeat_state'))
+                assert primary.events == other_player_events, (text,local,primary.events,other_player_events)
+        api.playback_data.update(device={'id':'another-speaker'}, is_playing=False)
+        await coordinator.async_refresh()
+        api.calls.clear()
+        await hass.services.async_call('media_player','media_play',{'entity_id':player.entity_id},blocking=True)
+        assert api.playback_data['is_playing']
+        assert api.calls == [('transfer','connect-id',True),('play','connect-id')]
+        api.cold_transfer = False
+        print('PASS one cold play/play music in native and LLM-local modes, plus one media-tile play service, starts the existing queue without a second command', flush=True)
+
+        async def no_playback(text, local):
+            api.calls.clear()
+            primary.events.clear()
+            count = len(commands)
+            response = await say(text, local)
+            assert not api.calls and not primary.events and len(commands) == count, (text, local, api.calls, primary.events)
+            return response
+
+        async def unchanged_full_route(text):
+            # HA may parse an unavailable target name as part of a title.
+            # Compare that native behavior as well, rather than inventing a
+            # different error/target policy in the Spotify adapter.
+            sentence = Path(hass.config.config_dir)/'custom_sentences/en/echomuse_spotify.yaml'
+            disabled = sentence.with_suffix('.disabled')
+            outcomes = []
+            for installed in (False, True):
+                (disabled if installed else sentence).rename(sentence if installed else disabled)
+                await conversation.async_get_agent(hass).async_reload()
+                api.calls.clear()
+                primary.events.clear()
+                count = len(commands)
+                response = await say(text, False)
+                outcomes.append((str(response.error_code) if response.error_code else 'success',
+                    tuple(api.calls), tuple(primary.events), len(commands)-count))
+            assert outcomes[0] == outcomes[1], (text, outcomes)
+            assert not api.calls, (text, 'native non-Spotify route unexpectedly targeted Spotify')
+
+        async_expose_entity(hass, 'conversation', player.entity_id, False)
+        await hass.async_block_till_done()
+        assert await no_playback('play jazz on Studio speaker', True) is None
+        assert await no_playback('enable shuffle on Studio speaker', True) is None
+        assert await no_playback('repeat this track on Studio speaker', True) is None
+        await unchanged_full_route('play jazz on Studio speaker')
+        async_expose_entity(hass, 'conversation', player.entity_id, True)
+        await hass.async_block_till_done()
+
+        original_name = registry.async_get(primary.entity_id).name
+        original_features = primary.supported_features
+        primary._attr_supported_features = original_features | MediaPlayerEntityFeature.SHUFFLE_SET | MediaPlayerEntityFeature.REPEAT_SET
+        primary.async_write_ha_state()
+        registry.async_update_entity(primary.entity_id, name='Studio speaker')
+        try:
+            await hass.async_block_till_done()
+            assert await no_playback('play jazz on Studio speaker', True) is None
+            assert await no_playback('enable shuffle on Studio speaker', True) is None
+            assert await no_playback('repeat this song on Studio speaker', True) is None
+            await unchanged_full_route('play jazz on Studio speaker')
+        finally:
+            primary._attr_supported_features = original_features
+            registry.async_update_entity(primary.entity_id, name=original_name)
+            primary.async_write_ha_state()
+            await hass.async_block_till_done()
+        assert await no_playback('enable shuffle on Kitchen music', True) is None
+
+        original_device = dict(api.device)
+        api.device.clear()  # Spotify no longer advertises this Connect device.
+        await coordinator.async_refresh()
+        await hass.async_block_till_done()
+        response = await no_playback('play jazz on Studio speaker', True)
+        assert response is None or response.error_code is not None
+        assert await no_playback('repeat this song on Studio speaker', True) is None
+        await unchanged_full_route('play jazz on Studio speaker')
+        api.device.update(original_device)
+        await coordinator.async_refresh()
+        await hass.async_block_till_done()
+
+        from homeassistant.exceptions import HomeAssistantError
+        original_search = api.search
+        async def failed_search(params):
+            api.calls.append(('search', params['q']))
+            raise HomeAssistantError('Simulated Spotify failure')
+        api.search = failed_search
+        try:
+            for local in (False, True):
+                api.calls.clear()
+                primary.events.clear()
+                count = len(commands)
+                response = await say('play jazz on Studio speaker', local)
+                assert response is not None and response.error_code is not None
+                assert api.calls == [('search', 'jazz')]
+                assert not primary.events and len(commands) == count
+        finally:
+            api.search = original_search
+        original_shuffle = api.set_shuffle
+        async def failed_shuffle(device, value):
+            api.calls.append(('shuffle', device, value))
+            raise HomeAssistantError('Simulated shuffle failure')
+        api.set_shuffle = failed_shuffle
+        try:
+            for local in (False, True):
+                api.calls.clear()
+                primary.events.clear()
+                response = await say('enable shuffle on Studio speaker', local)
+                assert response is not None and response.error_code is not None
+                assert api.calls == [('shuffle','connect-id',True)]
+                assert not primary.events
+        finally:
+            api.set_shuffle = original_shuffle
+        print('PASS local fast path does not play hidden, ambiguous or offline targets; native routes unchanged; Spotify search failure handled once', flush=True)
+        current_handlers = {handler.intent_type: handler for handler in intent.async_get(hass)}
+        assert all(current_handlers.get(name) is handler for name, handler in native_handlers.items())
     finally:
-        await hass.config_entries.async_unload_platforms(spotify_entry,[Platform.MEDIA_PLAYER])
+        assert await hass.config_entries.async_unload(spotify_entry.entry_id)
+        restored = {handler.intent_type: handler for handler in intent.async_get(hass)}
+        adapter = restored['EchoMuseSpotifySearchAndPlay']
+        assert not adapter.entries
+        assert all(restored.get(name) is handler for name, handler in native_handlers.items())
+        # Its sentence file still exists after a config-entry reload/unload.
+        # The dormant adapter must keep native media working and let local
+        # fallback reach the LLM instead of producing 'unknown intent'.
+        primary.events.clear()
+        response = await say('play jazz on Kitchen music', False)
+        assert response is not None and response.error_code is None
+        assert primary.events[-1][0] == 'load'
+        primary.events.clear()
+        assert await say('play jazz on Kitchen music', True) is None
+        assert not primary.events
+        assert await say('enable shuffle on Studio speaker', True) is None
+        assert await say('repeat this song on Studio speaker', True) is None
+        print('PASS Spotify unload retains native media search and LLM fallback with sentence file still installed', flush=True)
 
 
 if __name__ == '__main__':

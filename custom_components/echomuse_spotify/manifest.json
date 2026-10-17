@@ -3,11 +3,11 @@
   "name": "EchoMuse Spotify",
   "codeowners": ["@wilbowes"],
   "config_flow": true,
-  "dependencies": ["http"],
+  "dependencies": ["http", "intent", "conversation"],
   "documentation": "https://github.com/wilbowes/EchoMuse",
   "integration_type": "hub",
   "iot_class": "cloud_polling",
   "issue_tracker": "https://github.com/wilbowes/EchoMuse/issues",
   "requirements": [],
-  "version": "0.1.0"
+  "version": "0.1.3"
 }

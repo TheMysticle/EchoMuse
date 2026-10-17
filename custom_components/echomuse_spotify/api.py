@@ -265,6 +265,18 @@ class SpotifyApi:
                     "device_id": device_id},
         )
 
+    async def set_shuffle(self, device_id: str, shuffle: bool) -> None:
+        if not isinstance(shuffle, bool):
+            raise SpotifyError("Shuffle must be on or off")
+        await self._request("PUT", "/me/player/shuffle",
+            params={"device_id": device_id, "state": str(shuffle).lower()})
+
+    async def set_repeat(self, device_id: str, state: str) -> None:
+        if state not in ("off", "context", "track"):
+            raise SpotifyError("Repeat must be off, context, or track")
+        await self._request("PUT", "/me/player/repeat",
+            params={"device_id": device_id, "state": state})
+
     async def seek(self, device_id: str, position_ms: int) -> None:
         await self._request(
             "PUT",

@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from difflib import SequenceMatcher
 
 # What the Web API will be asked for, and what a caller may request. Shows
 # and episodes are deliberately absent: they are valid Connect contexts but
@@ -68,6 +69,11 @@ _MARKER_STOP = frozenset(
     "at from in the by of on a an and version audio edit performed "
     "originally famous made style".split()
 )
+
+# Short connecting words are often confused by STT. They may distinguish
+# literal titles, so only compare reduced names with at least TWO meaningful
+# words, and keep Spotify's relevance order when they are equivalent.
+_CONNECTING_WORDS = frozenset("a an the and at by for from in of on to with".split())
 
 
 def normalise(text: str) -> str:
@@ -117,16 +123,19 @@ def name_score(name: str, query: str) -> int:
     """
     How well a name answers a query, highest first.
 
-    A ladder rather than a ratio: exact, then starts-with, then contains,
-    then all the query's words present in any order, then nothing. Edit
-    distance was considered and rejected — it makes "Hello" and "Hallo"
-    near-identical while a one-word query against a long title scores
-    terribly, which is backwards for this job.
+    Exact names and multiword names differing only in connecting words
+    share the strongest tier, leaving their order to Spotify. Prefixes,
+    substrings and word matches follow. A single small transcription error
+    in a multiword name is a fallback; one-word titles are never fuzzed.
     """
     n, q = normalise(name), normalise(query)
     if not n or not q:
         return 0
     if n == q:
+        return 100
+    meaningful_name = [w for w in n.split() if w not in _CONNECTING_WORDS]
+    meaningful_query = [w for w in q.split() if w not in _CONNECTING_WORDS]
+    if len(meaningful_query) >= 2 and meaningful_name == meaningful_query:
         return 100
     if n.startswith(q):
         return 80
@@ -135,6 +144,12 @@ def name_score(name: str, query: str) -> int:
     words = q.split()
     if words and all(w in n.split() for w in words):
         return 40
+    if len(meaningful_query) >= 2 and len(meaningful_name) == len(meaningful_query):
+        changed = [(a, b) for a, b in zip(meaningful_name, meaningful_query) if a != b]
+        if len(changed) == 1:
+            a, b = changed[0]
+            if min(len(a), len(b)) >= 5 and SequenceMatcher(None, a, b).ratio() >= 0.88:
+                return 30
     return 0
 
 

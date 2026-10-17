@@ -86,6 +86,77 @@ being removed — removing it would break automations that name it.
 
 ## How it chooses what to play
 
+### Shuffle, repeat, and similar-song continuation (0.1.2)
+
+The device's librespot engine already supports shuffle, repeat-one and
+repeat-all. Companion 0.1.2 exposes HA's standard `shuffle_set` and `repeat_set`
+services and shows the current modes for the active Connect player. Values
+from playback on a different speaker are not shown on an idle speaker.
+These controls change the mode without transferring playback, starting a
+paused player, replacing its playlist, or changing its volume.
+
+Update this integration and `custom_sentences/en/echomuse_spotify.yaml`, then
+restart HA. With **Prefer handling commands locally**, say:
+
+- “Shuffle” / “shuffle off” / “enable shuffle on Studio speaker”.
+- “Repeat this song” / “repeat the playlist” / “turn off repeat”.
+- “Repeat this album in the Kitchen”.
+
+The commands require an unambiguous, exposed Spotify player with an active
+or paused session in the requested area. Explicit player names use HA's
+normal matching. Bare “repeat” and “repeat that” remain speech requests;
+“play Repeat” and “play Shuffle” remain searches. No native handler is replaced.
+
+**Autoplay** is the similar-song continuation after the original context ends.
+librespot already resolves Spotify's autoplay context on the device and follows
+the account's autoplay preference; EchoMuse leaves that preference unchanged.
+Enable autoplay in Spotify's settings and turn repeat off to allow a playlist
+to finish and continue into recommendations. There is no documented Spotify
+Web API autoplay toggle, so this companion does not invent a private endpoint
+or force autoplay on every account. Autoplay needs a valid album/playlist
+context; normal EchoMuse track playback already retains the album context.
+No `em-spotify` or `server` rebuild is required for this HA update.
+
+The HA tests simulate the cloud API and verify mode changes, context retention,
+failure handling and existing media/alarm commands. Actual recommendation
+availability and playlist-end playback still require verification on a satellite
+with a live Spotify account.
+
+### Local voice control (0.1.1)
+
+Copy `custom_sentences/en/echomuse_spotify.yaml` into HA's
+`config/custom_sentences/en/`, replace this integration folder, and restart
+Home Assistant. Keep your current conversation agent and enable **Prefer
+handling commands locally**. Assign the satellite and players to HA areas;
+use “on Studio speaker” for an explicit player or “in the Kitchen” for an area.
+
+“Play music”, “play some music”, “continue”, and “put on music” are complete
+sentence aliases for HA's native resume intent. They resume the existing
+queue and retain HA's target selection and last-paused tracking. There is no
+artist search or queue replacement. A direct `play_media` call with generic
+text such as `music` also resumes on the selected Spotify device.
+
+Named searches use a separate adapter because HA normally defers catalogue
+searches to the LLM during its local-intent pass. The adapter uses HA's native
+target matcher and native search/play handler. It handles an unambiguous,
+exposed EchoMuse Spotify player locally; other targets retain native behavior
+and the usual LLM fallback. No built-in intent handler is replaced.
+After an account unloads, a dormant adapter keeps the installed sentences
+delegating safely to HA until the account reloads. When uninstalling the
+integration, remove its sentence file too.
+
+Longer requests stay searches: “play Please Don't Stop the Music”, “play Music
+by Madonna”, and “play the artist Music” do not become transport commands.
+“Please don't stop the music” does not issue a stop or resume command.
+
+The reproducible HA simulation is `tools/experiments/ha_command_regression.py`.
+It compares commands before and after both sentence files are installed and
+checks native media/appliance services, ringing alerts, multiple players,
+LLM-local handling, and unloading the integration. Spotify's API is simulated;
+microphone transcription and actual cloud ranking require a real device test.
+
+### Search relevance
+
 Spotify returns what *matched*; this decides what you *meant*. Three rules:
 
 - **Popularity is never consulted.** It would make the same words resolve to
@@ -98,6 +169,15 @@ Spotify returns what *matched*; this decides what you *meant*. Three rules:
 
 Accents and punctuation are ignored, so *Beyoncé* and *Beyonce* are one
 request, as are *Don't Stop Me Now* and *dont stop me now*.
+
+For multiword names, small connecting-word differences share the exact-match
+tier: “Beauty on the Beat” can retain Spotify's earlier “Beauty And A Beat”
+result instead of discarding it in favor of a later literal match. A small
+transcription error in one long word is a fallback when the other meaningful
+words match. Single-word titles are not fuzzy-matched, and explicit artist
+and media-type requests remain significant. This uses Spotify's returned
+candidates and order; it cannot reproduce the phone app's personalization or
+select a song absent from the API response. It adds no search API calls.
 
 ## What it deliberately does not do
 

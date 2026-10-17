@@ -137,6 +137,8 @@ async def main(scenario=scenarios, *, install_sentences=True, scenario_timeout=4
         if install_sentences:
             shutil.copy(repo / "custom_sentences/en/echomuse_schedule.yaml",
                         config_dir / "custom_sentences/en/echomuse_schedule.yaml")
+            shutil.copy(repo / "custom_sentences/en/echomuse_spotify.yaml",
+                        config_dir / "custom_sentences/en/echomuse_spotify.yaml")
         hass = HomeAssistant(temporary)
         loader.async_setup(hass)
         hass.config.skip_pip = True

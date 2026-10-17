@@ -33,6 +33,7 @@ from homeassistant.components.media_player import (
     MediaPlayerEntityFeature,
     MediaPlayerState,
     MediaType,
+    RepeatMode,
     SearchMedia,
     SearchMediaQuery,
 )
@@ -45,7 +46,10 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from . import EchoMuseSpotifyEntry
 from . import search as ranking
 from .const import DOMAIN
-from .coordinator import SpotifyCoordinator
+from .coordinator import SPOTIFY_ID_KEY, SpotifyCoordinator
+from .playback import is_resume_request
+from .intents import async_register_local_search
+from .resume import resume_inactive
 
 # SEARCH_MEDIA and PLAY_MEDIA must BOTH be present or the search-and-play
 # intent cannot match this entity; see the module docstring. BROWSE_MEDIA is
@@ -61,6 +65,8 @@ FEATURES = (
     | MediaPlayerEntityFeature.PREVIOUS_TRACK
     | MediaPlayerEntityFeature.VOLUME_SET
     | MediaPlayerEntityFeature.SEEK
+    | MediaPlayerEntityFeature.SHUFFLE_SET
+    | MediaPlayerEntityFeature.REPEAT_SET
 )
 
 # How a Spotify kind is described to HA, and what a result's content type
@@ -101,8 +107,12 @@ async def async_setup_entry(
     entry: EchoMuseSpotifyEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Create an entity per Connect device, and for any that appear later."""
+    """Create an entity per Connect device name; add more as names appear.
+
+    Keys are stable name slugs from the coordinator, not Spotify ids.
+    """
     coordinator = entry.runtime_data
+    async_register_local_search(hass, entry)
     known: set[str] = set()
 
     def _sync() -> None:
@@ -117,17 +127,23 @@ async def async_setup_entry(
 
 
 class SpotifyConnectPlayer(CoordinatorEntity[SpotifyCoordinator], MediaPlayerEntity):
-    """A Spotify Connect device, played by transferring playback to it."""
+    """A Spotify Connect device, played by transferring playback to it.
+
+    Entity identity is a stable slug of the device name. Spotify's Connect
+    id is resolved live (`_spotify_id`) so a session drop does not create
+    a second Home Assistant entity.
+    """
 
     _attr_has_entity_name = True
     _attr_name = None
     _attr_device_class = MediaPlayerDeviceClass.SPEAKER
     _attr_supported_features = FEATURES
 
-    def __init__(self, coordinator: SpotifyCoordinator, device_id: str) -> None:
+    def __init__(self, coordinator: SpotifyCoordinator, entity_key: str) -> None:
         super().__init__(coordinator)
-        self._device_id = device_id
-        self._attr_unique_id = f"{DOMAIN}_{device_id}"
+        # Stable name slug from the coordinator — not Spotify's opaque id.
+        self._entity_key = entity_key
+        self._attr_unique_id = f"{DOMAIN}_{entity_key}"
 
     # ── Identity ────────────────────────────────────────────────────────────
 
@@ -135,13 +151,18 @@ class SpotifyConnectPlayer(CoordinatorEntity[SpotifyCoordinator], MediaPlayerEnt
     def _device(self) -> dict:
         if not self.coordinator.data:
             return {}
-        return self.coordinator.data.device(self._device_id) or {}
+        return self.coordinator.data.device(self._entity_key) or {}
+
+    @property
+    def _spotify_id(self) -> str:
+        """Live Spotify Web API device id for play/transfer/volume."""
+        return str(self._device.get(SPOTIFY_ID_KEY) or "")
 
     @property
     def device_info(self) -> DeviceInfo:
         d = self._device
         return DeviceInfo(
-            identifiers={(DOMAIN, self._device_id)},
+            identifiers={(DOMAIN, self._entity_key)},
             name=d.get("name") or "Spotify device",
             manufacturer="Spotify Connect",
             model=d.get("type") or None,
@@ -156,6 +177,7 @@ class SpotifyConnectPlayer(CoordinatorEntity[SpotifyCoordinator], MediaPlayerEnt
             super().available
             and bool(self._device)
             and not self._device.get("_absent")
+            and bool(self._spotify_id)
         )
 
     # ── State ───────────────────────────────────────────────────────────────
@@ -163,7 +185,7 @@ class SpotifyConnectPlayer(CoordinatorEntity[SpotifyCoordinator], MediaPlayerEnt
     @property
     def _active(self) -> bool:
         return bool(self.coordinator.data) and self.coordinator.data.is_active(
-            self._device_id
+            self._entity_key
         )
 
     @property
@@ -186,6 +208,20 @@ class SpotifyConnectPlayer(CoordinatorEntity[SpotifyCoordinator], MediaPlayerEnt
     def volume_level(self) -> float | None:
         v = self._device.get("volume_percent")
         return v / 100 if isinstance(v, int) else None
+
+    @property
+    def shuffle(self) -> bool | None:
+        if not self._active:
+            return None
+        value = (self.coordinator.data.playback or {}).get("shuffle_state")
+        return value if isinstance(value, bool) else None
+
+    @property
+    def repeat(self) -> RepeatMode | None:
+        if not self._active:
+            return None
+        return {"off": RepeatMode.OFF, "track": RepeatMode.ONE, "context": RepeatMode.ALL}.get(
+            (self.coordinator.data.playback or {}).get("repeat_state"))
 
     def _item(self) -> dict:
         if not self._active:
@@ -372,67 +408,121 @@ class SpotifyConnectPlayer(CoordinatorEntity[SpotifyCoordinator], MediaPlayerEnt
         self, media_type: MediaType | str, media_id: str, **kwargs: Any
     ) -> None:
         """
-        Play a Spotify URI on this device.
+        Play a Spotify URI or plain text song name on this device.
 
         `media_id` is whatever a search result or browse item carried, which
         is the URI — HA hands the id straight back. A link from the Spotify
         app is accepted too, since pasting one into `play_media` is the
         obvious thing to try.
+
+        If `media_id` is plain text (e.g. from an LLM tool call like Extended
+        OpenAI Conversation), it automatically executes a search using the
+        integration's ranking engine, extracts the best match URI, and plays it.
         """
+        generation = self.coordinator.begin_playback_command()
         uri = (media_id or "").strip()
+        # A direct play_media call (e.g. an LLM tool) may contain transport
+        # words rather than a title. Native voice aliases take the faster
+        # media_play path; keep this fallback from searching for an artist
+        # named Music too. Explicit contexts and URIs remain literal.
+        if media_type in (MediaType.MUSIC, "", None) and is_resume_request(uri):
+            await self.async_media_play()
+            return
         if uri.startswith("http"):
             parts = [p for p in uri.split("?")[0].split("/") if p]
             if len(parts) >= 2:
                 uri = f"spotify:{parts[-2]}:{parts[-1]}"
+
+        # If not a Spotify URI, assume it is plain text from an LLM and search for it
         if not uri.startswith("spotify:"):
-            raise HomeAssistantError(f"{media_id!r} is not a Spotify URI or link")
-        await self.coordinator.api.play_uri(self._device_id, uri)
+            media_class = {
+                MediaType.ARTIST: MediaClass.ARTIST,
+                MediaType.ALBUM: MediaClass.ALBUM,
+                MediaType.PLAYLIST: MediaClass.PLAYLIST,
+            }.get(media_type)
+            query = SearchMediaQuery(
+                search_query=uri,
+                media_filter_classes=[media_class] if media_class else None,
+            )
+            search_result = await self.async_search_media(query)
+            if not search_result.result:
+                raise HomeAssistantError(
+                    f"Could not find any Spotify results for {media_id!r}"
+                )
+            uri = search_result.result[0].media_content_id
+
+        if not uri or not uri.startswith("spotify:"):
+            raise HomeAssistantError(f"{media_id!r} is not a valid Spotify URI or song")
+
+        if not self.coordinator.is_current_playback_command(generation):
+            return
+        await self.coordinator.api.play_uri(self._spotify_id, uri)
         await self.coordinator.async_request_refresh()
 
     async def async_media_play(self) -> None:
         # Transfer when this device is not the active one, because `play`
         # alone resumes wherever the account left off — which may be a
         # different speaker in a different room.
+        generation = self.coordinator.begin_playback_command()
         if self._active:
-            await self.coordinator.api.command("play", self._device_id)
+            await self.coordinator.api.command("play", self._spotify_id)
         else:
-            await self.coordinator.api.transfer(self._device_id, play=True)
+            playback = await resume_inactive(self.coordinator.api, self._spotify_id,
+                lambda: self.coordinator.is_current_playback_command(generation))
+            if playback is not None and self.coordinator.is_current_playback_command(generation):
+                self.coordinator.note_playback(playback)
         await self.coordinator.async_request_refresh()
 
     async def async_media_pause(self) -> None:
-        await self.coordinator.api.command("pause", self._device_id)
+        self.coordinator.begin_playback_command()
+        await self.coordinator.api.command("pause", self._spotify_id)
         await self.coordinator.async_request_refresh()
 
     async def async_media_stop(self) -> None:
+        self.coordinator.begin_playback_command()
         # Spotify has no stop. Pausing and winding to the start is what stop
         # means to a Connect device and it leaves the queue intact — the same
         # choice the on-device engine's command set made.
-        await self.coordinator.api.command("pause", self._device_id)
-        await self.coordinator.api.seek(self._device_id, 0)
+        await self.coordinator.api.command("pause", self._spotify_id)
+        await self.coordinator.api.seek(self._spotify_id, 0)
         await self.coordinator.async_request_refresh()
 
     async def async_media_next_track(self) -> None:
-        await self.coordinator.api.command("next", self._device_id)
+        self.coordinator.begin_playback_command()
+        await self.coordinator.api.command("next", self._spotify_id)
         await self.coordinator.async_request_refresh()
 
     async def async_media_previous_track(self) -> None:
-        await self.coordinator.api.command("previous", self._device_id)
+        self.coordinator.begin_playback_command()
+        await self.coordinator.api.command("previous", self._spotify_id)
         await self.coordinator.async_request_refresh()
 
     async def async_set_volume_level(self, volume: float) -> None:
         percent = round(volume * 100)
-        await self.coordinator.api.set_volume(self._device_id, percent)
+        await self.coordinator.api.set_volume(self._spotify_id, percent)
         # Shown at once rather than at the next poll. Spotify's device
         # registry does not reliably reflect a change by the time an
         # immediate re-read lands, so without this the slider snaps back to
         # the old value and corrects a moment later. The poll still has the
         # last word.
-        self.coordinator.note_volume(self._device_id, percent)
+        self.coordinator.note_volume(self._spotify_id, percent)
         self.async_write_ha_state()
         await self.coordinator.async_request_refresh()
 
     async def async_media_seek(self, position: float) -> None:
-        await self.coordinator.api.seek(self._device_id, int(position * 1000))
+        self.coordinator.begin_playback_command()
+        await self.coordinator.api.seek(self._spotify_id, int(position * 1000))
+        await self.coordinator.async_request_refresh()
+
+    async def async_set_shuffle(self, shuffle: bool) -> None:
+        await self.coordinator.api.set_shuffle(self._spotify_id, shuffle)
+        await self.coordinator.async_request_refresh()
+
+    async def async_set_repeat(self, repeat: RepeatMode) -> None:
+        state = {RepeatMode.OFF: "off", RepeatMode.ONE: "track", RepeatMode.ALL: "context"}.get(repeat)
+        if state is None:
+            raise HomeAssistantError("Repeat must be off, one, or all")
+        await self.coordinator.api.set_repeat(self._spotify_id, state)
         await self.coordinator.async_request_refresh()
 
 

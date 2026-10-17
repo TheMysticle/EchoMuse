@@ -155,6 +155,65 @@ no intent at all, which looks like the integration failing and is not.
 Assigning each player to an area is worth doing anyway: it makes "play *X*"
 work in the room you are standing in.
 
+### Resume music and handle searches locally
+
+With companion version 0.1.1, also copy
+`custom_sentences/en/echomuse_spotify.yaml` to HA's
+`config/custom_sentences/en/` and restart HA. Enable **Prefer handling commands
+locally** for your existing conversation agent.
+
+“Play music”, “play some music”, “continue”, and “put on music” use HA's native
+resume intent and keep its normal targeting and last-paused behavior. Named
+searches can also run before the LLM when HA resolves an unambiguous, exposed
+EchoMuse Spotify player. All built-in handlers remain registered unchanged;
+non-Spotify players retain their native routing and LLM fallback.
+
+“Play Please Don't Stop the Music” remains a search. Explicit “play the artist
+Music” and Spotify URIs remain literal requests. Search ranking tolerates
+small multiword speech differences while preserving Spotify's relevance order
+among equivalent results. The phone app may still rank differently because
+its candidate set and personalization are outside this integration.
+
+This update requires the HA integration and its new sentence file; it does
+not require rebuilding `server` or `em-spotify`.
+
+Companion **0.1.3** also confirms playback after activating an inactive Connect
+speaker. Previously the transfer request could succeed while Spotify restored
+the speaker's old paused queue; the first “play” selected the speaker and a
+second “play” resumed it. This affected both Assist and HA's standard media tile.
+The integration now waits briefly for the selected device's playback state.
+If it remains paused with music to resume, it sends one targeted resume and
+confirms playback. The existing queue, position, shuffle and repeat settings
+are preserved. Already active speakers keep the normal single resume request.
+Confirmed playback updates the media tile immediately, even when HA's normal
+refresh is debounced.
+
+This activation check is bounded to seven seconds, backs off its state reads,
+and reports an error if playback cannot be confirmed. It never resumes another
+device, retries a failed cloud request, or invents a song when there is no
+resumable queue. A newer local transport command or integration unload cancels
+the pending recovery; switching away from the speaker after activation also
+stops recovery. Spotify's transfer and player operations are asynchronous, so
+the confirmation uses live playback state rather than the regular poll cache.
+Only the HA Spotify integration needs updating for this fix; existing sentence
+files and satellite binaries continue to work.
+
+### Shuffle, repeat, and autoplay
+
+The engine already supports shuffle, repeat-one, repeat-all and similar-song
+autoplay. HA companion 0.1.2 adds standard shuffle/repeat controls and local
+commands: “shuffle”, “shuffle off”, “repeat this song”, “repeat the playlist”,
+and “turn off repeat”. Add “on Studio speaker” or “in the Kitchen” to select
+a player or area. These settings preserve the current playlist and do not
+start or transfer playback. Bare “repeat that” remains available to your agent
+for speech, and song titles such as “Repeat” still use search.
+
+Update `custom_components/echomuse_spotify` and its sentence YAML, then restart
+HA. No satellite binaries need rebuilding. Similar-song continuation already
+runs in librespot, following the Spotify account's autoplay setting. Enable
+autoplay in Spotify and leave repeat off if you want recommendations after
+the playlist finishes. The HA companion does not change this account setting.
+
 ### An Echo only appears once Spotify has seen it
 
 The integration can only create an entity for a device **Spotify currently

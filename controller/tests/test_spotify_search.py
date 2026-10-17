@@ -91,6 +91,37 @@ def test_the_score_ladder_is_ordered():
     assert s.name_score("Something Else", q) == 0
 
 
+def test_connecting_word_stt_errors_keep_spotify_relevance_order():
+    b = body(track=[
+        track("Beauty And A Beat", ["Justin Bieber", "Nicki Minaj"], uri="spotify:track:" + "j" * 22),
+        track("Beauty On The Beat", ["Literal match"], uri="spotify:track:" + "l" * 22),
+    ])
+    got = s.rank(s.candidates(b, "beauty on the beat"))
+    assert names(got) == ["Beauty And A Beat", "Beauty On The Beat"]
+
+
+def test_explicit_artist_still_disambiguates_similar_titles():
+    b = body(track=[
+        track("Beauty And A Beat", ["Justin Bieber"], uri="spotify:track:" + "j" * 22),
+        track("Beauty On The Beat", ["Literal match"], uri="spotify:track:" + "l" * 22),
+    ])
+    got = s.rank(s.candidates(b, "beauty on the beat by literal match"))
+    assert names(got) == ["Beauty On The Beat"]
+
+
+def test_small_multiword_transcription_errors_are_a_fallback():
+    assert s.name_score("Blinding Lights", "binding lights") > 0
+    assert s.name_score("Blinding Lights", "binding lights") < s.name_score("Binding Lights", "binding lights")
+
+
+@pytest.mark.parametrize("name,query", [
+    ("Hello", "Hallo"), ("Desert", "Dessert"),
+    ("Beautiful Nights", "binding lights"), ("Blinding Lights", "blinding nights"),
+])
+def test_short_names_and_substantial_title_changes_are_not_fuzzy_matches(name, query):
+    assert s.name_score(name, query) == 0
+
+
 def test_words_in_any_order_still_count():
     # Speech reorders things: "thriller by michael jackson" against a name
     # carrying both words in the other order.
