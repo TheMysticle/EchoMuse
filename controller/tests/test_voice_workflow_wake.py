@@ -323,3 +323,32 @@ def test_a_refused_wake_says_why(caplog):
             assert not await d.workflow.wake(button=True)
     asyncio.run(main())
     assert any('Pipecat wake refused' in r.message and 'status=reconnecting' in r.message for r in caplog.records)
+
+
+def test_a_wake_during_a_runaway_is_refused_and_the_connection_rebuilt(fresh_db,monkeypatch):
+    async def main():
+        d,events,ws=_orphan_bridge(monkeypatch)
+        ws.close=AsyncMock()
+        d.workflow.ws=ws
+        # The server was speaking on its own a moment ago.
+        d.workflow.orphan_since=asyncio.get_running_loop().time()-1.5
+        d.workflow.orphan_last=asyncio.get_running_loop().time()-.2
+        assert not await d.workflow.wake(session=None,button=True)
+        ws.close.assert_awaited_once()
+        assert not d.workflow.awake and d.workflow.orphan_since is None
+        # A single stray chunk is not a runaway: the wake goes ahead.
+        now=asyncio.get_running_loop().time()
+        d.workflow.orphan_since=d.workflow.orphan_last=now-.1
+        ws.close.reset_mock()
+        assert await d.workflow.wake(button=True)
+        ws.close.assert_not_awaited()
+        await d.workflow.end_session(reason='test')
+        # Quiet for longer than the window: an ordinary wake opens a session.
+        d.workflow.orphan_since=asyncio.get_running_loop().time()-30
+        d.workflow.orphan_last=asyncio.get_running_loop().time()-10
+        ws.close.reset_mock()
+        assert await d.workflow.wake(button=True)
+        ws.close.assert_not_awaited()
+        d.workflow.ws=None
+        await d.workflow.stop()
+    asyncio.run(main())

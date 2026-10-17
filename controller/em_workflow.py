@@ -62,6 +62,10 @@ SESSION_MAX_S = 120.0   # whole conversation, continuations included
 # that state): ask it to stop, then give up on the connection and start fresh.
 ORPHAN_STOP_S = 2.0
 ORPHAN_RECYCLE_S = 6.0
+# A wake this soon after sustained unsolicited speech would be answered with it.
+# A stray chunk (the tail of a reply in flight) is not sustained.
+ORPHAN_WAKE_S = 3.0
+ORPHAN_SUSTAINED_S = 1.0
 MAX_REPLY_SECONDS = 120  # reply audio queued ahead of the speaker, per reply
 
 # What interrupts a reply. "wake": the microphone is closed to the server while
@@ -355,6 +359,21 @@ class Bridge:
                         self.switching, self.device.muted, self.device.wake_word_enabled, age_ms)
             if session is not None:
                 await self.device.listen_close(session, "pipecat_unavailable")
+            return False
+        if (self.orphan_since is not None and self.ws is not None
+                and self.orphan_last - self.orphan_since >= ORPHAN_SUSTAINED_S
+                and asyncio.get_running_loop().time() - self.orphan_last < ORPHAN_WAKE_S):
+            # The model is mid-runaway: whatever it is saying would play as the
+            # answer to this wake (first audio 50ms after a wake, in the field,
+            # where a real answer takes about 4s). Start a clean conversation
+            # instead; the wake is refused and the connection rebuilt.
+            log.warning("[%s] Pipecat wake refused: the server is still speaking on its own "
+                        "(session=%s); reconnecting for a clean conversation",
+                        self.device.device_id, session)
+            self.orphan_since = None
+            if session is not None:
+                await self.device.listen_close(session, "pipecat_unavailable")
+            await self.ws.close()
             return False
         self.orphan_since, self.orphan_stopped = None, False
         if self.awake:
