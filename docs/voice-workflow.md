@@ -241,6 +241,46 @@ HA's exposure settings and the Pipecat pipeline's MCP tool allowlist to control
 access. [Live validation](voice-workflow-validation.md) verifies that an exposed
 light is discoverable and controllable while a hidden light remains inaccessible.
 
+### Weather, forecasts and other custom attributes
+
+`GetLiveContext` passes the model each exposed entity's name, domain, state and
+only these attributes: `temperature`, `current_temperature`, `temperature_unit`,
+`humidity`, `unit_of_measurement`, `device_class`, `brightness`,
+`current_position`, `percentage`, `volume_level` and the media title, artist and
+album. Anything else on an entity, such as an `hourly_forecast` or
+`daily_forecast` attribute on a template sensor, is not shown to the model even
+when the entity is exposed, and the model usually looks in the `weather` domain,
+which a sensor is not in (HA answers `No exposed entities found in domain(s):
+weather`). The model then says it cannot get the weather.
+
+To give it weather or any other attribute text, expose a **script** to Assist.
+An exposed script becomes a tool (`script__<name>`) and can return data:
+
+```yaml
+script:
+  get_weather:
+    alias: Get weather
+    description: >-
+      Use this for ANY question about the weather: current conditions,
+      temperature, humidity, rain, or the hourly or daily forecast. Returns all
+      of it.
+    sequence:
+      - variables:
+          result:
+            condition: "{{ states('sensor.weather_forecast_assistant') }}"
+            temperature: "{{ state_attr('sensor.weather_forecast_assistant', 'temperature') }}"
+            humidity: "{{ state_attr('sensor.weather_forecast_assistant', 'humidity') }}"
+            hourly_forecast: "{{ state_attr('sensor.weather_forecast_assistant', 'hourly_forecast') }}"
+            daily_forecast: "{{ state_attr('sensor.weather_forecast_assistant', 'daily_forecast') }}"
+      - stop: done
+        response_variable: result
+```
+
+Then expose `script.get_weather` under Settings, Voice assistants, Expose. The
+description is what makes the model choose it; keep the "ANY question about the
+weather" wording. With a real `weather` entity exposed the model can answer
+current conditions from `GetLiveContext` alone, but not a forecast.
+
 ## Generic Pipecat servers
 
 Other endpoint paths default to Pipecat's protobuf WebSocket transport, with
