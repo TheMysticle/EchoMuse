@@ -257,3 +257,69 @@ def test_button_while_the_server_is_thinking_stops_the_session(fresh_db):
         finally:
             await d.workflow.stop()
     asyncio.run(main())
+
+
+def _orphan_bridge(monkeypatch):
+    monkeypatch.setattr(W,'ORPHAN_STOP_S',.05)
+    monkeypatch.setattr(W,'ORPHAN_RECYCLE_S',.15)
+    d=device()
+    d.workflow.config={'mode':W.PIPECAT,'endpoint':'ws://pipecat/api/assist/esphome'}
+    d.workflow.status='connected'
+    events=asyncio.Queue()
+    ws=SimpleNamespace(recv=events.get,send=AsyncMock(),echomuse_audio_format=(24000,1))
+    return d,events,ws
+
+
+async def _speak(events,seconds,gap=.02):
+    end=asyncio.get_running_loop().time()+seconds
+    while asyncio.get_running_loop().time()<end:
+        events.put_nowait(b'\x01\x00'*480)
+        await asyncio.sleep(gap)
+
+
+def test_a_little_speech_after_a_session_closed_is_dropped_quietly(monkeypatch):
+    async def main():
+        d,events,ws=_orphan_bridge(monkeypatch)
+        task=asyncio.create_task(d.workflow.receive(ws))
+        await _speak(events,.03)
+        await asyncio.sleep(.1)
+        assert not task.done()
+        ws.send.assert_not_awaited()
+        task.cancel()
+        await asyncio.gather(task,return_exceptions=True)
+    asyncio.run(main())
+
+
+def test_speech_that_goes_on_with_no_session_is_stopped_then_the_connection_recycled(monkeypatch):
+    async def main():
+        d,events,ws=_orphan_bridge(monkeypatch)
+        task=asyncio.create_task(d.workflow.receive(ws))
+        feeder=asyncio.create_task(_speak(events,.5))
+        with pytest.raises(W.ProtocolError,match='unsolicited_pipecat_speech'):
+            await asyncio.wait_for(task,2)
+        feeder.cancel()
+        await asyncio.gather(feeder,return_exceptions=True)
+        ws.send.assert_awaited_once_with('{"type":"stop"}')
+    asyncio.run(main())
+
+
+def test_a_wake_clears_the_unsolicited_speech_count(fresh_db,monkeypatch):
+    async def main():
+        d,events,ws=_orphan_bridge(monkeypatch)
+        d.workflow.orphan_since=asyncio.get_running_loop().time()-1
+        d.workflow.orphan_stopped=True
+        assert await d.workflow.wake(button=True)
+        assert d.workflow.orphan_since is None and not d.workflow.orphan_stopped
+        await d.workflow.stop()
+    asyncio.run(main())
+
+
+def test_a_refused_wake_says_why(caplog):
+    async def main():
+        d=device()
+        d.workflow.config={'mode':W.PIPECAT}
+        d.workflow.status='reconnecting'
+        with caplog.at_level('WARNING',logger='echomuse.workflow'):
+            assert not await d.workflow.wake(button=True)
+    asyncio.run(main())
+    assert any('Pipecat wake refused' in r.message and 'status=reconnecting' in r.message for r in caplog.records)

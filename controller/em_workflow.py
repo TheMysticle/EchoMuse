@@ -57,6 +57,11 @@ LISTEN_IDLE_S = 8.0     # mic open, nothing heard from the server
 THINK_IDLE_S = 30.0     # mic gated, server working (matches the native TTS wait)
 REPLY_IDLE_S = 10.0     # reply audio started, then the server went quiet
 SESSION_MAX_S = 120.0   # whole conversation, continuations included
+# Speech the server keeps producing while no session is open (it is dropped, so
+# nobody hears it, but the model is still talking and answers the next wake from
+# that state): ask it to stop, then give up on the connection and start fresh.
+ORPHAN_STOP_S = 2.0
+ORPHAN_RECYCLE_S = 6.0
 MAX_REPLY_SECONDS = 120  # reply audio queued ahead of the speaker, per reply
 
 # What interrupts a reply. "wake": the microphone is closed to the server while
@@ -282,6 +287,9 @@ class Bridge:
         self.wake_sent_epoch = -1
         self.speaker_open = False
         self.button_capture = False
+        self.orphan_since = None
+        self.orphan_last = 0.0
+        self.orphan_stopped = False
         self.last_error: str | None = None
         self.scene_task = None
         self.media_owned = False
@@ -340,9 +348,15 @@ class Bridge:
                 or age_ms > 3000
                 or (session is not None and self.device.listen_router.is_closed(session))
                 or self.status not in {"connected", "connecting"}):
+            # Said out loud: a refused wake lights the ring and drops it again,
+            # which reads as flicker, and nothing else records why.
+            log.warning("[%s] Pipecat wake refused (session=%s status=%s switching=%s muted=%s "
+                        "wake_word=%s age_ms=%s)", self.device.device_id, session, self.status,
+                        self.switching, self.device.muted, self.device.wake_word_enabled, age_ms)
             if session is not None:
                 await self.device.listen_close(session, "pipecat_unavailable")
             return False
+        self.orphan_since, self.orphan_stopped = None, False
         if self.awake:
             await self.interrupt()
             await self._end_session(notify=False)
@@ -801,6 +815,31 @@ class Bridge:
                 await self.device.workflow_phase(phase)
         # "speaking" is raised by actual PCM, not speculative server state.
 
+    async def unsolicited_audio(self, ws, now):
+        """Server speech with no session open: stop it, and if it goes on, start over.
+
+        A reply that was in flight when a session closed is a few frames and
+        stops by itself. A model that keeps producing turns is a connection to
+        discard: the next wake would otherwise be answered from that state.
+        """
+        if self.orphan_since is None or now - self.orphan_last > 1.0:
+            self.orphan_since, self.orphan_stopped = now, False
+        self.orphan_last = now
+        elapsed = now - self.orphan_since
+        if elapsed >= ORPHAN_RECYCLE_S:
+            self.orphan_since = None
+            log.warning("[%s] Pipecat kept speaking for %.1fs with no session open; "
+                        "reconnecting for a clean conversation", self.device.device_id, elapsed)
+            raise ProtocolError("unsolicited_pipecat_speech")
+        if elapsed >= ORPHAN_STOP_S and not self.orphan_stopped:
+            self.orphan_stopped = True
+            log.warning("[%s] Pipecat is speaking with no session open (%.1fs); asking it to stop",
+                        self.device.device_id, elapsed)
+            try:
+                await ws.send('{"type":"stop"}')
+            except Exception:
+                pass
+
     async def receive(self, ws):
         loop = asyncio.get_running_loop()
         raw_pcm = transport(self.config) == "va_pipecat"
@@ -831,6 +870,8 @@ class Bridge:
                         self.touch()
                 continue
             if not self.awake:
+                if raw_pcm and isinstance(raw, bytes):
+                    await self.unsolicited_audio(ws, loop.time())
                 continue
             if raw_pcm:
                 rate, channels = ws.echomuse_audio_format
