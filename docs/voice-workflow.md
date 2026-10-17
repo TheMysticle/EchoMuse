@@ -163,8 +163,11 @@ flag on that satellite's own protocol session, and the completed reply carries
 that explicit flag back to the controller. A question mark alone does not keep
 the microphone open. Normal answers return to wake-word standby, while a
 requested clarification opens the existing bounded continuation window. The
-prompt tells the model to avoid optional follow-up questions and to use the tool
-only when it needs an answer to complete the request.
+prompt tells the model to confirm a finished request in a few words and stop,
+without closing offers such as "Can I help with anything else?", and to use the
+tool only when it needs an answer to complete the request. A prompt is guidance
+and not a filter: a flow instruction of your own that asks it to check for
+further requests will override this, so look there if the habit returns.
 
 Every authenticated raw-PCM EchoMuse session also gets the satellite-scoped
 `EchoMuseStop` tool, which handles a bare "stop" by stopping **one** thing, in

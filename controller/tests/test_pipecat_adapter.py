@@ -96,3 +96,19 @@ def test_generated_adapter_tells_the_model_which_language_to_reply_in():
     source=path.read_text()
     assert 'lang_hint' in source and 'flow.language' in source
     assert source.count('+ area_hint + lang_hint')==1
+
+
+def test_generated_adapter_forbids_closing_offers_and_names_them():
+    # The model ended "Light off." with "Can I help with anything else?" on every
+    # command. The old rule was an abstract clause at the start of a long
+    # paragraph; the habit has to be named, and the clarification path kept.
+    path=ROOT/'dist/pipecat-assist-echomuse-dev/app/main.py'
+    if not path.exists():
+        pytest.skip('Package pinned Pipecat source for adapter integration tests')
+    source=path.read_text()
+    ast.parse(source)
+    assert 'Never end a reply with an offer or a question' in source
+    assert 'Can I help with anything else?' in source
+    assert 'Do not close any reply by offering more help' in source
+    # Asking is still allowed when something required is missing, via the tool.
+    assert 'call EchoMuseRequestContinuation before asking' in source
