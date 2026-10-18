@@ -38,12 +38,12 @@ def test_credentials_are_session_scoped_and_require_satellite_authentication():
     original=[{'id':'homeassistant','url':'http://ha/api/mcp'}]
     servers,allowlist=adapter.mcp_options(first,original,['HassTurnOn'])
     assert len(servers)==2 and len(original)==1
-    assert {'EchoMuseStop','EchoMuseCreate'} <= set(allowlist)
+    assert {'EchoMuseStop','EchoMuseVolume','EchoMuseCreate'} <= set(allowlist)
     assert 'scheduler' not in second
     assert len(adapter.mcp_options(second,original,[])[0])==1
     controls=adapter.options({**headers,'x-echomuse-local-schedules':'false'},True)
     _,control_allowlist=adapter.mcp_options(controls,[],['HassTurnOn'])
-    assert 'EchoMuseStop' in control_allowlist
+    assert 'EchoMuseStop' in control_allowlist and 'EchoMuseVolume' in control_allowlist
     assert 'EchoMuseCreate' not in control_allowlist
     with pytest.raises(ValueError):
         adapter.options({**headers,'x-echomuse-scheduler-url':'http://user:secret@controller/api/devices/B/voice-workflow/mcp'},True)
@@ -176,6 +176,8 @@ def test_generated_adapter_retries_area_spellings_and_tells_the_model_not_to_ask
     assert 'do not ask the user which area it is in' in main
     assert "never join its words with underscores" in main
     assert "A spoken volume number is a percentage" in main
+    assert "call EchoMuseVolume with that percentage; it changes only this speaker" in main
+    assert "stop or pause said of the music with no device or room named" in main
 
 
 class _Params:

@@ -3596,6 +3596,32 @@ def update_device_volume(device_id: str, volume: float) -> None:
         satellite._send_one(satellite._media_state_msg())
 
 
+def command_device_volume(device_id: str, volume: float) -> bool:
+    """Set THIS device's own volume directly, bypassing Home Assistant.
+
+    Used by the `EchoMuseVolume` satellite tool (em_workflow_tools.py) for a
+    bare "volume 20" with no named device or room. HA's own `HassSetVolume`,
+    given only an area, applies to every matching media_player it finds
+    there — the TV included, if the TV is in the Echo's area and exposes a
+    volume control. That is HA's documented area-targeting behaviour working
+    as designed; it is just the wrong default for a spoken number with no
+    device named. This performs the same two steps `MediaPlayerCommandRequest`
+    does for an explicit HA volume command (convert, then forward to the
+    physical device) without going through HA's own targeting at all, so
+    only this one speaker can ever be affected.
+
+    Returns False when the device has no server or is not connected, so the
+    caller can report that rather than claim a change that did not happen.
+    """
+    server = _servers.get(device_id)
+    if server is None or server._send_volume_set is None:
+        return False
+    level = em_volume.ha_volume_to_device(volume, server.board_id)
+    server.output_mute.volume_set(level)
+    em_tasks.spawn(server._send_volume_set(level))
+    return True
+
+
 # ─── mDNS helpers ────────────────────────────────────────────────────────────
 
 def _mdns_service_name(device_id: str) -> str:

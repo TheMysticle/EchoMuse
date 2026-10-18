@@ -189,6 +189,14 @@ to leave `left_running` alone. Only when nothing was stopped here does it look
 for another playing media player in the speaker's mapped area and pause it with
 `HassMediaPause`.
 
+The same session also gets `EchoMuseVolume`, for a bare "volume 20" with no
+named device or room. It sets the level on this speaker alone: Home
+Assistant's own volume tool, given only an area, applies to every matching
+media player it finds there, which can also change a TV's volume in the same
+room. `EchoMuseVolume` sends the change straight to the physical device and
+never goes through Home Assistant's own targeting, so a different device's
+volume still needs the user to name it or its room.
+
 Enable **Connect this speaker’s persistent timers, alarms and reminders** to
 attach three additional tools to this authenticated Pipecat session only:
 `EchoMuseCreate`, `EchoMuseList` and `EchoMuseAction`. The controller supplies a separate scoped

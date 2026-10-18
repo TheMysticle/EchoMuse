@@ -51,7 +51,7 @@ def mcp_options(settings, servers, allowlist):
     if scheduler := settings.get("scheduler"):
         result.append(scheduler)
         if allowed:
-            allowed.append("EchoMuseStop")
+            allowed.extend(["EchoMuseStop", "EchoMuseVolume"])
             if scheduler.get("schedules"):
                 allowed.extend(["EchoMuseCreate", "EchoMuseList", "EchoMuseAction"])
     return result, allowed

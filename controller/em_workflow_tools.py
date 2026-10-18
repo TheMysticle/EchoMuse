@@ -46,6 +46,19 @@ STOP_TOOL = {
     ),
     "inputSchema": _schema({}),
 }
+VOLUME_TOOL = {
+    "name": "EchoMuseVolume",
+    "description": (
+        "Set the volume on THIS speaker only. Use it for a bare volume request "
+        "with no named device or room — for example 'volume 20', 'turn it up' "
+        "or 'set the volume to 10' — where `level` is 0-100, a spoken number "
+        "read as a percentage. Never use a Home Assistant volume tool for a "
+        "bare request like this: given only an area it can change every "
+        "matching media player there, a TV included. Use a Home Assistant "
+        "volume tool only when the user names a different device or room."
+    ),
+    "inputSchema": _schema({"level": {"type": "integer", "minimum": 0, "maximum": 100}}, ("level",)),
+}
 
 
 def command(name, args, now):
@@ -136,7 +149,7 @@ async def handle(request, devices):
     elif method == "ping":
         result = {}
     elif method == "tools/list":
-        result = {"tools": [STOP_TOOL, *(TOOLS if schedules_enabled else [])]}
+        result = {"tools": [STOP_TOOL, VOLUME_TOOL, *(TOOLS if schedules_enabled else [])]}
     elif method == "tools/call":
         try:
             if live is None or workflow is None or not workflow.active:
@@ -152,6 +165,16 @@ async def handle(request, devices):
                     "content": [{"type": "text", "text": json.dumps(result_data)}],
                     "isError": bool(result_data["errors"]),
                 }
+                response["result"] = result
+                return web.json_response(response, headers={"Cache-Control": "no-store"})
+            if name == "EchoMuseVolume":
+                level = args.get("level")
+                if set(args) != {"level"} or type(level) is not int or not (0 <= level <= 100):
+                    raise ValueError("EchoMuseVolume needs a single `level`, 0-100")
+                import em_esphome
+                ok = em_esphome.command_device_volume(live.device_id, level / 100.0)
+                text = json.dumps({"volume_set": level}) if ok else "Speaker not connected"
+                result = {"content": [{"type": "text", "text": text}], "isError": not ok}
                 response["result"] = result
                 return web.json_response(response, headers={"Cache-Control": "no-store"})
             if "local_schedule" not in (live.capabilities or []) or not schedules_enabled:

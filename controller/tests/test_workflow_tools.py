@@ -73,7 +73,7 @@ def test_mcp_auth_source_scope_device_ack_and_failure(database):
                 assert (await response.json())['result']['capabilities']=={'tools':{}}
                 response=await call('tools/list')
                 assert {tool['name'] for tool in (await response.json())['result']['tools']}=={
-                    'EchoMuseStop','EchoMuseCreate','EchoMuseList','EchoMuseAction'}
+                    'EchoMuseStop','EchoMuseVolume','EchoMuseCreate','EchoMuseList','EchoMuseAction'}
                 response=await call('tools/call',{'name':'EchoMuseCreate','arguments':{'kind':'timer','duration_seconds':300,'timezone':'UTC'}})
                 result=(await response.json())['result']
                 assert result['isError'] is False
@@ -92,9 +92,68 @@ def test_mcp_auth_source_scope_device_ack_and_failure(database):
                     assert (await response.json())['result']['isError']
                 live.workflow.config['local_schedules']=False
                 response=await call('tools/list')
-                assert [tool['name'] for tool in (await response.json())['result']['tools']]==['EchoMuseStop']
+                assert [tool['name'] for tool in (await response.json())['result']['tools']]==['EchoMuseStop','EchoMuseVolume']
                 live.workflow.active=False
                 response=await call('tools/call',{'name':'EchoMuseList'})
+                assert (await response.json())['result']['isError']
+    asyncio.run(main())
+
+
+def test_volume_sets_only_this_speaker_never_an_ha_area(database, monkeypatch):
+    # "volume 20" with no named device must change only this speaker — never
+    # go through a Home Assistant volume tool, which given only an area can
+    # reach every matching media player there, a TV included.
+    async def main():
+        import em_esphome
+        calls=[]
+        monkeypatch.setattr(em_esphome,'command_device_volume',
+            lambda device_id,volume: calls.append((device_id,volume)) or True)
+        live=SimpleNamespace(device_id='A',capabilities=[],
+            workflow=SimpleNamespace(active=True,config={}))
+        key=keys.issue('A',voice=True)
+        with patch.object(api,'_devices',{'A':live}), patch.object(api,'INGRESS_ONLY',True), patch.object(api,'INGRESS_GATEWAY_IP','172.30.32.2'):
+            async with TestClient(TestServer(await api.create_app())) as client:
+                headers={'Authorization':'Bearer '+key}
+                url='/api/devices/A/voice-workflow/mcp'
+                async def call(method,params=None):
+                    return await client.post(url,headers=headers,json={'jsonrpc':'2.0','id':1,'method':method,'params':params or {}})
+                response=await call('tools/list')
+                assert 'EchoMuseVolume' in [t['name'] for t in (await response.json())['result']['tools']]
+                response=await call('tools/call',{'name':'EchoMuseVolume','arguments':{'level':20}})
+                result=(await response.json())['result']
+                assert result['isError'] is False
+                assert json.loads(result['content'][0]['text'])=={'volume_set':20}
+                assert calls==[('A',0.2)]
+    asyncio.run(main())
+
+
+@pytest.mark.parametrize('args',[{},{'level':150},{'level':-1},{'level':'20'},{'level':20,'area':'Kitchen'}])
+def test_volume_refuses_anything_but_a_bare_percentage(database, args):
+    async def main():
+        live=SimpleNamespace(device_id='A',capabilities=[],
+            workflow=SimpleNamespace(active=True,config={}))
+        key=keys.issue('A',voice=True)
+        with patch.object(api,'_devices',{'A':live}), patch.object(api,'INGRESS_ONLY',True), patch.object(api,'INGRESS_GATEWAY_IP','172.30.32.2'):
+            async with TestClient(TestServer(await api.create_app())) as client:
+                headers={'Authorization':'Bearer '+key}
+                url='/api/devices/A/voice-workflow/mcp'
+                response=await client.post(url,headers=headers,json={'jsonrpc':'2.0','id':1,'method':'tools/call','params':{'name':'EchoMuseVolume','arguments':args}})
+                assert (await response.json())['result']['isError']
+    asyncio.run(main())
+
+
+def test_volume_reports_a_disconnected_speaker_rather_than_claiming_success(database, monkeypatch):
+    async def main():
+        import em_esphome
+        monkeypatch.setattr(em_esphome,'command_device_volume',lambda device_id,volume: False)
+        live=SimpleNamespace(device_id='A',capabilities=[],
+            workflow=SimpleNamespace(active=True,config={}))
+        key=keys.issue('A',voice=True)
+        with patch.object(api,'_devices',{'A':live}), patch.object(api,'INGRESS_ONLY',True), patch.object(api,'INGRESS_GATEWAY_IP','172.30.32.2'):
+            async with TestClient(TestServer(await api.create_app())) as client:
+                headers={'Authorization':'Bearer '+key}
+                url='/api/devices/A/voice-workflow/mcp'
+                response=await client.post(url,headers=headers,json={'jsonrpc':'2.0','id':1,'method':'tools/call','params':{'name':'EchoMuseVolume','arguments':{'level':20}}})
                 assert (await response.json())['result']['isError']
     asyncio.run(main())
 
