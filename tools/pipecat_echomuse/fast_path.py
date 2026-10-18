@@ -251,12 +251,13 @@ class FastPathState:
         self.slot_lists_at = time.time()
 
 
-def match(state: FastPathState, text: str, language: str) -> RecognizeResult | None:
-    """Try to recognize `text` as one of the allowed fast-path intents.
-
-    Returns None on no match, an ambiguous/unmatched entity, or an intent
-    outside FAST_PATH_INTENTS -- all of which fall through to the LLM.
-    """
+def _recognize_any(state: FastPathState, text: str, language: str) -> RecognizeResult | None:
+    """Recognize `text` against the full merged grammar, independent of
+    FAST_PATH_INTENTS -- used to tell EchoMuse's own custom intents
+    (anything not prefixed Hass, e.g. EchoMuseCreate/EchoMuseList/
+    EchoMuseAction) apart from HA's built-ins, so the caller can keep those
+    off HA's local conversation agent before it even gets a chance to
+    answer them (see FastPathStep.process_frame)."""
 
     try:
         result = recognize(
@@ -274,7 +275,18 @@ def match(state: FastPathState, text: str, language: str) -> RecognizeResult | N
         return None
     if result.unmatched_entities:
         return None
-    if result.intent.name not in FAST_PATH_INTENTS:
+    return result
+
+
+def match(state: FastPathState, text: str, language: str) -> RecognizeResult | None:
+    """Try to recognize `text` as one of the allowed fast-path intents.
+
+    Returns None on no match, an ambiguous/unmatched entity, or an intent
+    outside FAST_PATH_INTENTS -- all of which fall through to the LLM.
+    """
+
+    result = _recognize_any(state, text, language)
+    if result is None or result.intent.name not in FAST_PATH_INTENTS:
         return None
     return result
 
@@ -421,7 +433,26 @@ class FastPathStep(FrameProcessor):
                     return
                 self._last_routed_user_count = user_count
                 self._awaiting_user_context = False
-                if self._local_commands is not None:
+                skip_local_agent = False
+                if self._state is not None:
+                    try:
+                        own_result = _recognize_any(self._state, text.strip(), self._language)
+                    except Exception as err:
+                        logger.warning("Fast-path: own-intent matching failed, trying HA's agent: {}", err)
+                        own_result = None
+                    if own_result is not None and not own_result.intent.name.startswith("Hass"):
+                        # EchoMuse's own scheduler (timers/alarms/reminders)
+                        # must always be driven by the LLM's EchoMuseCreate
+                        # tool -- HA's competing built-in intent (e.g. its
+                        # own bare timer intent) must never get first crack
+                        # at answering or announcing through the satellite.
+                        skip_local_agent = True
+                        logger.info(
+                            "Fast-path: {!r} matched EchoMuse intent {} -- routing straight to the LLM",
+                            text,
+                            own_result.intent.name,
+                        )
+                if self._local_commands is not None and not skip_local_agent:
                     reply = await self._local_commands.process(text.strip())
                     if reply is not None:
                         if self._protocol is not None:
