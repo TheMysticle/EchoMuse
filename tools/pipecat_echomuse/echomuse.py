@@ -1,4 +1,5 @@
 """Per-authenticated-session EchoMuse options; no global Pipecat config edits."""
+import asyncio
 import re
 from urllib.parse import urlsplit
 
@@ -109,6 +110,36 @@ def continuation_schema(protocol):
         required=[],
         handler=handler,
     )
+
+
+async def keep_connection(service, run, config):
+    """Run Pipecat's Gemini Live connection task, and start over if it dies at connect.
+
+    Field log 2026-10-18: every ~2.5 minutes Gemini ends the session and Pipecat
+    reconnects with the saved resumption handle. At 06:48:40 the handle was
+    refused ("1008 BidiGenerateContent session expired", 0.8s after connecting)
+    and the satellite went deaf for five hours: an alarm rang, "stop" got no
+    answer, and the Echo had to be pressed. The refusal comes from the
+    `async with connect(...)` line of the connection task, outside the receive
+    loop's try, so it never reaches `_handle_connection_error`: the task dies,
+    `_session` stays empty, and every later audio frame is dropped without a
+    word. Here the failure is counted, the dead handle is dropped (it will be
+    refused again; without one Pipecat opens a fresh session and re-seeds the
+    conversation from its context) and a reconnect is started from a new task,
+    so a task is not cancelling itself. After three failures in a row Pipecat's
+    own limit pushes the fatal error, which the controller answers by
+    rebuilding the connection.
+    """
+    try:
+        await run(config)
+    except asyncio.CancelledError:
+        raise
+    except Exception as error:
+        if getattr(service, "_disconnecting", False):
+            raise
+        service._session_resumption_handle = None
+        if await service._handle_connection_error(error):
+            service.create_task(service._reconnect(), "echomuse_gemini_reconnect")
 
 
 AREA_MISSING = "The area does not exist"

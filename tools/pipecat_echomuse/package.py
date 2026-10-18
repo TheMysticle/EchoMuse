@@ -28,6 +28,11 @@ def adapt(text):
     session_id = str(uuid.uuid4())
     await websocket.accept()''')
     replace('            "transport": "va-pipecat",', '            "transport": "va-pipecat",\n            "echomuse": session_options,')
+    replace('        async def _handle_connection_error(self, error: Exception) -> bool:\n            connection_started', '''        async def _connection_task_handler(self, config):
+            await echomuse.keep_connection(self, super()._connection_task_handler, config)
+
+        async def _handle_connection_error(self, error: Exception) -> bool:
+            connection_started''')
     replace('    mcp_servers = config.enabled_mcp_servers(mcp_token) if flow.mcp_enabled else []\n    if mcp_servers:\n        bridge = CombinedMCPBridge(mcp_servers, flow.mcp_tool_allowlist)', '''    mcp_servers = config.enabled_mcp_servers(mcp_token) if flow.mcp_enabled else []
     mcp_servers, session_allowlist = echomuse.mcp_options(session_body.get("echomuse", {}), mcp_servers, flow.mcp_tool_allowlist)
     if mcp_servers:

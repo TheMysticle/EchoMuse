@@ -1,5 +1,6 @@
 """Pinned upstream adapter, authentication, isolation and continuation contract."""
 import ast
+import asyncio
 import importlib.util
 import json
 from pathlib import Path
@@ -230,3 +231,88 @@ def test_continuation_keeps_the_normal_path_on_a_service_without_the_private_hoo
     asyncio.run(adapter.answer_continuation(protocol, params, lambda: pytest.fail('no override expected')))
     assert protocol.continuation_requested is True
     assert params.calls==[(adapter.CONTINUATION_RESULT, None)]
+
+
+class _Gemini:
+    """Pipecat's Gemini Live service, as far as the connection guard touches it."""
+    def __init__(self, keep_going=True):
+        self._session_resumption_handle='8304d8df'
+        self._disconnecting=False
+        self.errors=[]
+        self.reconnects=0
+        self.keep_going=keep_going
+        self.spawned=[]
+
+    async def _handle_connection_error(self, error):
+        self.errors.append(error)
+        return self.keep_going
+
+    async def _reconnect(self):
+        self.reconnects+=1
+
+    def create_task(self, coro, name):
+        self.spawned.append(name)
+        return asyncio.get_event_loop().create_task(coro)
+
+
+def _drive(service, run):
+    async def main():
+        try:
+            await adapter.keep_connection(service, run, object())
+        finally:
+            await asyncio.sleep(0)    # let the reconnect task run
+    asyncio.run(main())
+
+
+def test_a_refused_resumption_handle_restarts_the_connection_instead_of_leaving_it_dead():
+    # 2026-10-18 06:48:41: "1008 BidiGenerateContent session expired" raised by
+    # the connect itself, outside the receive loop, killed the task silently and
+    # the satellite heard nothing for five hours.
+    service=_Gemini()
+    async def run(config):
+        raise RuntimeError('1008 None. BidiGenerateContent session expired')
+    _drive(service, run)
+    assert len(service.errors)==1
+    assert service._session_resumption_handle is None
+    assert service.reconnects==1 and service.spawned==['echomuse_gemini_reconnect']
+
+
+def test_the_failure_limit_still_stops_the_retries():
+    service=_Gemini(keep_going=False)
+    async def run(config):
+        raise RuntimeError('1008')
+    _drive(service, run)
+    assert service.reconnects==0
+    assert service._session_resumption_handle is None
+
+
+def test_a_connection_that_ends_normally_or_is_cancelled_is_left_alone():
+    service=_Gemini()
+    async def finished(config):
+        return None
+    _drive(service, finished)
+    assert service.errors==[] and service.reconnects==0 and service._session_resumption_handle=='8304d8df'
+    async def cancelled(config):
+        raise asyncio.CancelledError()
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(adapter.keep_connection(service, cancelled, object()))
+    assert service.errors==[] and service.reconnects==0
+
+
+def test_an_error_during_an_intentional_disconnect_is_not_retried():
+    service=_Gemini()
+    service._disconnecting=True
+    async def run(config):
+        raise RuntimeError('closed')
+    with pytest.raises(RuntimeError):
+        asyncio.run(adapter.keep_connection(service, run, object()))
+    assert service.errors==[] and service.reconnects==0
+
+
+def test_generated_adapter_guards_the_gemini_connection_task():
+    path=ROOT/'dist/pipecat-assist-echomuse-dev/app/main.py'
+    if not path.exists():
+        pytest.skip('Package pinned Pipecat source for adapter integration tests')
+    source=path.read_text()
+    ast.parse(source)
+    assert 'echomuse.keep_connection(self, super()._connection_task_handler, config)' in source
