@@ -96,6 +96,14 @@ type Endpointer struct {
 	acc    []float32
 	hist   [epRing]float32 // the smoothed power of each of the last epRing blocks
 
+	// playing reports whether the device's own speaker is currently audible
+	// (voice or music), set once at wiring time (cmd/server.go's
+	// speakerPlaying, the same predicate the beamformer's canceller-reset
+	// uses). Nil reads as never playing -- the old behaviour, unchanged for
+	// a caller that does not wire it.
+	playing     func() bool
+	playingHist [epRing]bool // was the speaker audible when this block was recorded
+
 	ref   float64 // the reference level, fixed for a session (0 = none)
 	med   float64 // the median power of the history the reference came from, for the log
 	speak bool
@@ -140,6 +148,7 @@ func (e *Endpointer) block(x []float32) {
 	}
 	e.fast = fbfPowFast*e.fast + (1-fbfPowFast)*p
 	e.hist[e.n%epRing] = float32(e.fast)
+	e.playingHist[e.n%epRing] = e.playing != nil && e.playing()
 	if !e.inSession {
 		return
 	}
@@ -194,12 +203,28 @@ func (e *Endpointer) StartSession(sinceCrossMs int) {
 	// History older than the wake word and the command's first moments.
 	end := e.n - back - EPSkipBlocks // newest block index to use
 	start := max(e.n-epRing+1, fbfSettleBlocks+1)
-	if end-start+1 < EPMinHistory {
-		return // no reference: Warm() is false, nothing is ever ended
+	if end < start {
+		return // no history at all yet: Warm() is false, nothing is ever ended
 	}
 	vals := make([]float64, 0, end-start+1)
 	for i := start; i <= end; i++ {
+		if e.playingHist[i%epRing] {
+			// The device's own voice or music, not the room: a reply resets
+			// its own echo cancellation when it starts (as the beamformer's
+			// canceller does, see speakerPlaying in cmd/server.go), and the
+			// brief under-cancelled stretch right after can be loud enough,
+			// sitting this close to the wake word, to set the reference from
+			// itself rather than from the room. Field log 2026-10-18, session
+			// 14: the previous reply finished 5s before the next wake word,
+			// well inside the history window, and set a reference the
+			// following ordinary-level question could not clear. See
+			// TestOwnReplyRightBeforeTheWakeWordDoesNotEndTheCommandEarly.
+			continue
+		}
 		vals = append(vals, float64(e.hist[i%epRing]))
+	}
+	if len(vals) < EPMinHistory {
+		return // no reference: Warm() is false, nothing is ever ended
 	}
 	sort.Float64s(vals)
 	ref := vals[int(float64(len(vals)-1)*EPQuantile)]
@@ -218,6 +243,12 @@ func (e *Endpointer) EndSession() {
 	e.inSession, e.seen, e.ended, e.speak = false, false, false, false
 	e.ignore, e.ref, e.med = 0, 0, 0
 }
+
+// SetPlaying says how to tell whether the device's own speaker is currently
+// audible, so the reference history can exclude it. Call once, before the
+// mic stream starts; nil (the default) excludes nothing, unchanged from
+// before this existed.
+func (e *Endpointer) SetPlaying(active func() bool) { e.playing = active }
 
 // Median is the median power of the history the reference was taken from.
 func (e *Endpointer) Median() float64 { return e.med }

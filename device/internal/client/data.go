@@ -1572,8 +1572,14 @@ func (d *DataClient) streamMic(conn *websocket.Conn, stopCh <-chan struct{}, loc
 }
 
 // SetPlayingFunc says how to tell whether the speaker is audible. Call once,
-// before the mic stream starts.
-func (d *DataClient) SetPlayingFunc(f func() bool) { d.playing = f }
+// before the mic stream starts. The same predicate also keeps the device's
+// own playback out of the endpointer's reference history (see Endpointer.
+// SetPlaying) -- one signal, two consumers, so they cannot disagree about
+// whether the speaker is on.
+func (d *DataClient) SetPlayingFunc(f func() bool) {
+	d.playing = f
+	d.endpoint.SetPlaying(f)
+}
 
 // endpointSession follows one wake-triggered session for the endpointer, once
 // per 80ms chunk: frames is how many the gate just released (the backlog since

@@ -257,3 +257,56 @@ func TestOneLoudMomentBeforeTheWakeWordDoesNotEndTheCommandEarly(t *testing.T) {
 		t.Errorf("a cough 5s before the wake word ended the command at %dms, inside it (talker until 13000ms)", end)
 	}
 }
+
+// Field log 2026-10-18, session 14: the previous reply finished playing at
+// ~5s before the next wake word (21:56:11 to 21:56:16), well inside the
+// history window, and its own under-cancelled playback set a reference
+// (185461, exactly 12.0x the 15455 median -- the cap engaged and still was
+// not enough) the following ordinary-level question ("what's the weather
+// like") read as only 0.1-0.4x of, ending the command about a second in.
+// Unlike a cough or a TV, the device KNOWS when its own speaker is audible
+// (SetPlaying), so that stretch of history is excluded outright rather than
+// merely capped.
+func TestOwnReplyRightBeforeTheWakeWordDoesNotEndTheCommandEarly(t *testing.T) {
+	// A 4s reply at 0-4s (loud and close, like under-cancelled self-echo),
+	// held (see below) to ~6s, then 9s of quiet room before the wake at
+	// 15.04s -- plenty of clean room history left (~7s) once excluded,
+	// well over EPMinHistory. The command, 15.44-18s, is deliberately quiet
+	// (a fifth of the field log's own measured 0.1-0.4x ratio): loud enough
+	// to clear a clean room's reference, nowhere near the reply-inflated one.
+	mk := func(excludePlayback bool) (*epScene, *Endpointer) {
+		sc := newScene(0, 2200, 15440, 18000)
+		sc.speaking = func(t int) bool {
+			return (t >= 0 && t < 4000*16) || (t >= 15440*16 && t < 18000*16)
+		}
+		sc.level = func(t int) float64 {
+			if t < 4000*16 {
+				return 5.0 // the reply, close to the mic
+			}
+			return 0.05 // an ordinary-level question, well under the reply's level
+		}
+		ep := NewEndpointer()
+		if excludePlayback {
+			// The real predicate (speakerPlaying, cmd/server.go) holds
+			// "playing" true for wakeword.ScoreSpan (~1.96s) after the
+			// speaker actually goes quiet, same as it does for the wake
+			// scorer's threshold -- not just because the model can still
+			// see the echo, but because the endpointer's own EWMA-smoothed
+			// power takes real time (measured here: ~450ms) to decay back
+			// to room level, and that decay tail must be excluded too.
+			holdSamples := 4000*16 + int(1960*16)
+			ep.SetPlaying(func() bool { return sc.t < holdSamples })
+		}
+		return sc, ep
+	}
+	sc, ep := mk(false)
+	if end := runEP(sc, ep, 15040, 26080); end >= 0 {
+		t.Errorf("control (own reply counted as room history): ended at %dms -- it should never even have HEARD the command (reference %v set from the device's own voice)", end, ep.ref)
+	} else if ep.Heard() {
+		t.Error("control: Heard() true despite the question never clearing the contaminated reference")
+	}
+	sc2, ep2 := mk(true)
+	if end := runEP(sc2, ep2, 15040, 26080); end < 18000+800 || end > 18000+1700 {
+		t.Fatalf("own reply excluded from history (reference %v): ended at %dms, talker stopped at 18000ms", ep2.ref, end)
+	}
+}
