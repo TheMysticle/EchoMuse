@@ -850,7 +850,20 @@ class Bridge:
                 self.accept_audio = False
                 while not self.queue.empty():
                     self.queue.get_nowait()
-            elif event.get("continuation_question"):
+            else:
+                # Every "listening" reaching this branch wants audio: a
+                # clarifying question (continuation_question) and a mid-turn
+                # barge are the same signal from here. The addon's own VAD
+                # emits this the instant it hears the user talk over
+                # "thinking" (bot-interrupted only fires once TTS has
+                # actually started, so a barge before that has no other
+                # event). Without this the gate from the branch above stays
+                # shut: the Echo keeps streaming the rest of that utterance,
+                # every frame is dropped at feed()/send(), the addon's VAD
+                # starves on the leading edge it already saw and force-stops
+                # ~1s later with next to nothing transcribed, and the turn
+                # dies silently -- measured 2026-10-18, a spoken "stop"
+                # landing right as the previous turn entered "thinking".
                 self.accept_audio = True
             if self.playback_tasks:
                 self.finish_output(phase)
