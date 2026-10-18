@@ -20,7 +20,7 @@ def adapt(text):
         if text.count(old) != 1:
             raise ValueError("Upstream adapter anchor changed: " + old[:70])
         text = text.replace(old, new)
-    replace('from __future__ import annotations', 'from __future__ import annotations\n\nfrom app import echomuse')
+    replace('from __future__ import annotations', 'from __future__ import annotations\n\nfrom app import echomuse\nfrom app import fast_path\nfrom app import mcp_bridge')
     replace('    await websocket.send_text(_va_pipecat_protocol(config).hello())', '''    hello = json.loads(_va_pipecat_protocol(config).hello())
     hello["echomuse"] = {"scheduler": bool(session_options.get("scheduler", {}).get("schedules")), "stop": bool(session_options.get("scheduler")), "barge_in": bool(session_options.get("barge_in"))}
     await websocket.send_text(json.dumps(hello))''')
@@ -43,7 +43,7 @@ def adapt(text):
         area = session_body["echomuse"].get("area")
         area_hint = f" The speaker is in the {area} area; treat that as the room for bare media stop requests." if area else " Use the speaker's current Home Assistant area for bare media stop requests."
         lang_hint = f" Always reply in the language with code {flow.language or 'en'}, the satellite's configured language, unless the user clearly speaks a different language to you. Accented or very short speech is not a reason to switch, and names or titles in another language in tool results or the home setup do not change your reply language."
-        flow.instructions += "\\nFor EchoMuse: keep replies short. After you do what was asked, confirm in a few words and stop (for example: Light off.). Never end a reply with an offer or a question such as: Can I help with anything else? Is there anything else? Let me know if you need anything. Ask a question only when a required detail is missing, and then call EchoMuseRequestContinuation before asking one short clarification; never use it for optional follow-up. Use EchoMuse scheduler tools for timers, alarms and reminders; never claim a save without device acknowledgment. For a bare stop — the word stop alone, or stop or pause said of the music with no device or room named — call EchoMuseStop once. It stops one thing: what is ringing first, otherwise this speaker's music, otherwise a running timer, and reports `stopped` and `left_running`. Report only what `stopped` lists, explain any reported errors, and never stop, pause or cancel anything listed in `left_running`: that is deliberate, and a second stop does the next thing. Only when `stopped` is empty and there are no errors, use homeassistant__GetLiveContext or equivalent to find a playing media_player in the speaker's area and call intent__HassMediaPause for only those active room players; if a Home Assistant timer in that area is active and a timer-cancel tool is available, cancel it. Never cancel future alarms or reminders. For a bare snooze, inspect EchoMuseList and snooze only the active ringing alert. Explicit room or device targets take precedence over this bare-stop behavior. For a bare play, resume or continue with no title, resume this speaker's own media player (the Home Assistant media unpause tool) and never call play_media. When asked for specific music, pass the title or artist as plain text to play_media; never write a Spotify URI or playlist ID yourself, only reuse one that a search returned. play_media with a title starts playback at once and its success means the music is playing, so never search first, verify afterwards or call it again for the same request. Never search for a generic word such as music to find something to resume; a bare play or resume is the media unpause tool. Use an area name exactly as GetLiveContext lists it, for example 'Living Room': never join its words with underscores or change its capitalisation. If a tool says an area does not exist, do not ask the user which area it is in; call GetLiveContext to read the real area names and try again. A spoken volume number is a percentage whether or not the user says percent: 'volume 10' and 'set the volume to 10' mean volume_level 10, which is ten percent. Never read it as a number out of ten and never multiply it; pass the number you heard. For a bare volume change with no device or room named — 'volume 20', 'turn it up', 'turn the volume down' — call EchoMuseVolume with that percentage; it changes only this speaker. Never use a Home Assistant volume tool for a bare request like this: given only an area it can change every matching media player there, a TV included. Use a Home Assistant volume tool only when the user names a different device or room. Ask about an unknown timezone before creating a calendar alarm or reminder. Do not close any reply by offering more help." + area_hint + lang_hint
+        flow.instructions += "\\nFor EchoMuse: keep replies short. After you do what was asked, confirm in a few words and stop (for example: Light off.). Never end a reply with an offer or a question such as: Can I help with anything else? Is there anything else? Let me know if you need anything. Ask a question only when a required detail is missing, and then call EchoMuseRequestContinuation before asking one short clarification; never use it for optional follow-up. Use EchoMuse scheduler tools for timers, alarms and reminders; never claim a save without device acknowledgment. For a bare stop — the word stop alone, or stop or pause said of the music with no device or room named — call EchoMuseStop once. It stops one thing: what is ringing first, otherwise this speaker's music, otherwise a running timer, and reports `stopped` and `left_running`. Report only what `stopped` lists, explain any reported errors, and never stop, pause or cancel anything listed in `left_running`: that is deliberate, and a second stop does the next thing. Only when `stopped` is empty and there are no errors, use homeassistant__GetLiveContext or equivalent to find a playing media_player in the speaker's area and call intent__HassMediaPause for only those active room players; if a Home Assistant timer in that area is active and a timer-cancel tool is available, cancel it. Never cancel future alarms or reminders. For a bare snooze, inspect EchoMuseList and snooze only the active ringing alert. Explicit room or device targets take precedence over this bare-stop behavior. For a bare play, resume or continue with no title, resume this speaker's own media player (the Home Assistant media unpause tool) and never call play_media. When asked for specific music, pass the title or artist as plain text to play_media; never write a Spotify URI or playlist ID yourself, only reuse one that a search returned. play_media with a title starts playback at once and its success means the music is playing, so never search first, verify afterwards or call it again for the same request. Never search for a generic word such as music to find something to resume; a bare play or resume is the media unpause tool. Use an area name exactly as GetLiveContext lists it, for example 'Living Room': never join its words with underscores or change its capitalisation. If a tool says an area does not exist, do not ask the user which area it is in; call GetLiveContext ONCE to read the real area names and try again. Never call GetLiveContext more than twice in one turn total: if the second call still does not resolve the request, answer from what it returned, or tell the user what you could not find, rather than calling it again. A spoken volume number is a percentage whether or not the user says percent: 'volume 10' and 'set the volume to 10' mean volume_level 10, which is ten percent. Never read it as a number out of ten and never multiply it; pass the number you heard. For a bare volume change with no device or room named — 'volume 20', 'turn it up', 'turn the volume down' — call EchoMuseVolume with that percentage; it changes only this speaker. Never use a Home Assistant volume tool for a bare request like this: given only an area it can change every matching media player there, a TV included. Use a Home Assistant volume tool only when the user names a different device or room. Ask about an unknown timezone before creating a calendar alarm or reminder. Do not close any reply by offering more help." + area_hint + lang_hint
     is_esphome_satellite''')
     replace('    local_tool_schemas = [schema for schema in [_web_search_tool_schema(config, flow)] if schema]\n    tools_schema = _merge_tools_schema(mcp_tools_schema, local_tool_schemas)\n    context_for_memory = None', '''    local_tool_schemas = [schema for schema in [_web_search_tool_schema(config, flow)] if schema]
     if session_body.get("echomuse") and session_body["transport"] == "va-pipecat":
@@ -57,7 +57,394 @@ def adapt(text):
     replace('local_turn_detection=bool(_enabled_step(flow, "vad")),', 'local_turn_detection=bool(_enabled_step(flow, "vad") or session_body.get("echomuse", {}).get("barge_in")),')
     replace('if provider_kind == "gemini" and _enabled_step(flow, "vad"):', 'if provider_kind == "gemini" and (_enabled_step(flow, "vad") or session_body.get("echomuse", {}).get("barge_in")):')
     replace('vad_analyzer=_composed_vad_analyzer(flow),', 'vad_analyzer=echomuse.vad_analyzer(session_body.get("echomuse", {}), lambda: _composed_vad_analyzer(flow)),')
+
+    # --- local STT/TTS providers (sherpa-onnx, Piper/Wyoming) ---
+    replace(
+        '    clear_mcp_tools_cache,\n    list_mcp_call_history,\n)',
+        '    clear_mcp_tools_cache,\n    close_all_pooled_bridges,\n    list_mcp_call_history,\n)',
+    )
+    replace(
+        '    raise RuntimeError(f"STT provider {integration.kind} is not supported by composed runtime")',
+        '''    if integration.kind == "sherpa_onnx":
+        from app.sherpa_stt import SherpaOnnxSTTService
+
+        host, _, port = (integration.base_url or integration.endpoint or "").partition(":")
+        if not host or not port:
+            raise RuntimeError("sherpa-onnx STT is missing a host:port endpoint")
+        return SherpaOnnxSTTService(host=host, port=int(port))
+
+    raise RuntimeError(f"STT provider {integration.kind} is not supported by composed runtime")''',
+    )
+    replace(
+        '    raise RuntimeError(f"TTS provider {integration.kind} is not supported by composed runtime")',
+        '''    if integration.kind == "piper_wyoming":
+        from app.piper_wyoming_tts import PiperWyomingTTSService
+
+        host, _, port = (integration.base_url or integration.endpoint or "").partition(":")
+        if not host or not port:
+            raise RuntimeError("Piper/Wyoming TTS is missing a host:port endpoint")
+        return PiperWyomingTTSService(host=host, port=int(port))
+
+    raise RuntimeError(f"TTS provider {integration.kind} is not supported by composed runtime")''',
+    )
+
+    # --- MCP bridge pooling: reconnecting both configured MCP servers from
+    # scratch (HA's, the controller's own per-device scheduler endpoint)
+    # measured 1-2s; a va_pipecat session is one bounded turn per
+    # wake/button press, so that cost was paid every turn. Pool per
+    # client_id instead, close only on addon shutdown. ---
+    replace(
+        '''    if mcp_servers:
+        bridge = CombinedMCPBridge(mcp_servers, session_allowlist)
+        try:
+            await bridge.start()''',
+        '''    if mcp_servers:
+        try:
+            try:
+                bridge = await mcp_bridge.get_pooled_bridge(client_id, mcp_servers, session_allowlist)
+            except Exception:
+                # The pooled entry may be dead (server restarted, link dropped).
+                # One retry against a fresh connection before giving up.
+                await mcp_bridge.evict_pooled_bridge(client_id)
+                bridge = await mcp_bridge.get_pooled_bridge(client_id, mcp_servers, session_allowlist)''',
+    )
+    replace(
+        '''        except asyncio.CancelledError as err:
+            with suppress(Exception):
+                await bridge.close()
+            bridge = None
+            raise RuntimeError(f"MCP tools are enabled but startup was cancelled: {err}") from err
+        except Exception as err:
+            with suppress(Exception):
+                await bridge.close()
+            bridge = None
+            raise RuntimeError(f"MCP tools are enabled but unavailable: {err}") from err''',
+        '''        except asyncio.CancelledError as err:
+            await mcp_bridge.evict_pooled_bridge(client_id)
+            bridge = None
+            raise RuntimeError(f"MCP tools are enabled but startup was cancelled: {err}") from err
+        except Exception as err:
+            await mcp_bridge.evict_pooled_bridge(client_id)
+            bridge = None
+            raise RuntimeError(f"MCP tools are enabled but unavailable: {err}") from err''',
+    )
+    replace(
+        '''        if bridge:
+            await bridge.close()
+        if audio_debug:''',
+        '''        # The MCP bridge is NOT closed here -- it stays pooled (keyed by
+        # client_id) for the next turn. See mcp_bridge.get_pooled_bridge.
+        if audio_debug:''',
+    )
+    replace(
+        "async def _shutdown_esphome_provisioner() -> None:\n    await ESPHOME_PROVISIONER.stop()",
+        "async def _shutdown_esphome_provisioner() -> None:\n    await ESPHOME_PROVISIONER.stop()\n    await close_all_pooled_bridges()",
+    )
+
+    # --- energy-threshold VAD for ESPHome satellite sessions: the device's
+    # own wake word and on-device VAD already pre-gate every turn, so a
+    # neural VAD here re-answers a question already answered upstream, at a
+    # model-load cost paid every turn (app/energy_vad.py). ---
+    replace(
+        '''def _composed_vad_analyzer(flow: FlowConfig):
+    """Return local VAD tuned for browser and ESP32 composed pipelines."""
+
+    from pipecat.audio.vad.silero import SileroVADAnalyzer
+    from pipecat.audio.vad.vad_analyzer import VADParams''',
+        '''def _composed_vad_analyzer(flow: FlowConfig, is_esphome_satellite: bool = False):
+    """Return local VAD tuned for browser, ESP32 and EchoMuse satellite composed pipelines."""
+
+    from pipecat.audio.vad.vad_analyzer import VADParams
+
+    if is_esphome_satellite:
+        from app.energy_vad import EnergyVADAnalyzer
+
+        return EnergyVADAnalyzer(params=VADParams(confidence=0.5, start_secs=0.0, stop_secs=0.1))
+
+    from pipecat.audio.vad.silero import SileroVADAnalyzer''',
+    )
+    replace(
+        'vad_processor = VADProcessor(vad_analyzer=_composed_vad_analyzer(flow)) if vad_step else None',
+        'vad_processor = VADProcessor(vad_analyzer=_composed_vad_analyzer(flow, is_esphome_satellite)) if vad_step else None',
+    )
+
+    # --- fast-path intent matching: a transcript matching one of Home
+    # Assistant's own built-in sentence templates goes straight to the
+    # matching MCP intent tool, skipping the LLM (app/fast_path.py). ---
+    replace(
+        '''def _composed_vad_analyzer(flow: FlowConfig, is_esphome_satellite: bool = False):''',
+        '''_FAST_PATH_STATES: dict[str, "fast_path.FastPathState"] = {}
+
+
+def _fast_path_custom_sentence_dirs(config: RuntimeConfig) -> list[Path]:
+    dirs = [Path("/homeassistant/custom_sentences")]  # HA's own files, see config.yaml's map
+    dirs.extend(Path(d) for d in config.fast_path_custom_sentences_dirs if d.strip())
+    dirs.append(Path(__file__).resolve().parent.parent / "custom_sentences")  # addon-authored
+    return dirs
+
+
+def _fast_path_state(config: RuntimeConfig, language: str) -> "fast_path.FastPathState":
+    cached = _FAST_PATH_STATES.get(language)
+    if cached is not None:
+        return cached
+    intents = fast_path.load_intents(language, _fast_path_custom_sentence_dirs(config))
+    state = fast_path.FastPathState(intents=intents)
+    _FAST_PATH_STATES[language] = state
+    return state
+
+
+async def _build_fast_path_step(
+    config: RuntimeConfig,
+    flow: FlowConfig,
+    bridge: CombinedMCPBridge,
+    mcp_tools_schema,
+) -> "fast_path.FastPathStep | None":
+    """Build the fast-path step for one turn, refreshing live entity/area
+    names when stale. Returns None if no fast-path-eligible tool is exposed
+    (e.g. Home Assistant MCP is not connected)."""
+
+    language = (flow.language or "en").split("-")[0]
+    tool_names = fast_path.tool_names_for_fast_path(
+        [tool.name for tool in mcp_tools_schema.standard_tools]
+    )
+    if not tool_names:
+        return None
+
+    state = _fast_path_state(config, language)
+    if state.slot_lists_stale():
+        live_context_tool = next(
+            (t.name for t in mcp_tools_schema.standard_tools if t.name.endswith("GetLiveContext")),
+            None,
+        )
+        if live_context_tool:
+            raw = await bridge.call_tool(live_context_tool, {})
+            names, areas = fast_path.parse_live_context(raw)
+            state.set_slot_lists(names, areas)
+            logger.info("Fast-path: refreshed {} names / {} areas", len(names), len(areas))
+
+    return fast_path.FastPathStep(state=state, language=language, bridge=bridge, tool_names=tool_names)
+
+
+def _composed_vad_analyzer(flow: FlowConfig, is_esphome_satellite: bool = False):''',
+    )
+    replace(
+        '''        if _flow_enabled(flow):
+            initial_flow_node = _flow_node_configs(flow, bridge)''',
+        '''        fast_path_step = None
+        if (
+            config.fast_path_enabled
+            and is_esphome_satellite
+            and bridge is not None
+            and mcp_tools_schema is not None
+            and not _flow_enabled(flow)
+        ):
+            try:
+                fast_path_step = await _build_fast_path_step(config, flow, bridge, mcp_tools_schema)
+            except Exception as err:
+                logger.warning(
+                    "Fast-path setup failed, composed pipeline will use the LLM for every turn: {}", err
+                )
+
+        if _flow_enabled(flow):
+            initial_flow_node = _flow_node_configs(flow, bridge)''',
+    )
+    replace(
+        '        processors.extend([stt, context_aggregator.user(), llm, tts])',
+        '''        processors.append(stt)
+        if fast_path_step:
+            processors.append(fast_path_step)
+        processors.extend([context_aggregator.user(), llm, tts])''',
+    )
     return text
+
+
+def adapt_config(text):
+    """Patches for app/config.py: new provider kinds and fast-path settings."""
+
+    def replace(old, new):
+        nonlocal text
+        if text.count(old) != 1:
+            raise ValueError("Upstream config.py anchor changed: " + old[:70])
+        text = text.replace(old, new)
+
+    replace(
+        '    "speechmatics",\n    "gradium",\n    "openai_cloud",\n}\nCOMPOSED_LLM_PROVIDER_KINDS = {',
+        '    "speechmatics",\n    "gradium",\n    "openai_cloud",\n    "sherpa_onnx",\n}\nCOMPOSED_LLM_PROVIDER_KINDS = {',
+    )
+    replace(
+        '    "elevenlabs",\n    "openai_cloud",\n    "soniox",\n}\nCOMPOSED_STEP_PROVIDER_KINDS = {',
+        '    "elevenlabs",\n    "openai_cloud",\n    "soniox",\n    "piper_wyoming",\n}\nCOMPOSED_STEP_PROVIDER_KINDS = {',
+    )
+    replace(
+        '        "home_assistant_mcp",\n        "ha_mcp",\n        "mcp_server",\n    ]',
+        '        "home_assistant_mcp",\n        "ha_mcp",\n        "mcp_server",\n        "sherpa_onnx",\n        "piper_wyoming",\n    ]',
+    )
+    replace(
+        '    mcp_tools_cache_enabled: bool = True\n    mcp_tools_cache_ttl_seconds: int = Field(default=300, ge=0, le=86400)\n    ai_image_provider_id: str = ""',
+        '    mcp_tools_cache_enabled: bool = True\n    mcp_tools_cache_ttl_seconds: int = Field(default=300, ge=0, le=86400)\n    fast_path_enabled: bool = True\n    fast_path_custom_sentences_dirs: list[str] = Field(default_factory=list)\n    ai_image_provider_id: str = ""',
+    )
+    return text
+
+
+def adapt_mcp_bridge_pool(text):
+    """Appends the per-device MCP bridge pool to app/mcp_bridge.py."""
+
+    marker = "async def check_mcp("
+    if text.count(marker) != 1:
+        raise ValueError("Upstream mcp_bridge.py anchor changed: " + marker)
+    pool_code = '''_BRIDGE_POOL: dict[str, tuple[str, "CombinedMCPBridge"]] = {}
+_BRIDGE_POOL_LOCK = asyncio.Lock()
+
+
+def _pool_spec_key(servers: Sequence[dict[str, Any]]) -> str:
+    """A server list's identity for pool reuse: same servers + same tokens, reuse; otherwise reconnect."""
+    parts = sorted(
+        f"{spec.get('id', '')}|{spec.get('url', '')}|{spec.get('token', '')}|{spec.get('prefer_unprefixed')}"
+        for spec in servers
+    )
+    return "\\x1f".join(parts)
+
+
+async def get_pooled_bridge(
+    pool_id: str,
+    servers: Sequence[dict[str, Any]],
+    tool_allowlist: Sequence[str] | None = None,
+) -> "CombinedMCPBridge":
+    """Return a connected MCP bridge for `pool_id`, reusing a live one when its server set is unchanged.
+
+    A fresh CombinedMCPBridge connects to every configured MCP server (Home
+    Assistant's and the controller's own per-device scheduler endpoint) from
+    scratch -- measured at 1-2s on this fleet. A va_pipecat session is one
+    bounded turn, opened and closed per wake/button press, so reconnecting on
+    every turn paid that cost on every turn. Keyed by pool_id (one per
+    device/client), not globally: each device's scheduler token differs, so
+    pooling across devices would hand one device's tools to another.
+    """
+    key = _pool_spec_key(servers)
+    async with _BRIDGE_POOL_LOCK:
+        cached = _BRIDGE_POOL.get(pool_id)
+        if cached and cached[0] == key:
+            return cached[1]
+        stale = _BRIDGE_POOL.pop(pool_id, None)
+        bridge = CombinedMCPBridge(servers, tool_allowlist)
+        await bridge.start()
+        _BRIDGE_POOL[pool_id] = (key, bridge)
+    if stale:
+        with suppress(Exception):
+            await stale[1].close()
+    return bridge
+
+
+async def evict_pooled_bridge(pool_id: str) -> None:
+    """Drop and close a pooled bridge -- call this when a call through it fails mid-turn."""
+    async with _BRIDGE_POOL_LOCK:
+        cached = _BRIDGE_POOL.pop(pool_id, None)
+    if cached:
+        with suppress(Exception):
+            await cached[1].close()
+
+
+async def close_all_pooled_bridges() -> None:
+    """Close every pooled bridge -- call on addon shutdown."""
+    async with _BRIDGE_POOL_LOCK:
+        items = list(_BRIDGE_POOL.values())
+        _BRIDGE_POOL.clear()
+    for _, bridge in items:
+        with suppress(Exception):
+            await bridge.close()
+
+
+'''
+    return text.replace(marker, pool_code + marker)
+
+
+def adapt_ui(text):
+    """Patches for ui-src/src/main.jsx: integration picker + form fields for
+    sherpa-onnx/Piper, so they're configurable the same way every other
+    provider is -- not just accepted by the backend."""
+
+    def replace(old, new):
+        nonlocal text
+        if text.count(old) != 1:
+            raise ValueError("Upstream main.jsx anchor changed: " + old[:70])
+        text = text.replace(old, new)
+
+    replace(
+        '  ["ollama", "Ollama", Cpu],\n  ["local_runtime", "Local runtime", Cpu],\n  ["web_search", "Web Search", Search],',
+        '  ["ollama", "Ollama", Cpu],\n  ["local_runtime", "Local runtime", Cpu],\n  ["sherpa_onnx", "sherpa-onnx (local STT)", Cpu],\n  ["piper_wyoming", "Piper/Wyoming (local TTS)", Cpu],\n  ["web_search", "Web Search", Search],',
+    )
+    replace(
+        '  stt: ["soniox", "deepgram", "speechmatics", "gradium", "openai_cloud"],',
+        '  stt: ["soniox", "deepgram", "speechmatics", "gradium", "openai_cloud", "sherpa_onnx"],',
+    )
+    replace(
+        '  tts: ["cartesia", "gradium", "google_cloud_tts", "google_streaming_tts", "elevenlabs", "openai_cloud", "soniox"],',
+        '  tts: ["cartesia", "gradium", "google_cloud_tts", "google_streaming_tts", "elevenlabs", "openai_cloud", "soniox", "piper_wyoming"],',
+    )
+    replace(
+        '        "ollama",\n        "local_runtime",\n        "ha_mcp",\n        "mcp_server",\n      ].includes(',
+        '        "ollama",\n        "local_runtime",\n        "sherpa_onnx",\n        "piper_wyoming",\n        "ha_mcp",\n        "mcp_server",\n      ].includes(',
+    )
+    replace(
+        '  if (integration.kind === "azure_openai") {',
+        '''  if (integration.kind === "sherpa_onnx") {
+    return (
+      <SettingsSection title="sherpa-onnx online-websocket-server">
+        <TextSetting
+          integration={integration}
+          field="base_url"
+          label="Host:port"
+          placeholder="192.168.1.211:6006"
+          updateIntegration={updateIntegration}
+          wide
+        />
+      </SettingsSection>
+    );
+  }
+
+  if (integration.kind === "piper_wyoming") {
+    return (
+      <SettingsSection title="Piper (Wyoming protocol)">
+        <TextSetting
+          integration={integration}
+          field="base_url"
+          label="Host:port"
+          placeholder="192.168.1.211:10200"
+          updateIntegration={updateIntegration}
+          wide
+        />
+      </SettingsSection>
+    );
+  }
+
+  if (integration.kind === "azure_openai") {''',
+    )
+    replace(
+        'function TextSetting({ integration, field, label, updateIntegration, wide = false }) {\n  return (\n    <Field label={label} wide={wide}>\n      <input\n        autoComplete="off"\n        value={modelFieldValue(integration, field)}',
+        'function TextSetting({ integration, field, label, updateIntegration, wide = false, placeholder }) {\n  return (\n    <Field label={label} wide={wide}>\n      <input\n        autoComplete="off"\n        placeholder={placeholder}\n        value={modelFieldValue(integration, field)}',
+    )
+    return text
+
+
+def build_ui(out_dir: Path) -> None:
+    """Patch and rebuild the web UI bundle (ui-src -> app/ui)."""
+
+    path = out_dir / 'ui-src/src/main.jsx'
+    path.write_text(adapt_ui(path.read_text(encoding='utf-8')), encoding='utf-8')
+    ui_src = out_dir / 'ui-src'
+    pnpm = shutil.which('pnpm')
+    if not pnpm:
+        raise RuntimeError(
+            'pnpm not found on PATH -- required to rebuild the UI bundle '
+            '(ui-src -> app/ui) after patching main.jsx. Install pnpm and re-run.'
+        )
+    subprocess.check_call([pnpm, 'install', '--frozen-lockfile'], cwd=str(ui_src))
+    subprocess.check_call([pnpm, 'run', 'build'], cwd=str(ui_src))
+    # node_modules is a build-time dependency of this step alone; the add-on
+    # itself runs from app/ui's compiled output and never needs it.
+    node_modules = ui_src / 'node_modules'
+    if node_modules.exists():
+        shutil.rmtree(node_modules)
 
 
 def main():
@@ -75,9 +462,9 @@ def main():
     shutil.copytree(source, args.out, ignore=shutil.ignore_patterns('__pycache__', '*.pyc', '.env'))
     shutil.copyfile(args.source/'LICENSE', args.out/'LICENSE')
     path = args.out/'app/main.py'
-    path.write_text(adapt(path.read_text()))
+    path.write_text(adapt(path.read_text(encoding='utf-8')), encoding='utf-8')
     path = args.out/'app/va_pipecat_protocol.py'
-    protocol = path.read_text()
+    protocol = path.read_text(encoding='utf-8')
     old = 'phase_extra = {"terminal": True} if terminal else {"follow_up": True}'
     assert protocol.count(old) == 1
     protocol = protocol.replace('    tool_start_pending: bool = False', '    tool_start_pending: bool = False\n    continuation_requested: bool = False')
@@ -87,9 +474,9 @@ def main():
     protocol = protocol.replace('            self.active = not terminal\n            self.stop_requested = False', '            continuation_question = self.continuation_requested\n            self.continuation_requested = False\n            self.active = not terminal\n            self.stop_requested = False')
     protocol = protocol.replace('phase_extra = {"terminal": True} if terminal else {"follow_up": True, "continuation_question": self.continuation_requested}', 'phase_extra = {"terminal": True} if terminal else {"follow_up": True, "continuation_question": continuation_question}')
     protocol = protocol.replace('self.phase_message("listening", follow_up=True)', 'self.phase_message("listening", follow_up=True, continuation_question=continuation_question)')
-    path.write_text(protocol)
+    path.write_text(protocol, encoding='utf-8')
     path = args.out/'app/mcp_bridge.py'
-    bridge = path.read_text()
+    bridge = path.read_text(encoding='utf-8')
     old_call = """            session = self.client._ensure_connected()  # Pipecat exposes no public call_tool yet.
             result = await session.call_tool(name, arguments=arguments)
             chunks: list[str] = []
@@ -116,16 +503,57 @@ def main():
         raise ValueError("Upstream MCP bridge anchor changed")
     bridge = bridge.replace(old_call, new_call)
     bridge = bridge.replace("from __future__ import annotations\n", "from __future__ import annotations\n\nfrom app import echomuse\n", 1)
-    path.write_text(bridge)
+    bridge = adapt_mcp_bridge_pool(bridge)
+    path.write_text(bridge, encoding='utf-8')
+    path = args.out/'app/config.py'
+    path.write_text(adapt_config(path.read_text(encoding='utf-8')), encoding='utf-8')
     shutil.copyfile(Path(__file__).with_name('echomuse.py'), args.out/'app/echomuse.py')
+    for name in ('sherpa_stt.py', 'piper_wyoming_tts.py', 'energy_vad.py', 'fast_path.py'):
+        shutil.copyfile(Path(__file__).with_name(name), args.out/'app'/name)
+    custom_sentences_src = Path(__file__).with_name('custom_sentences')
+    custom_sentences_dst = args.out/'custom_sentences'
+    if custom_sentences_dst.exists():
+        shutil.rmtree(custom_sentences_dst)
+    shutil.copytree(custom_sentences_src, custom_sentences_dst)
+    pyproject_path = args.out/'pyproject.toml'
+    pyproject = pyproject_path.read_text(encoding='utf-8')
+    anchor = '    "websockets>=13.0",\n]'
+    if pyproject.count(anchor) != 1:
+        raise ValueError("Upstream pyproject.toml anchor changed: " + anchor)
+    pyproject = pyproject.replace(anchor, '''    "websockets>=13.0",
+    # Local STT (sherpa-onnx online-websocket-server) and TTS (Piper) providers
+    "numpy>=1.26.0",
+    "wyoming>=1.5.0",
+    # Fast-path intent matching: the same engine and built-in English
+    # sentence templates Home Assistant's own Assist pipeline uses for
+    # custom_sentences, so a transcript matching one of its sentence
+    # templates can skip the LLM entirely (app/fast_path.py).
+    "hassil>=2.0.0",
+    "home-assistant-intents>=2025.1.0",
+    "pyyaml>=6.0",
+]''')
+    pyproject_path.write_text(pyproject, encoding='utf-8')
+    build_ui(args.out)
     version = subprocess.check_output(['git', '-C', str(ROOT), 'rev-parse', '--short', 'HEAD'], text=True).strip()
     path = args.out/'config.yaml'
-    config = path.read_text()
+    config = path.read_text(encoding='utf-8')
     config = re.sub(r'^image:.*\n', '', config, flags=re.M)
     config = re.sub(r'^name:.*$', 'name: Pipecat Assist (EchoMuse dev)', config, flags=re.M)
     config = re.sub(r'^slug:.*$', 'slug: pipecat_assist_echomuse', config, flags=re.M)
     config = re.sub(r'^version:.*$', f'version: "0.1.80-em-{version}"', config, flags=re.M)
-    path.write_text(config)
+    if 'homeassistant_config:ro' not in config:
+        # Read-only access to HA's own config dir, mounted at /homeassistant,
+        # so the fast-path intent matcher can load the user's actual
+        # custom_sentences/<language>/*.yaml -- the same files and format
+        # HA's own Assist pipeline reads, parsed with the same hassil
+        # library. Read-only: this add-on never writes to HA's config.
+        config = re.sub(
+            r'^(hassio_role:.*)$',
+            r'\1\nmap:\n  - homeassistant_config:ro',
+            config,
+            flags=re.M,
+        )
+    path.write_text(config, encoding='utf-8')
     print(args.out)
 
 

@@ -1,0 +1,12 @@
+# Addon-authored custom_sentences, in Home Assistant's own format, merged
+# with the built-in English intents (home-assistant-intents) and -- when
+# running as a real HA add-on -- the user's own
+# /config/custom_sentences/en/*.yaml (see config.yaml's homeassistant_config
+# map). Loaded by app/fast_path.py; only intents in FAST_PATH_INTENTS are
+# ever acted on without the LLM, whatever file they come from.
+#
+# Empty by default. Add project-specific phrasing here, e.g. ones the
+# built-in grammar does not cover, following the same `hassil` format:
+# https://www.home-assistant.io/voice_control/custom_sentences/
+language: "en"
+intents: {}
