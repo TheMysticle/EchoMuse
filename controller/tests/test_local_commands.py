@@ -364,12 +364,23 @@ def test_packaged_builder_preserves_mcp_allowlist(monkeypatch, restricted):
         calls.append('native')
         return SimpleNamespace(resolve_device=resolve)
     monkeypatch.setitem(sys.modules, 'app.local_commands', SimpleNamespace(from_config=from_config))
-    namespace = {'fast_path': SimpleNamespace(FastPathStep=SimpleNamespace,
-                                              tool_names_for_fast_path=lambda names: {})}
+    fake_state = SimpleNamespace(slot_lists_stale=lambda: False)
+    namespace = {
+        'fast_path': SimpleNamespace(FastPathStep=SimpleNamespace, tool_names_for_fast_path=lambda names: {}),
+        '_fast_path_state': lambda config, language: fake_state,
+        'logger': SimpleNamespace(info=lambda *a, **k: None, warning=lambda *a, **k: None),
+    }
     code = ast.Module(body=[ast.ImportFrom(module='__future__', names=[ast.alias(name='annotations')], level=0), builder], type_ignores=[])
     exec(compile(ast.fix_missing_locations(code), 'packaged local command builder', 'exec'), namespace)
     flow = SimpleNamespace(language='en', mcp_tool_allowlist=['HassTurnOn'] if restricted else [])
     result = asyncio.run(namespace['_build_fast_path_step'](
-        SimpleNamespace(), flow, None, SimpleNamespace(standard_tools=[]), {'satellite_mac': 'aa:bb'}))
+        SimpleNamespace(), flow, None, SimpleNamespace(standard_tools=[]), {'satellite_mac': 'aa:bb', 'timezone': 'Europe/Warsaw'}))
     assert calls == ([] if restricted else ['native', 'aa:bb'])
+    if not restricted:
+        # The exact bug this pins: without a real state, _recognize_any has
+        # nothing to match against, so an EchoMuseCreate utterance can never
+        # be told apart from a Hass* one and local_commands.process() is
+        # asked for literally everything, including "start a timer".
+        assert result.state is fake_state
+        assert result.timezone == 'Europe/Warsaw'
     assert (result is None) is restricted

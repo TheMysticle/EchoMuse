@@ -21,6 +21,9 @@ def options(headers, authenticated):
     satellite_mac = headers.get("x-echomuse-satellite-mac", "").strip()
     if satellite_mac:
         result["satellite_mac"] = satellite_mac
+    timezone = headers.get("x-echomuse-timezone", "").strip()
+    if timezone:
+        result["timezone"] = timezone
     url = headers.get("x-echomuse-scheduler-url", "")
     token = headers.get("x-echomuse-scheduler-token", "")
     if url and token:

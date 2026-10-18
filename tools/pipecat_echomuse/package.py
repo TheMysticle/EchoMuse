@@ -217,9 +217,29 @@ async def _build_fast_path_step(
     )
     if commands is not None:
         await commands.resolve_device((session_options or {}).get("satellite_mac", ""))
+        # A real state is still needed here: without one, _recognize_any has
+        # nothing to match against, so an EchoMuseCreate/List/Action utterance
+        # can never be told apart from a Hass* one, and every utterance -- the
+        # exact "start a timer" case this fast-path exists for -- goes to HA's
+        # agent unchanged. slot_lists must be populated too, even with empty
+        # name/area lists: hassil raises for the WHOLE merged grammar (which
+        # still contains HA's own {name}/{area}-requiring built-ins) when a
+        # list it references is entirely absent, not merely empty.
+        state = _fast_path_state(config, language)
+        if state.slot_lists_stale():
+            live_context_tool = next(
+                (t.name for t in mcp_tools_schema.standard_tools if t.name.endswith("GetLiveContext")),
+                None,
+            )
+            if live_context_tool:
+                raw = await bridge.call_tool(live_context_tool, {})
+                names, areas = fast_path.parse_live_context(raw)
+                state.set_slot_lists(names, areas)
+                logger.info("Fast-path: refreshed {} names / {} areas", len(names), len(areas))
         return fast_path.FastPathStep(
-            state=None, language=language, bridge=bridge, tool_names={},
+            state=state, language=language, bridge=bridge, tool_names={},
             local_commands=commands, protocol=protocol, context=context,
+            timezone=(session_options or {}).get("timezone"),
         )
     tool_names = fast_path.tool_names_for_fast_path(
         [tool.name for tool in mcp_tools_schema.standard_tools]
@@ -239,7 +259,10 @@ async def _build_fast_path_step(
             state.set_slot_lists(names, areas)
             logger.info("Fast-path: refreshed {} names / {} areas", len(names), len(areas))
 
-    return fast_path.FastPathStep(state=state, language=language, bridge=bridge, tool_names=tool_names, context=context)
+    return fast_path.FastPathStep(
+        state=state, language=language, bridge=bridge, tool_names=tool_names, context=context,
+        timezone=(session_options or {}).get("timezone"),
+    )
 
 
 def _composed_vad_analyzer(flow: FlowConfig, is_esphome_satellite: bool = False):''',
@@ -825,7 +848,8 @@ def main():
     path = args.out/'app/config.py'
     path.write_text(adapt_config(path.read_text(encoding='utf-8')), encoding='utf-8')
     shutil.copyfile(Path(__file__).with_name('echomuse.py'), args.out/'app/echomuse.py')
-    for name in ('sherpa_stt.py', 'piper_wyoming_tts.py', 'energy_vad.py', 'fast_path.py', 'local_commands.py'):
+    for name in ('sherpa_stt.py', 'piper_wyoming_tts.py', 'energy_vad.py', 'fast_path.py', 'local_commands.py',
+                 'schedule_language.py', 'schedule_dialogue.py', 'schedule_select.py', 'schedule_mcp.py'):
         shutil.copyfile(Path(__file__).with_name(name), args.out/'app'/name)
     custom_sentences_src = Path(__file__).with_name('custom_sentences')
     custom_sentences_dst = args.out/'custom_sentences'

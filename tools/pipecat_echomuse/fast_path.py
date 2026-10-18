@@ -32,12 +32,17 @@ format -- so sentences authored for HA's own Assist work here unchanged.
 
 from __future__ import annotations
 
+import importlib.util
 import json
+import os
+import sys
 import time
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import home_assistant_intents
 import yaml
@@ -47,6 +52,42 @@ from loguru import logger
 
 from pipecat.frames.frames import Frame, LLMContextFrame, TTSSpeakFrame, VADUserStartedSpeakingFrame
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
+
+
+def _load_sibling(name: str):
+    """Load a module next to this file by its own path, under a fixed name
+    in sys.modules -- so its OWN sibling imports (e.g. schedule_dialogue.py's
+    `from schedule_language import ...`) resolve to the exact same instance
+    regardless of whether this file is itself loaded as a package submodule
+    (the real add-on, `app.fast_path`) or standalone (the test suite). A
+    caller may pre-register one of these names in sys.modules before this
+    module is imported, to supply a double."""
+
+    cached = sys.modules.get(name)
+    if cached is not None:
+        return cached
+    spec = importlib.util.spec_from_file_location(name, Path(__file__).resolve().parent / f"{name}.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+schedule_language = _load_sibling("schedule_language")
+schedule_dialogue = _load_sibling("schedule_dialogue")
+schedule_select = _load_sibling("schedule_select")
+schedule_mcp = _load_sibling("schedule_mcp")
+
+# EchoMuseCreate/List/Action, handled locally (no LLM) when the parse is
+# clean -- see FastPathStep._start_schedule. Never Hass*: those always skip
+# the fast-path matcher entirely and go to HA's own local agent instead.
+SCHEDULE_INTENTS = frozenset({"EchoMuseCreate", "EchoMuseList", "EchoMuseAction"})
+
+# EchoMuseAction's MCP tool schema supports exactly these; "cancel_all" and
+# "complete" have no MCP equivalent (the device REST API the native HA
+# handler uses supports them, but that endpoint is not reachable from here),
+# so those fall through to the LLM's own, equally limited, tool.
+SCHEDULE_ACTIONS = frozenset({"cancel", "dismiss", "snooze", "pause", "resume", "enable", "disable"})
 
 # Action intents only: each has a clean action_done/action_failed result
 # shape from HA's MCP intent tools (data.success / data.failed lists), so a
@@ -381,6 +422,7 @@ class FastPathStep(FrameProcessor):
         local_commands: Any = None,
         protocol: Any = None,
         context: Any = None,
+        timezone: str | None = None,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -391,6 +433,12 @@ class FastPathStep(FrameProcessor):
         self._local_commands = local_commands
         self._protocol = protocol
         self._context = context
+        # Matches em_workflow_tools.handle()'s own fallback for the same
+        # question; no session plumbing exists yet to carry the satellite's
+        # real configured timezone over this transport (see schedule_mcp.py).
+        self._timezone = timezone or os.environ.get("TZ") or "UTC"
+        self._pending_schedule: dict[str, Any] | None = None
+        self._last_created: dict[str, str] = {}
         self._awaiting_user_context = False
         self._user_baseline = self._user_count(context.get_messages()) if context is not None else 0
         self._last_routed_user_count = self._user_baseline
@@ -433,7 +481,14 @@ class FastPathStep(FrameProcessor):
                     return
                 self._last_routed_user_count = user_count
                 self._awaiting_user_context = False
+                if self._pending_schedule is not None:
+                    # Mid clarification for a local EchoMuseCreate: this
+                    # transcript is the answer, never a fresh command, and
+                    # must not be matched against anything else first.
+                    if await self._continue_schedule_clarification(text.strip()):
+                        return
                 skip_local_agent = False
+                own_result = None
                 if self._state is not None:
                     try:
                         own_result = _recognize_any(self._state, text.strip(), self._language)
@@ -460,6 +515,17 @@ class FastPathStep(FrameProcessor):
                         logger.info("Local command response supplied by the Home Assistant route")
                         await self.push_frame(TTSSpeakFrame(text=reply.text), direction)
                         return
+                if (self._bridge is not None and own_result is not None
+                        and own_result.intent.name in SCHEDULE_INTENTS):
+                    try:
+                        if await self._start_schedule(own_result, text.strip()):
+                            return
+                    except Exception as err:
+                        # A parse that looks uncertain, or any unexpected
+                        # failure, falls through to the LLM's identical
+                        # tools rather than guessing -- same posture as the
+                        # rest of this module (see class docstring).
+                        logger.warning("Fast-path: local schedule handling failed, falling through to the LLM: {}", err)
                 if await self._try_fast_path(text.strip()):
                     return
 
@@ -504,4 +570,217 @@ class FastPathStep(FrameProcessor):
 
         logger.info("Fast-path hit: {!r} -> {} ({}) args={}", text, result.intent.name, tool_name, args)
         await self.push_frame(TTSSpeakFrame(text=confirmation), FrameDirection.DOWNSTREAM)
+        return True
+
+    async def _start_schedule(self, result: RecognizeResult, text: str) -> bool:
+        """EchoMuseCreate/List/Action, parsed and acted on locally -- no LLM
+        round trip, matching custom_components/echomuse_schedule/intents.py's
+        Handler.async_handle(). Returns False whenever no tool call has been
+        attempted (an uncertain parse, or an action with no MCP equivalent),
+        so the caller can fall through to the LLM's own identical tools."""
+
+        slots = {name: entity.value for name, entity in result.entities.items()
+                 if entity.value not in (None, "")}
+        kind = slots.get("kind", "timer")
+        intent_name = result.intent.name
+        if intent_name == "EchoMuseList":
+            return await self._run_schedule_list(kind, slots)
+        if intent_name == "EchoMuseAction":
+            return await self._run_schedule_action(kind, slots)
+
+        # EchoMuseCreate. Mirrors intents.py's raw_request assembly: a
+        # temporal prefix before "remind me" belongs after its message; an
+        # alarm's time introducer goes first.
+        raw_request = (slots.get("request", "") + " " + slots.get("prefix", "")).strip()
+        if slots.get("when"):
+            if slots.get("prefix"):
+                raw_request = " ".join((slots.get("request", ""), slots["when"], slots["prefix"]))
+            else:
+                raw_request = (slots["when"] + " " + slots.get("request", "")).strip()
+        reference = datetime.now(ZoneInfo(self._timezone))
+        try:
+            item = schedule_language.parse_item(kind, raw_request, self._timezone, now=reference)
+        except schedule_language.Clarification as err:
+            self._pending_schedule = {
+                "kind": kind, "request": raw_request, "target": slots.get("target"),
+                "field": err.field, "reference": reference, "attempts": 1,
+            }
+            if self._protocol is not None:
+                self._protocol.continuation_requested = True
+            logger.info("Fast-path local schedule: asking for {} ({!r})", err.field, raw_request)
+            await self.push_frame(TTSSpeakFrame(text=str(err)), FrameDirection.DOWNSTREAM)
+            return True
+        except ValueError as err:
+            # A definite, known-bad input (e.g. two conflicting dates) --
+            # the native handler speaks this rather than falling back, and
+            # so do we: the parse was not uncertain, it was simply invalid.
+            await self.push_frame(TTSSpeakFrame(text=str(err)), FrameDirection.DOWNSTREAM)
+            return True
+        if slots.get("target"):
+            item["label"] = slots["target"]
+        return await self._create_schedule_item(kind, item)
+
+    async def _continue_schedule_clarification(self, text: str) -> bool:
+        pending = self._pending_schedule
+        stripped = text.strip().rstrip(".?!").lower()
+        if stripped in schedule_dialogue.CANCEL:
+            kind = pending["kind"]
+            self._pending_schedule = None
+            await self.push_frame(TTSSpeakFrame(text=f"Okay, I haven't set the {kind}."), FrameDirection.DOWNSTREAM)
+            return True
+        candidate = None
+        try:
+            candidate = schedule_dialogue.complete_request(pending["request"], text, pending["field"])
+            item = schedule_language.parse_item(pending["kind"], candidate, self._timezone, now=pending["reference"])
+        except schedule_language.Clarification as err:
+            # Preserve accepted details (e.g. tomorrow + 8 -> AM/PM).
+            if candidate is not None:
+                pending["request"] = candidate
+            pending["field"] = err.field
+            return await self._ask_again_or_give_up(pending, str(err))
+        except ValueError as err:
+            return await self._ask_again_or_give_up(pending, str(err))
+        if pending.get("target"):
+            item["label"] = pending["target"]
+        self._pending_schedule = None
+        return await self._create_schedule_item(pending["kind"], item)
+
+    async def _ask_again_or_give_up(self, pending: dict, question: str) -> bool:
+        pending["attempts"] += 1
+        if pending["attempts"] > 4:
+            kind = pending["kind"]
+            field = pending["field"]
+            self._pending_schedule = None
+            detail = {"message": "the reminder text", "duration": "a duration"}.get(field, "a complete time")
+            await self.push_frame(
+                TTSSpeakFrame(text=f"I haven't set the {kind}. Please try again with {detail}."),
+                FrameDirection.DOWNSTREAM,
+            )
+            return True
+        if self._protocol is not None:
+            self._protocol.continuation_requested = True
+        await self.push_frame(TTSSpeakFrame(text=question), FrameDirection.DOWNSTREAM)
+        return True
+
+    async def _create_schedule_item(self, kind: str, item: dict) -> bool:
+        now = datetime.now(ZoneInfo(item["timezone"]))
+        try:
+            args = schedule_mcp.to_mcp_args(kind, item, now)
+        except Exception as err:
+            # Nothing has been attempted yet -- safe to let the LLM retry.
+            logger.warning("Local schedule: could not build MCP arguments, falling through to the LLM: {}", err)
+            return False
+        # A tool call may have real-world effects from here on -- this turn
+        # is handled regardless of what happens next (see class docstring).
+        try:
+            raw = await self._bridge.call_tool("EchoMuseCreate", args)
+            content = json.loads(raw)
+            if not isinstance(content, dict) or "snapshot" not in content:
+                raise ValueError(content if isinstance(content, str) else "Unexpected scheduler response")
+        except Exception as err:
+            logger.warning("Local schedule: create failed: {}", err)
+            await self.push_frame(TTSSpeakFrame(text="Sorry, I couldn't set that."), FrameDirection.DOWNSTREAM)
+            return True
+        items = content["snapshot"].get("items") or []
+        if items:
+            self._last_created[kind] = items[-1]["id"]
+        text = schedule_dialogue.created_speech(kind, item, content)
+        logger.info("Fast-path local schedule: created {} ({!r})", kind, item.get("label"))
+        await self.push_frame(TTSSpeakFrame(text=text), FrameDirection.DOWNSTREAM)
+        return True
+
+    async def _run_schedule_list(self, kind: str, slots: dict) -> bool:
+        try:
+            raw = await self._bridge.call_tool("EchoMuseList", {"kind": kind} if kind else {})
+            content = json.loads(raw)
+            if not isinstance(content, dict) or "snapshot" not in content:
+                raise ValueError(content if isinstance(content, str) else "Unexpected scheduler response")
+        except Exception as err:
+            logger.warning("Local schedule: list failed, falling through to the LLM: {}", err)
+            return False
+        data = content["snapshot"]
+        items = [i for i in data["items"] if i["kind"] == kind]
+        target = slots.get("target")
+        if target:
+            try:
+                items = [schedule_select.select(data, kind, target, slots, recent=self._last_created,
+                                                 now=datetime.now(ZoneInfo(self._timezone)))]
+            except ValueError as err:
+                await self.push_frame(TTSSpeakFrame(text=str(err)), FrameDirection.DOWNSTREAM)
+                return True
+        now = int(time.time())
+        if kind == "timer":
+            text = "; ".join(
+                (i.get("message") or i["label"]) + ": " + i["state"]
+                + (f", {max(0, i['due'] - now)} seconds remaining" if i["state"] == "scheduled" else "")
+                for i in items
+            )
+        else:
+            text = "; ".join(
+                (i.get("message") or i["label"]) + ": " + i["state"]
+                + (", " + datetime.fromtimestamp(i["due"], ZoneInfo(i["timezone"])).strftime("%A %d %B at %H:%M %Z")
+                   if i.get("due") else "")
+                for i in items
+            )
+        await self.push_frame(TTSSpeakFrame(text=text or f"You don't have any {kind}s set."), FrameDirection.DOWNSTREAM)
+        return True
+
+    async def _run_schedule_action(self, kind: str, slots: dict) -> bool:
+        action = slots.get("action")
+        if action not in SCHEDULE_ACTIONS:
+            # cancel_all/complete have no equivalent on EchoMuseAction's MCP
+            # schema -- let the LLM's own (equally limited) tool try.
+            return False
+        try:
+            # Unfiltered: a bare "stop ringing"/"snooze it" names no kind,
+            # and the active alert may be any kind.
+            raw = await self._bridge.call_tool("EchoMuseList", {})
+            content = json.loads(raw)
+            if not isinstance(content, dict) or "snapshot" not in content:
+                raise ValueError(content if isinstance(content, str) else "Unexpected scheduler response")
+        except Exception as err:
+            logger.warning("Local schedule: list-before-action failed, falling through to the LLM: {}", err)
+            return False
+        data = content["snapshot"]
+        target = slots.get("target")
+        if action in ("dismiss", "snooze") and not target:
+            current = next((i for i in data["items"] if i["id"] == data.get("active")), None)
+            if current:
+                kind = current["kind"]
+        try:
+            item = schedule_select.select(data, kind, target, slots, recent=self._last_created,
+                                           now=datetime.now(ZoneInfo(self._timezone)))
+        except ValueError as err:
+            await self.push_frame(TTSSpeakFrame(text=str(err)), FrameDirection.DOWNSTREAM)
+            return True
+        args = {"action": action, "id": item["id"]}
+        if action == "snooze" and slots.get("request"):
+            try:
+                seconds, rest = schedule_language.duration(slots["request"] + " " + slots.get("unit", ""))
+            except ValueError as err:
+                await self.push_frame(TTSSpeakFrame(text=str(err)), FrameDirection.DOWNSTREAM)
+                return True
+            if rest:
+                await self.push_frame(TTSSpeakFrame(text="Please give a snooze duration"), FrameDirection.DOWNSTREAM)
+                return True
+            args["seconds"] = seconds
+        # A tool call may have real-world effects from here on.
+        try:
+            raw = await self._bridge.call_tool("EchoMuseAction", args)
+            content = json.loads(raw)
+            if not isinstance(content, dict) or "snapshot" not in content:
+                raise ValueError(content if isinstance(content, str) else "Unexpected scheduler response")
+        except Exception as err:
+            logger.warning("Local schedule: action failed: {}", err)
+            await self.push_frame(TTSSpeakFrame(text="Sorry, that didn't work."), FrameDirection.DOWNSTREAM)
+            return True
+        text = {
+            "cancel": f"{kind.title()} cancelled.", "dismiss": f"{kind.title()} stopped.",
+            "pause": "Timer paused.", "resume": "Timer resumed.",
+            "enable": f"{kind.title()} turned on.", "disable": f"{kind.title()} turned off.",
+        }.get(action, "Done.")
+        if action == "snooze":
+            text = "Snoozed for " + schedule_dialogue.duration_speech(
+                args.get("seconds") or data.get("settings", {}).get("snooze", 540)) + "."
+        await self.push_frame(TTSSpeakFrame(text=text), FrameDirection.DOWNSTREAM)
         return True

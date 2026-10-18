@@ -31,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import aiohttp
@@ -238,6 +239,12 @@ async def handshake(config, device_id):
             headers["X-EchoMuse-Scheduler-Url"] = config["_scheduler_url"]
             headers["X-EchoMuse-Scheduler-Token"] = config["_scheduler_token"]
             headers["X-EchoMuse-Local-Schedules"] = "true" if config.get("local_schedules") else "false"
+            # The same source em_workflow_tools.handle()'s own response
+            # envelope already uses for this -- without it, a clock-time
+            # schedule parsed locally (never seeing an LLM, which is told
+            # to ask when it doesn't know) silently resolves in UTC.
+            if os.environ.get("TZ"):
+                headers["X-EchoMuse-Timezone"] = os.environ["TZ"]
     # Header values must be HTTP-compatible. Keys never appear in URLs/logs.
     try:
         for value in headers.values():
