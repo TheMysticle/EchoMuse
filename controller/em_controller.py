@@ -1362,12 +1362,27 @@ class Device:
 
     async def workflow_phase(self, phase: str):
         """Use the same scene and thinking animation as native Assist."""
+        self.listening = phase == "listening"
+        self.thinking = phase == "thinking"
+        if phase == "speaking":
+            # Leave the thinking spinner running rather than cancelling it:
+            # cancelling it turns the ring off in leds_spin_green's own
+            # finally, and the real replacement -- _voice_metered_chunks'
+            # meter animation -- is deliberately held back by
+            # _meter_at_playback_start until roughly SPEAKER_PRIME_SECONDS
+            # of audio has been queued, synced to when the device will
+            # actually be heard. That left the ring dark for the whole
+            # priming window for no reason; send_led_anim atomically
+            # replaces whatever is showing, so the still-spinning spinner
+            # is simply overwritten once the meter is ready. The task is
+            # still cancelled normally by the next listening/thinking/idle/
+            # thanks transition.
+            await _push_device_state(self)
+            return
         task, self.workflow.scene_task = self.workflow.scene_task, None
         if task:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
-        self.listening = phase == "listening"
-        self.thinking = phase == "thinking"
         if phase == "listening":
             await leds_listening(self)
         elif phase == "thinking":
