@@ -55,6 +55,20 @@ def adapt(text):
     tools_schema = _merge_tools_schema(mcp_tools_schema, local_tool_schemas)
     context_for_memory = None''')
     replace('local_turn_detection=bool(_enabled_step(flow, "vad")),', 'local_turn_detection=bool(_enabled_step(flow, "vad") or session_body.get("echomuse", {}).get("barge_in")),')
+
+    # --- upstream bug: _step_model_for's "stt" branch never falls back to
+    # integration.default_model, unlike every other branch beside it (tts
+    # does). The UI's own stepDefaults() in main.jsx already assumes this
+    # fallback exists (default_stt_model || default_model || fallback) and
+    # shows the right value as a result, which is exactly why a correctly
+    # configured Deepgram/Soniox/Speechmatics integration (nova-3 saved in
+    # its one "STT model" field, which writes default_model) still resolved
+    # to an empty model at runtime -- "AsyncV1Client.connect() missing 1
+    # required keyword-only argument: 'model'", reconnecting forever. ---
+    replace(
+        'if capability == "stt":\n        return (integration.default_stt_model or fallback).strip()',
+        'if capability == "stt":\n        return (integration.default_stt_model or integration.default_model or fallback).strip()',
+    )
     replace('if provider_kind == "gemini" and _enabled_step(flow, "vad"):', 'if provider_kind == "gemini" and (_enabled_step(flow, "vad") or session_body.get("echomuse", {}).get("barge_in")):')
     replace('vad_analyzer=_composed_vad_analyzer(flow),', 'vad_analyzer=echomuse.vad_analyzer(session_body.get("echomuse", {}), lambda: _composed_vad_analyzer(flow)),')
 
