@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import json
 import time
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -79,17 +79,60 @@ _VERBS: dict[str, str] = {
 SLOT_LIST_TTL_SECONDS = 300  # live entity/area names drift as little as HA's own cache
 
 
-def load_intents(language: str, custom_sentence_dirs: list[Path]) -> Intents:
+@dataclass
+class LoadedFile:
+    """One custom_sentences file this process tried to load, for the Custom
+    Sentences status tab -- never read on the turn path, only built once per
+    language alongside the compiled Intents and cached on FastPathState."""
+
+    path: str
+    ok: bool
+    intent_names: list[str] = field(default_factory=list)
+    error: str | None = None
+
+
+@dataclass
+class IntentStatus:
+    """One intent in the merged grammar: where it came from (a custom file's
+    path, or "built-in" for HA's own data) and whether a match on it skips
+    the LLM (FAST_PATH_INTENTS) -- not every custom sentence is meant to:
+    EchoMuseSpotifySearchAndPlay still goes to the LLM to pick a search
+    query, then calls a tool that does its own local, fast catalogue search
+    (custom_components/echomuse_spotify/search.py) -- not fast-path-eligible
+    is not the same claim as slow."""
+
+    name: str
+    source: str
+    sentence_count: int
+    fast_path_eligible: bool
+
+
+@dataclass
+class FastPathReport:
+    language: str
+    custom_sentence_dirs: list[str]
+    files: list[LoadedFile]
+    intents: list[IntentStatus]
+
+
+def load_intents(language: str, custom_sentence_dirs: list[Path]) -> tuple[Intents, FastPathReport]:
     """Build HA's own built-in intents for `language`, merged with any
     custom_sentences YAML files found in `custom_sentence_dirs` (checked in
     order; HA's own format: `{language: ..., intents: {...}, lists: {...}}`,
     the same files `custom_sentences/<language>/*.yaml` under HA's config
-    directory, or any directory holding the same format)."""
+    directory, or any directory holding the same format).
+
+    Also returns a FastPathReport describing exactly what was found: which
+    files loaded, which failed and why, and which intents the merged grammar
+    now recognizes -- the data behind the Custom Sentences status tab.
+    """
 
     data = home_assistant_intents.get_intents(language)
     if data is None:
         raise RuntimeError(f"home-assistant-intents has no built-in data for language {language!r}")
     merged = dict(data)
+    files: list[LoadedFile] = []
+    custom_sources: dict[str, str] = {}
 
     for directory in custom_sentence_dirs:
         lang_dir = directory / language
@@ -100,12 +143,36 @@ def load_intents(language: str, custom_sentence_dirs: list[Path]) -> Intents:
                 with path.open(encoding="utf-8") as file:
                     custom = yaml.safe_load(file)
                 if isinstance(custom, dict):
+                    names = sorted((custom.get("intents") or {}).keys())
                     merge_dict(merged, custom)
+                    for name in names:
+                        custom_sources[name] = str(path)
+                    files.append(LoadedFile(path=str(path), ok=True, intent_names=names))
                     logger.info("Fast-path: loaded custom_sentences {}", path)
+                else:
+                    files.append(LoadedFile(path=str(path), ok=False, error="not a YAML mapping"))
+                    logger.warning("Fast-path: {} is not a YAML mapping, skipped", path)
             except Exception as err:
+                files.append(LoadedFile(path=str(path), ok=False, error=str(err)))
                 logger.warning("Fast-path: could not load custom_sentences {}: {}", path, err)
 
-    return Intents.from_dict(merged)
+    intents = Intents.from_dict(merged)
+    statuses = [
+        IntentStatus(
+            name=name,
+            source=custom_sources.get(name, "built-in"),
+            sentence_count=sum(len(block.get("sentences", [])) for block in (intent_data.get("data") or [])),
+            fast_path_eligible=name in FAST_PATH_INTENTS,
+        )
+        for name, intent_data in (merged.get("intents") or {}).items()
+    ]
+    report = FastPathReport(
+        language=language,
+        custom_sentence_dirs=[str(d) for d in custom_sentence_dirs],
+        files=files,
+        intents=sorted(statuses, key=lambda s: s.name),
+    )
+    return intents, report
 
 
 def _split_names(raw: str) -> list[str]:
@@ -159,6 +226,7 @@ class FastPathState:
     intents: Intents
     slot_lists: dict[str, TextSlotList] = field(default_factory=dict)
     slot_lists_at: float = 0.0
+    report: FastPathReport | None = None
 
     def slot_lists_stale(self) -> bool:
         return (time.time() - self.slot_lists_at) > SLOT_LIST_TTL_SECONDS
@@ -255,6 +323,13 @@ def tool_names_for_fast_path(tool_names: list[str]) -> dict[str, str]:
         if intent_name in FAST_PATH_INTENTS:
             mapping[intent_name] = tool_name
     return mapping
+
+
+def report_to_dict(report: FastPathReport) -> dict[str, Any]:
+    """JSON-safe view of a FastPathReport, for the Custom Sentences status
+    endpoint -- plain dataclass->dict, no recomputation."""
+
+    return asdict(report)
 
 
 class FastPathStep(FrameProcessor):

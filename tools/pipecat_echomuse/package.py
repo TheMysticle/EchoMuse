@@ -187,8 +187,8 @@ def _fast_path_state(config: RuntimeConfig, language: str) -> "fast_path.FastPat
     cached = _FAST_PATH_STATES.get(language)
     if cached is not None:
         return cached
-    intents = fast_path.load_intents(language, _fast_path_custom_sentence_dirs(config))
-    state = fast_path.FastPathState(intents=intents)
+    intents, report = fast_path.load_intents(language, _fast_path_custom_sentence_dirs(config))
+    state = fast_path.FastPathState(intents=intents, report=report)
     _FAST_PATH_STATES[language] = state
     return state
 
@@ -254,6 +254,30 @@ def _composed_vad_analyzer(flow: FlowConfig, is_esphome_satellite: bool = False)
         if fast_path_step:
             processors.append(fast_path_step)
         processors.extend([context_aggregator.user(), llm, tts])''',
+    )
+    replace(
+        '@app.get("/api/assist/mcp/history")\nasync def api_mcp_history():\n    return list_mcp_call_history()',
+        '''@app.get("/api/assist/mcp/history")
+async def api_mcp_history():
+    return list_mcp_call_history()
+
+
+@app.get("/api/assist/fast_path/status")
+async def api_fast_path_status():
+    # Read-only: builds (and caches, same as a real turn would) the compiled
+    # grammar for each configured flow's language and reports what it found.
+    # Never on the voice-turn path -- only when this HTTP endpoint is polled.
+    config = STORE.load()
+    languages = sorted({(flow.language or "en").split("-")[0] for flow in config.flows})
+    reports = []
+    for language in languages:
+        try:
+            state = _fast_path_state(config, language)
+        except Exception as err:
+            reports.append({"language": language, "error": str(err)})
+            continue
+        reports.append(fast_path.report_to_dict(state.report) if state.report else {"language": language})
+    return {"enabled": config.fast_path_enabled, "languages": reports}''',
     )
     return text
 
@@ -423,7 +447,263 @@ def adapt_ui(text):
         'function TextSetting({ integration, field, label, updateIntegration, wide = false }) {\n  return (\n    <Field label={label} wide={wide}>\n      <input\n        autoComplete="off"\n        value={modelFieldValue(integration, field)}',
         'function TextSetting({ integration, field, label, updateIntegration, wide = false, placeholder }) {\n  return (\n    <Field label={label} wide={wide}>\n      <input\n        autoComplete="off"\n        placeholder={placeholder}\n        value={modelFieldValue(integration, field)}',
     )
+
+    # --- Custom Sentences tab: a nav tab beside Runtime showing which
+    # custom_sentences files/intents loaded, which failed, and which bypass
+    # the LLM (app/fast_path.py's FastPathReport, read-only, never on the
+    # voice-turn path). ---
+    replace(
+        '  Image as ImageIcon,\n  Mic2,',
+        '  Image as ImageIcon,\n  ListChecks,\n  Mic2,',
+    )
+    replace(
+        '          {[\n            ["assistant", t("Assistant"), Bot],\n            ["pipelines", t("Pipelines"), Workflow],\n            ["integrations", t("Integrations"), SlidersHorizontal],\n            ["runtime", t("Runtime"), Settings],\n          ].map(([id, label, Icon]) => (',
+        '          {[\n            ["assistant", t("Assistant"), Bot],\n            ["pipelines", t("Pipelines"), Workflow],\n            ["integrations", t("Integrations"), SlidersHorizontal],\n            ["runtime", t("Runtime"), Settings],\n            ["custom_sentences", t("Custom Sentences"), ListChecks],\n          ].map(([id, label, Icon]) => (',
+    )
+    replace(
+        '              {tab === "assistant"\n                ? t("Assistant")\n                : tab === "pipelines"\n                  ? t("Pipelines")\n                  : tab === "integrations"\n                    ? t("Integrations")\n                    : t("Runtime")}',
+        '              {tab === "assistant"\n                ? t("Assistant")\n                : tab === "pipelines"\n                  ? t("Pipelines")\n                  : tab === "integrations"\n                    ? t("Integrations")\n                    : tab === "custom_sentences"\n                      ? t("Custom Sentences")\n                      : t("Runtime")}',
+    )
+    replace(
+        '  mcpHistory: appUrl("api/assist/mcp/history"),',
+        '  mcpHistory: appUrl("api/assist/mcp/history"),\n  fastPathStatus: appUrl("api/assist/fast_path/status"),',
+    )
+    replace(
+        '  const [mcpHistory, setMcpHistory] = useState({ calls: [] });',
+        '  const [mcpHistory, setMcpHistory] = useState({ calls: [] });\n  const [fastPathStatus, setFastPathStatus] = useState({ languages: [] });',
+    )
+    replace(
+        '    const [configResponse, statusResponse, audioResponse, mcpHistoryResponse] = await Promise.all([\n      fetch(API.config),\n      fetch(API.status),\n      fetch(API.audioDebug).catch(() => null),\n      fetch(API.mcpHistory).catch(() => null),\n    ]);',
+        '    const [configResponse, statusResponse, audioResponse, mcpHistoryResponse, fastPathStatusResponse] = await Promise.all([\n      fetch(API.config),\n      fetch(API.status),\n      fetch(API.audioDebug).catch(() => null),\n      fetch(API.mcpHistory).catch(() => null),\n      fetch(API.fastPathStatus).catch(() => null),\n    ]);',
+    )
+    replace(
+        '    if (mcpHistoryResponse?.ok) {\n      setMcpHistory(await mcpHistoryResponse.json());\n    }',
+        '    if (mcpHistoryResponse?.ok) {\n      setMcpHistory(await mcpHistoryResponse.json());\n    }\n    if (fastPathStatusResponse?.ok) {\n      setFastPathStatus(await fastPathStatusResponse.json());\n    }',
+    )
+    replace(
+        '  async function refreshMcpHistory() {\n    const response = await fetch(API.mcpHistory);\n    if (response.ok) {\n      setMcpHistory(await response.json());\n    }\n  }',
+        '''  async function refreshMcpHistory() {
+    const response = await fetch(API.mcpHistory);
+    if (response.ok) {
+      setMcpHistory(await response.json());
+    }
+  }
+
+  async function refreshFastPathStatus() {
+    const response = await fetch(API.fastPathStatus);
+    if (response.ok) {
+      setFastPathStatus(await response.json());
+    }
+  }''',
+    )
+    replace(
+        '''        {tab === "runtime" && (
+          <RuntimeView
+            config={config}
+            flow={activeFlow}
+            status={status}
+            copyEspHomeUrl={copyEspHomeUrl}
+            audioDebug={audioDebug}
+            refreshAudioDebug={refreshAudioDebug}
+            clearAudioDebug={clearAudioDebug}
+            mcpHistory={mcpHistory}
+            refreshMcpHistory={refreshMcpHistory}
+            clearMcpHistory={clearMcpHistory}
+            updateConfig={updateConfig}
+            updateIntegration={updateIntegration}
+            save={save}
+            saving={saving}
+          />
+        )}''',
+        '''        {tab === "runtime" && (
+          <RuntimeView
+            config={config}
+            flow={activeFlow}
+            status={status}
+            copyEspHomeUrl={copyEspHomeUrl}
+            audioDebug={audioDebug}
+            refreshAudioDebug={refreshAudioDebug}
+            clearAudioDebug={clearAudioDebug}
+            mcpHistory={mcpHistory}
+            refreshMcpHistory={refreshMcpHistory}
+            clearMcpHistory={clearMcpHistory}
+            updateConfig={updateConfig}
+            updateIntegration={updateIntegration}
+            save={save}
+            saving={saving}
+          />
+        )}
+
+        {tab === "custom_sentences" && (
+          <CustomSentencesView
+            fastPathStatus={fastPathStatus}
+            refreshFastPathStatus={refreshFastPathStatus}
+          />
+        )}''',
+    )
+    replace(
+        'createRoot(document.getElementById("root")).render(<App />);',
+        '''function CustomSentencesView({ fastPathStatus, refreshFastPathStatus }) {
+  const languages = fastPathStatus?.languages || [];
+  const enabled = fastPathStatus?.enabled !== false;
+  return (
+    <div className="runtime-home">
+      <section className="panel main-panel">
+        <div className="panel-head">
+          <div>
+            <h3>{t("Custom Sentences")}</h3>
+            <span>
+              {enabled
+                ? t(
+                    "Files Home Assistant's own Assist pipeline reads from custom_sentences, matched the same way before the LLM is asked.",
+                  )
+                : t("Fast-path matching is turned off -- every sentence goes to the LLM.")}
+            </span>
+          </div>
+          <div className="button-row">
+            <Button icon={RefreshCw} variant="secondary" onClick={refreshFastPathStatus}>
+              {t("Refresh")}
+            </Button>
+          </div>
+        </div>
+        {languages.length ? (
+          languages.map((entry) => <CustomSentencesLanguage key={entry.language} entry={entry} />)
+        ) : (
+          <div className="empty-state">{t("Nothing to show yet -- press Refresh.")}</div>
+        )}
+      </section>
+    </div>
+  );
+}
+
+function CustomSentencesLanguage({ entry }) {
+  if (entry.error) {
+    return (
+      <div className="sentence-lang-block">
+        <div className="panel-head">
+          <div>
+            <h4>{entry.language}</h4>
+          </div>
+          <span className="status-pill error">{t("Failed to load")}</span>
+        </div>
+        <div className="empty-state">{entry.error}</div>
+      </div>
+    );
+  }
+  const files = entry.files || [];
+  const allIntents = entry.intents || [];
+  const customIntents = allIntents.filter((intent) => intent.source !== "built-in");
+  const builtInCount = allIntents.length - customIntents.length;
+  const fastPathCount = customIntents.filter((intent) => intent.fast_path_eligible).length;
+  const byName = new Map(allIntents.map((intent) => [intent.name, intent]));
+  return (
+    <div className="sentence-lang-block">
+      <div className="panel-head">
+        <div>
+          <h4>{entry.language.toUpperCase()}</h4>
+          <span>
+            {files.length} custom_sentences file{files.length === 1 ? "" : "s"} -- {customIntents.length} custom
+            intent{customIntents.length === 1 ? "" : "s"}, {fastPathCount} skip{fastPathCount === 1 ? "s" : ""} the
+            LLM; {builtInCount} built-in intent{builtInCount === 1 ? "" : "s"} available
+          </span>
+        </div>
+      </div>
+      <div className="sentence-file-list">
+        {files.length ? (
+          files.map((file) => <SentenceFileCard key={file.path} file={file} byName={byName} />)
+        ) : (
+          <div className="empty-state">
+            {t("No custom_sentences files found for this language.")}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function SentenceFileCard({ file, byName }) {
+  const shortName = file.path.split(/[\\\\/]/).pop();
+  return (
+    <div className={`mcp-call ${file.ok ? "ok" : "error"}`}>
+      <div className="mcp-call-head">
+        <strong>{shortName}</strong>
+        <span className={`status-pill ${file.ok ? "ok" : "error"}`}>
+          {file.ok ? t("Loaded") : t("Failed")}
+        </span>
+      </div>
+      <small>{file.path}</small>
+      {file.ok ? (
+        <div className="intent-rows">
+          {file.intent_names.map((name) => {
+            const info = byName.get(name);
+            return (
+              <div key={name} className="intent-row">
+                <span className="intent-name">{name}</span>
+                <span>
+                  {info
+                    ? `${info.sentence_count} ${t(info.sentence_count === 1 ? "sentence" : "sentences")}`
+                    : ""}
+                </span>
+                <span className={`status-pill ${info?.fast_path_eligible ? "ok" : ""}`}>
+                  {info?.fast_path_eligible ? t("Skips the LLM") : t("Routes to the LLM")}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="empty-state">{file.error}</div>
+      )}
+    </div>
+  );
+}
+
+createRoot(document.getElementById("root")).render(<App />);''',
+    )
     return text
+
+
+def adapt_styles(text):
+    """Appends CSS for the Custom Sentences tab, reusing the existing
+    panel/status-pill/mcp-call vocabulary rather than inventing a parallel one."""
+
+    marker = "\n.runtime-facts.stacked {"
+    if text.count(marker) != 1:
+        raise ValueError("Upstream styles.css anchor changed: " + marker.strip())
+    addition = '''
+.sentence-lang-block,
+.sentence-file-list {
+  display: grid;
+  gap: 12px;
+}
+
+.intent-rows {
+  display: grid;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.intent-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border-top: 1px solid var(--line);
+  padding-top: 6px;
+  font-size: 13px;
+}
+
+.intent-row:first-child {
+  border-top: none;
+  padding-top: 0;
+}
+
+.intent-name {
+  font-weight: 700;
+  color: var(--ink);
+}
+'''
+    return text.replace(marker, addition + marker)
 
 
 def build_ui(out_dir: Path) -> None:
@@ -431,6 +711,8 @@ def build_ui(out_dir: Path) -> None:
 
     path = out_dir / 'ui-src/src/main.jsx'
     path.write_text(adapt_ui(path.read_text(encoding='utf-8')), encoding='utf-8')
+    styles_path = out_dir / 'ui-src/src/styles.css'
+    styles_path.write_text(adapt_styles(styles_path.read_text(encoding='utf-8')), encoding='utf-8')
     ui_src = out_dir / 'ui-src'
     pnpm = shutil.which('pnpm')
     if not pnpm:
