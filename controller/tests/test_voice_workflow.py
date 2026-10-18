@@ -449,7 +449,7 @@ def test_va_pipecat_raw_pcm_and_semantic_events(fresh_db):
 
 @pytest.mark.parametrize('hello',[{},va_hello(input_sample_rate=48000),va_hello(format='opus'),
     va_hello(output_sample_rate=1234),va_hello(channels=2),{**va_hello(),'version':2}])
-def test_va_pipecat_rejects_incompatible_hello(hello):
+def test_va_pipecat_rejects_incompatible_hello(hello, fresh_db):
     async def main():
         async def server(ws):
             await ws.send(json.dumps(hello))
