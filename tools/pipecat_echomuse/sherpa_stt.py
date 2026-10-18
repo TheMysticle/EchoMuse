@@ -29,7 +29,9 @@ from pipecat.frames.frames import (
     Frame,
     StartFrame,
     TranscriptionFrame,
+    UserStartedSpeakingFrame,
     UserStoppedSpeakingFrame,
+    VADUserStartedSpeakingFrame,
     VADUserStoppedSpeakingFrame,
 )
 from pipecat.processors.frame_processor import FrameDirection
@@ -63,8 +65,27 @@ class SherpaOnnxSTTService(WebsocketSTTService):
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
+        if isinstance(frame, (VADUserStartedSpeakingFrame, UserStartedSpeakingFrame)):
+            await self._ensure_fresh_connection()
         if isinstance(frame, (VADUserStoppedSpeakingFrame, UserStoppedSpeakingFrame)):
             await self._send_done()
+
+    async def _ensure_fresh_connection(self):
+        """A connection that has already finalized one utterance (or has
+        none at all) is useless for the next one -- sherpa-onnx answers
+        exactly one utterance per connection (see module docstring).
+        Without this, every utterance after the first in a multi-turn
+        session sends audio into a connection that has already said
+        "Done!" and will never respond again: run_stt keeps sending
+        (state is still OPEN), but _send_done's guard refuses to resend
+        "Done" because _finalized_sent is still True from the previous
+        utterance, and the server never finalizes on its own. The result
+        is a hung STT stage -- no transcript, no LLM call, no reply --
+        until something else (a timeout, a new wake) tears the turn down.
+        """
+        if self._finalized_sent or not self._websocket or self._websocket.state is not State.OPEN:
+            await self._disconnect()
+            await self._connect()
 
     async def run_stt(self, audio: bytes) -> AsyncGenerator[Frame | None, None]:
         """Forward one chunk of int16 PCM to sherpa as float32; results arrive via the receive task."""
