@@ -81,11 +81,11 @@ def test_generated_adapter_registers_per_connection_continuation_tool():
     path=ROOT/'dist/pipecat-assist-echomuse-dev/app/main.py'
     if not path.exists():
         pytest.skip('Package pinned Pipecat source for adapter integration tests')
-    source=path.read_text()
+    source=path.read_text(encoding='utf-8')
     ast.parse(source)
     assert 'continuation_schema(protocol)' in source
-    assert 'EchoMuseRequestContinuation' in (ROOT/'tools/pipecat_echomuse/echomuse.py').read_text()
-    assert 'assistant_text.rstrip().endswith' not in (path.parent/'va_pipecat_protocol.py').read_text()
+    assert 'EchoMuseRequestContinuation' in (ROOT/'tools/pipecat_echomuse/echomuse.py').read_text(encoding='utf-8')
+    assert 'assistant_text.rstrip().endswith' not in (path.parent/'va_pipecat_protocol.py').read_text(encoding='utf-8')
 
 
 def test_generated_adapter_tells_the_model_which_language_to_reply_in():
@@ -94,7 +94,7 @@ def test_generated_adapter_tells_the_model_which_language_to_reply_in():
     path=ROOT/'dist/pipecat-assist-echomuse-dev/app/main.py'
     if not path.exists():
         pytest.skip('Package pinned Pipecat source for adapter integration tests')
-    source=path.read_text()
+    source=path.read_text(encoding='utf-8')
     assert 'lang_hint' in source and 'flow.language' in source
     assert source.count('+ area_hint + lang_hint')==1
 
@@ -106,7 +106,7 @@ def test_generated_adapter_forbids_closing_offers_and_names_them():
     path=ROOT/'dist/pipecat-assist-echomuse-dev/app/main.py'
     if not path.exists():
         pytest.skip('Package pinned Pipecat source for adapter integration tests')
-    source=path.read_text()
+    source=path.read_text(encoding='utf-8')
     ast.parse(source)
     assert 'Never end a reply with an offer or a question' in source
     assert 'Can I help with anything else?' in source
@@ -170,10 +170,10 @@ def test_generated_adapter_retries_area_spellings_and_tells_the_model_not_to_ask
     root=ROOT/'dist/pipecat-assist-echomuse-dev/app'
     if not (root/'mcp_bridge.py').exists():
         pytest.skip('Package pinned Pipecat source for adapter integration tests')
-    bridge=(root/'mcp_bridge.py').read_text()
+    bridge=(root/'mcp_bridge.py').read_text(encoding='utf-8')
     ast.parse(bridge)
     assert 'echomuse.call_with_area_fallback(_call, arguments)' in bridge
-    main=(root/'main.py').read_text()
+    main=(root/'main.py').read_text(encoding='utf-8')
     assert 'do not ask the user which area it is in' in main
     assert "never join its words with underscores" in main
     assert "A spoken volume number is a percentage" in main
@@ -313,6 +313,6 @@ def test_generated_adapter_guards_the_gemini_connection_task():
     path=ROOT/'dist/pipecat-assist-echomuse-dev/app/main.py'
     if not path.exists():
         pytest.skip('Package pinned Pipecat source for adapter integration tests')
-    source=path.read_text()
+    source=path.read_text(encoding='utf-8')
     ast.parse(source)
     assert 'echomuse.keep_connection(self, super()._connection_task_handler, config)' in source
