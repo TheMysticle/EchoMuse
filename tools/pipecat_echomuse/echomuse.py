@@ -10,6 +10,45 @@ PROFILES = {
 }
 
 
+def composed_instructions(settings, language):
+    """Compact session policy; keep the realtime provider's existing prompt."""
+    rules = [
+        "EchoMuse voice rules: Confirm completed actions in a few words, then stop; no offers or optional follow-up questions. "
+        "Only for a required missing detail, call EchoMuseRequestContinuation before asking one short question.",
+        f"Reply in {language or 'en'} unless the user clearly speaks another language. "
+        "Do not switch for accents, short speech, foreign names/titles or tool results.",
+        (f"Speaker area: {settings['area']}." if settings.get('area') else
+         "Use the speaker's current HA area.") + " Explicit room/device targets take precedence.",
+    ]
+    scheduler = settings.get('scheduler') or {}
+    if scheduler:
+        rules.append(
+            "Bare stop/pause: call EchoMuseStop once. It stops one item: a ringing alert, else this speaker's music, else a running timer. "
+            "Report only stopped and errors; never change left_running. A second user stop handles the next item. "
+            "Only if stopped is empty with no errors, inspect HA context and pause playing players in this speaker's area "
+            "and cancel only an active HA timer there. Never cancel future alarms/reminders.")
+        rules.append(
+            "Untargeted volume: use EchoMuseVolume for this speaker only. Use HA volume tools only for an explicit other device/room.")
+    else:
+        rules.append(
+            "Bare stop/pause: inspect HA context; pause only playing players in this speaker's area and cancel only an active HA timer there. "
+            "Never cancel future alarms/reminders. Untargeted volume changes only this speaker's player, never all room players.")
+    if scheduler.get('schedules'):
+        rules.append(
+            "Use EchoMuse scheduler tools for timers/alarms/reminders; confirm saves only after device acknowledgment. "
+            "Bare snooze: inspect EchoMuseList; snooze only the ringing alert.")
+    rules.extend([
+        "Ask if the timezone for a calendar alarm/reminder is unknown.",
+        "Bare play/resume/continue without a title: unpause this speaker's own player; never search for generic music or call play_media. "
+        "For specific music, call play_media directly with plain title/artist. Success means playback started: no search first, "
+        "verification or repeat call. Never invent Spotify URIs/playlist IDs; reuse only search-returned IDs.",
+        "Use exact HA area names, never underscore substitutions. On an unknown-area error, inspect GetLiveContext and retry "
+        "the real area name instead of asking the user. Maximum two GetLiveContext calls per turn; then answer from results or explain failure.",
+        "Volume numbers are percentages: volume 10 means volume_level 10, never multiply by ten.",
+    ])
+    return "\n" + "\n".join(rules)
+
+
 def options(headers, authenticated):
     # A public/no-secret satellite endpoint must not accept MCP credentials or
     # server URLs from arbitrary clients. Existing public clients still work.
