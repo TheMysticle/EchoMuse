@@ -102,6 +102,30 @@ def adapt(text):
     raise RuntimeError(f"TTS provider {integration.kind} is not supported by composed runtime")''',
     )
 
+    # --- Groq as an LLM provider (OpenAI-compatible, pipecat ships the
+    # service already -- https://api.groq.com/openai/v1 is its default). ---
+    replace(
+        '    raise RuntimeError(f"LLM provider {integration.kind} is not supported by composed runtime")',
+        '''    if integration.kind == "groq":
+        from pipecat.services.groq.llm import GroqLLMService
+
+        if not integration.api_key:
+            raise RuntimeError("Groq is missing api_key")
+        settings_kwargs: dict[str, Any] = {
+            "model": model or integration.default_model or "llama-3.3-70b-versatile",
+            "system_instruction": _effective_instructions(flow),
+        }
+        if flow.max_output_tokens:
+            settings_kwargs["max_tokens"] = flow.max_output_tokens
+        return GroqLLMService(
+            api_key=integration.api_key,
+            base_url=integration.base_url or "https://api.groq.com/openai/v1",
+            settings=GroqLLMService.Settings(**settings_kwargs),
+        )
+
+    raise RuntimeError(f"LLM provider {integration.kind} is not supported by composed runtime")''',
+    )
+
     # --- MCP bridge pooling: reconnecting both configured MCP servers from
     # scratch (HA's, the controller's own per-device scheduler endpoint)
     # measured 1-2s; a va_pipecat session is one bounded turn per
@@ -367,8 +391,35 @@ def adapt_config(text):
         '    "elevenlabs",\n    "openai_cloud",\n    "soniox",\n    "piper_wyoming",\n}\nCOMPOSED_STEP_PROVIDER_KINDS = {',
     )
     replace(
+        '    "openai_compatible",\n    "ollama",\n}\nCOMPOSED_TTS_PROVIDER_KINDS = {',
+        '    "openai_compatible",\n    "ollama",\n    "groq",\n}\nCOMPOSED_TTS_PROVIDER_KINDS = {',
+    )
+    replace(
         '        "home_assistant_mcp",\n        "ha_mcp",\n        "mcp_server",\n    ]',
-        '        "home_assistant_mcp",\n        "ha_mcp",\n        "mcp_server",\n        "sherpa_onnx",\n        "piper_wyoming",\n    ]',
+        '        "home_assistant_mcp",\n        "ha_mcp",\n        "mcp_server",\n        "sherpa_onnx",\n        "piper_wyoming",\n        "groq",\n    ]',
+    )
+    replace(
+        'DEFAULT_SPEECHMATICS_MODEL = "enhanced"',
+        'DEFAULT_SPEECHMATICS_MODEL = "enhanced"\nDEFAULT_GROQ_MODEL = "llama-3.3-70b-versatile"',
+    )
+    replace(
+        '        IntegrationConfig(\n            id="ollama",\n            name="Ollama",\n            kind="ollama",\n            enabled=False,\n            base_url="http://localhost:11434/v1",\n            default_model="llama3.2",\n        ),',
+        '''        IntegrationConfig(
+            id="ollama",
+            name="Ollama",
+            kind="ollama",
+            enabled=False,
+            base_url="http://localhost:11434/v1",
+            default_model="llama3.2",
+        ),
+        IntegrationConfig(
+            id="groq",
+            name="Groq",
+            kind="groq",
+            enabled=False,
+            api_key=os.getenv("GROQ_API_KEY", ""),
+            default_model=DEFAULT_GROQ_MODEL,
+        ),''',
     )
     replace(
         '    mcp_tools_cache_enabled: bool = True\n    mcp_tools_cache_ttl_seconds: int = Field(default=300, ge=0, le=86400)\n    ai_image_provider_id: str = ""',
@@ -462,11 +513,15 @@ def adapt_ui(text):
 
     replace(
         '  ["ollama", "Ollama", Cpu],\n  ["local_runtime", "Local runtime", Cpu],\n  ["web_search", "Web Search", Search],',
-        '  ["ollama", "Ollama", Cpu],\n  ["local_runtime", "Local runtime", Cpu],\n  ["sherpa_onnx", "sherpa-onnx (local STT)", Cpu],\n  ["piper_wyoming", "Piper/Wyoming (local TTS)", Cpu],\n  ["web_search", "Web Search", Search],',
+        '  ["ollama", "Ollama", Cpu],\n  ["groq", "Groq", Cloud],\n  ["local_runtime", "Local runtime", Cpu],\n  ["sherpa_onnx", "sherpa-onnx (local STT)", Cpu],\n  ["piper_wyoming", "Piper/Wyoming (local TTS)", Cpu],\n  ["web_search", "Web Search", Search],',
     )
     replace(
         '  stt: ["soniox", "deepgram", "speechmatics", "gradium", "openai_cloud"],',
         '  stt: ["soniox", "deepgram", "speechmatics", "gradium", "openai_cloud", "sherpa_onnx"],',
+    )
+    replace(
+        '  llm: ["openai_cloud", "gemini_cloud", "aws_bedrock", "openai_compatible", "ollama"],',
+        '  llm: ["openai_cloud", "gemini_cloud", "aws_bedrock", "openai_compatible", "ollama", "groq"],',
     )
     replace(
         '  tts: ["cartesia", "gradium", "google_cloud_tts", "google_streaming_tts", "elevenlabs", "openai_cloud", "soniox"],',
@@ -475,6 +530,10 @@ def adapt_ui(text):
     replace(
         '        "ollama",\n        "local_runtime",\n        "ha_mcp",\n        "mcp_server",\n      ].includes(',
         '        "ollama",\n        "local_runtime",\n        "sherpa_onnx",\n        "piper_wyoming",\n        "ha_mcp",\n        "mcp_server",\n      ].includes(',
+    )
+    replace(
+        '      "anthropic",\n      "azure_openai",\n      "soniox",\n      "deepgram",\n      "cartesia",\n      "gradium",\n      "speechmatics",\n      "elevenlabs",\n      "google_imagen",\n      "fal_image",\n    ].includes(integration.kind)',
+        '      "anthropic",\n      "azure_openai",\n      "soniox",\n      "deepgram",\n      "cartesia",\n      "gradium",\n      "speechmatics",\n      "elevenlabs",\n      "google_imagen",\n      "fal_image",\n      "groq",\n    ].includes(integration.kind)',
     )
     replace(
         '  if (integration.kind === "azure_openai") {',
@@ -503,6 +562,21 @@ def adapt_ui(text):
           placeholder="192.168.1.211:10200"
           updateIntegration={updateIntegration}
           wide
+        />
+      </SettingsSection>
+    );
+  }
+
+  if (integration.kind === "groq") {
+    return (
+      <SettingsSection title="Groq" status={secretStatus(integration, "api_key")}>
+        <SecretSetting integration={integration} field="api_key" label="API key" updateIntegration={updateIntegration} />
+        <TextSetting
+          integration={integration}
+          field="default_model"
+          label="Model"
+          placeholder="llama-3.3-70b-versatile"
+          updateIntegration={updateIntegration}
         />
       </SettingsSection>
     );
