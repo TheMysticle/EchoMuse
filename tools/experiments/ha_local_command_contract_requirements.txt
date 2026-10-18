@@ -1,0 +1,16 @@
+# Isolated HA API contract probe; not add-on runtime dependencies.
+homeassistant==2026.10.1
+httpx
+loguru
+websockets
+home-assistant-frontend==20260930.3
+gazetteer-matcher==1.1.0
+hassil==3.12.1
+home-assistant-intents==2026.10.6
+ha-ffmpeg==3.2.2
+infrared-protocols==10.1.0
+PyTurboJPEG==1.8.3
+av==19.0.0
+numpy==2.3.2
+pymicro-vad==1.0.1
+pyspeex-noise==1.0.2

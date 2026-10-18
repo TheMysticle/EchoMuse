@@ -679,7 +679,7 @@ function SentenceFileCard({ file, byName }) {
                     : ""}
                 </span>
                 <span className={`status-pill ${info?.fast_path_eligible ? "ok" : ""}`}>
-                  {info?.fast_path_eligible ? t("MCP fallback supported") : t("Requires HA local agent")}
+                  {info?.fast_path_eligible ? t("MCP fallback supported") : t("HA local agent route")}
                 </span>
               </div>
             );

@@ -118,12 +118,13 @@ short commands after the first request retain their initial words. An empty
 recognition asks for a retry and cannot rerun the previous conversation.
 
 In composed STT/LLM/TTS pipelines, fast-path routing first submits the complete
-user utterance to Home Assistant's built-in `homeassistant` conversation agent.
+user utterance to Home Assistant's built-in `conversation.home_assistant` agent.
 This stays on the HA host: it does not select your configured cloud agent.
 HA handles its own built-in commands and state queries, custom sentences,
 `intent_script` responses, and sentence-triggered automations. Only
-`no_intent_match` falls through to the configured LLM. An unavailable or
-unauthorized local API also permits fallback before any action is dispatched.
+`no_intent_match` or `no_valid_targets` falls through to the configured LLM. An unavailable or
+unauthorized local API, or a request rejected by HA's schema validator, also
+permits fallback before any action is dispatched.
 A handler error or an
 uncertain network response is handled locally so an action cannot be repeated
 by the LLM after it may already have succeeded.

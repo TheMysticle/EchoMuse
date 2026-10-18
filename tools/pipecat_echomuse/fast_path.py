@@ -416,7 +416,7 @@ class FastPathStep(FrameProcessor):
                     if reply is not None:
                         if self._protocol is not None:
                             self._protocol.continuation_requested = reply.continue_conversation
-                        logger.info("Local command handled by Home Assistant's built-in agent")
+                        logger.info("Local command response supplied by the Home Assistant route")
                         await self.push_frame(TTSSpeakFrame(text=reply.text), direction)
                         return
                 if await self._try_fast_path(text.strip()):

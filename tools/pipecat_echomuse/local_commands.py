@@ -19,6 +19,7 @@ from websockets.asyncio.client import connect
 from websockets.exceptions import WebSocketException
 
 _DEVICE_CACHE = {}
+HOME_ASSISTANT_AGENT = "conversation.home_assistant"
 
 
 @dataclass
@@ -70,7 +71,7 @@ class HomeAssistantCommands:
             logger.warning("Local commands: could not resolve the satellite's HA device")
 
     async def process(self, text: str) -> LocalReply | None:
-        body = {"text": text, "language": self.language, "agent_id": "homeassistant"}
+        body = {"text": text, "language": self.language, "agent_id": HOME_ASSISTANT_AGENT}
         if self.device_id:
             body["device_id"] = self.device_id
         if self.conversation_id:
@@ -92,14 +93,28 @@ class HomeAssistantCommands:
         if response.status_code in {401, 403, 404}:
             logger.warning("Local commands: Home Assistant API unavailable ({})", response.status_code)
             return None
+        if response.status_code == 400:
+            try:
+                message = str(response.json().get("message", ""))
+            except (ValueError, AttributeError):
+                message = ""
+            # HA's RequestDataValidator returns this before calling the
+            # conversation handler. Nothing executed, so fallback is safe.
+            if message.startswith(("Message format incorrect:", "Message malformed:")):
+                logger.warning("Local commands: HA rejected the request schema (HTTP 400); using the configured pipeline")
+                self.conversation_id = None
+                return None
         if not response.is_success:
+            logger.warning("Local commands: HA conversation API returned HTTP {}; execution outcome is uncertain", response.status_code)
             return LocalReply("Sorry, Home Assistant couldn't complete that command.")
         try:
             payload = response.json()
             result = payload["response"]
             response_type = result["response_type"]
             data = result.get("data") or {}
-            if response_type == "error" and data.get("code") == "no_intent_match":
+            if (response_type == "error" and data.get("code") in {"no_intent_match", "no_valid_targets"}
+                    and not data.get("success")):
+                logger.debug("Local commands: HA could not resolve the request ({}); using the configured pipeline", data.get("code"))
                 self.conversation_id = None
                 return None
             speech = ((result.get("speech") or {}).get("plain") or {}).get("speech")
@@ -109,6 +124,7 @@ class HomeAssistantCommands:
             self.conversation_id = payload.get("conversation_id") if continuing else None
             return LocalReply(str(speech), continuing)
         except (ValueError, KeyError, TypeError, AttributeError):
+            logger.warning("Local commands: invalid HA conversation response; execution outcome is uncertain")
             return LocalReply("Sorry, I couldn't confirm whether that command completed.")
 
 

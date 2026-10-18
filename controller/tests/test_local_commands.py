@@ -53,18 +53,50 @@ def test_native_agent_handles_builtin_queries_and_custom_commands(monkeypatch, s
     client = commands.HomeAssistantCommands('http://ha/api', 'test-token', language='en', device_id='ha-device')
     reply = asyncio.run(client.process(sentence))
     assert reply.text == speech
-    assert seen == [{'text': sentence, 'language': 'en', 'agent_id': 'homeassistant', 'device_id': 'ha-device'}]
+    assert seen == [{'text': sentence, 'language': 'en', 'agent_id': 'conversation.home_assistant', 'device_id': 'ha-device'}]
 
 
-def test_only_no_match_falls_through_and_handler_errors_keep_ha_speech(monkeypatch):
+def test_unresolved_intents_fall_through_and_handler_errors_keep_ha_speech(monkeypatch):
     results = [payload('No match', 'error', 'no_intent_match'),
                payload('Two lights have that name.', 'error', 'no_valid_targets'),
                payload('The command failed.', 'error', 'failed_to_handle')]
     mock_api(monkeypatch, lambda request: httpx.Response(200, json=results.pop(0)))
     client = commands.HomeAssistantCommands('http://ha/api', 'token', language='en')
     assert asyncio.run(client.process('tell me a joke')) is None
-    assert asyncio.run(client.process('turn off the lamp')).text == 'Two lights have that name.'
+    assert asyncio.run(client.process('turn off the lamp')) is None
     assert asyncio.run(client.process('turn off the lamp')).text == 'The command failed.'
+
+
+def test_ha_agent_validation_and_no_match_allow_configured_pipeline(monkeypatch):
+    # HA 2026.10's conversation.const.HOME_ASSISTANT_AGENT is the entity ID,
+    # and agent_manager.agent_id_validator rejects the former "homeassistant".
+    seen = []
+    def handle(request):
+        body = json.loads(request.content)
+        seen.append(body)
+        if body['agent_id'] != 'conversation.home_assistant':
+            return httpx.Response(400, json={'message': "Message format incorrect: invalid agent ID for dictionary value @ data['agent_id']"})
+        return httpx.Response(200, json=payload('No match', 'error', 'no_intent_match'))
+    mock_api(monkeypatch, handle)
+    client = commands.HomeAssistantCommands('http://ha/api', 'token', language='en')
+    assert asyncio.run(client.process("what's the weather like")) is None
+    assert seen[0]['agent_id'] == 'conversation.home_assistant'
+
+
+@pytest.mark.parametrize('message', [
+    "Message format incorrect: invalid agent ID for dictionary value @ data['agent_id']",
+    "Message malformed: extra keys not allowed @ data['agent_id']",
+])
+def test_pre_execution_schema_rejection_allows_fallback(monkeypatch, message):
+    mock_api(monkeypatch, lambda request: httpx.Response(400, json={'message': message}))
+    client = commands.HomeAssistantCommands('http://ha/api', 'token', language='en')
+    assert asyncio.run(client.process('play music')) is None
+
+
+def test_arbitrary_bad_request_is_not_assumed_to_be_safe_to_repeat(monkeypatch):
+    mock_api(monkeypatch, lambda request: httpx.Response(400, json={'message': 'Handler failed after running'}))
+    client = commands.HomeAssistantCommands('http://ha/api', 'token', language='en')
+    assert asyncio.run(client.process('toggle the light')) is not None
 
 
 def test_follow_up_keeps_conversation_id_only_until_finished(monkeypatch):
@@ -189,6 +221,23 @@ def test_no_match_and_tool_result_context_pass_to_llm_once(processor):
     asyncio.run(run())
     assert seen == ['tell me a joke']
     assert step.sent == [(unmatched, direction.DOWNSTREAM), (tool_result, direction.DOWNSTREAM)]
+
+
+@pytest.mark.parametrize('text', ["what's the weather like", 'play music'])
+@pytest.mark.parametrize('response', ['schema_rejected', 'no_intent_match', 'no_valid_targets'])
+def test_unhandled_ha_request_reaches_configured_llm_unchanged(processor, monkeypatch, text, response):
+    module, ContextFrame, direction = processor
+    def handle(request):
+        assert json.loads(request.content)['agent_id'] == 'conversation.home_assistant'
+        if response == 'schema_rejected':
+            return httpx.Response(400, json={'message': 'Message format incorrect: invalid agent ID'})
+        return httpx.Response(200, json=payload('No local match', 'error', response))
+    mock_api(monkeypatch, handle)
+    client = commands.HomeAssistantCommands('http://ha/api', 'token', language='en')
+    step = module.FastPathStep(state=None, language='en', bridge=None, tool_names={}, local_commands=client)
+    frame = ContextFrame([{'role': 'user', 'content': text}])
+    asyncio.run(step.process_frame(frame, direction.DOWNSTREAM))
+    assert step.sent == [(frame, direction.DOWNSTREAM)]  # no local apology or replacement context
 
 
 def test_local_clarification_explicitly_reopens_a_follow_up(processor):
