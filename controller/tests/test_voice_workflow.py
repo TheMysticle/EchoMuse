@@ -354,6 +354,43 @@ def test_va_handshake_sends_stored_satellite_identity(fresh_db):
     asyncio.run(main())
 
 
+@pytest.mark.parametrize('composed', [True, False])
+def test_device_endpoint_moves_only_composed_pipeline_to_thinking(composed):
+    async def main():
+        events = []
+        async def phase(value): events.append(('phase', value))
+        async def send(value): events.append(('wire', value))
+        d = SimpleNamespace(device_id='satellite', muted=False, private_listening=True,
+                            workflow_phase=phase)
+        bridge = W.Bridge(d)
+        bridge.config = {'mode': W.PIPECAT, 'endpoint': 'ws://unused/api/assist/esphome'}
+        bridge.awake = True
+        bridge.status = 'connected'
+        bridge.session = 1
+        bridge.ws = SimpleNamespace(echomuse_device_endpoint=composed)
+        bridge.feed(b'\x01\x00'*1280, 1)
+        assert bridge.device_endpoint()
+        sender = asyncio.create_task(bridge.send(SimpleNamespace(send=send)))
+        try:
+            await until(lambda: bridge.queue.empty())
+            phases = [value for kind, value in events if kind == 'phase']
+            assert phases == (['thinking'] if composed else [])
+            wire = [value for kind, value in events if kind == 'wire']
+            assert wire[1] == b'\x01\x00'*1280  # wake precedes the captured speech
+            assert wire[2:] == [bytes(W.FRAME_BYTES)] * round(W.ENDPOINT_SILENCE_S*1000/80)
+            if composed:
+                assert events.index(('phase', 'thinking')) < events.index(('wire', bytes(W.FRAME_BYTES)))
+                count = len(events)
+                await bridge.on_event({'type': 'phase', 'phase': 'listening'})
+                assert len(events) == count  # a late VAD event cannot relight listening
+            bridge.feed(b'\x01\x00'*1280, 1)
+            assert bridge.queue.empty()  # the microphone remains gated
+        finally:
+            sender.cancel()
+            await asyncio.gather(sender, return_exceptions=True)
+    asyncio.run(main())
+
+
 def test_va_pipecat_raw_pcm_and_semantic_events(fresh_db):
     async def main():
         from urllib.parse import urlsplit,parse_qs

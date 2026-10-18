@@ -138,6 +138,7 @@ def processor(monkeypatch):
     # The command processor's boundary consists of context/speech frames. Use
     # small transport doubles; the matcher and HA HTTP client are real libraries.
     class Frame: pass
+    class VADUserStartedSpeakingFrame(Frame): pass
     class LLMContextFrame(Frame):
         def __init__(self, messages):
             self.context = SimpleNamespace(get_messages=lambda: messages)
@@ -149,7 +150,8 @@ def processor(monkeypatch):
         async def push_frame(self, frame, direction): self.sent.append((frame, direction))
     direction = SimpleNamespace(DOWNSTREAM='down', UPSTREAM='up')
     monkeypatch.setitem(sys.modules, 'pipecat.frames.frames', SimpleNamespace(
-        Frame=Frame, LLMContextFrame=LLMContextFrame, TTSSpeakFrame=TTSSpeakFrame))
+        Frame=Frame, LLMContextFrame=LLMContextFrame, TTSSpeakFrame=TTSSpeakFrame,
+        VADUserStartedSpeakingFrame=VADUserStartedSpeakingFrame))
     monkeypatch.setitem(sys.modules, 'pipecat.processors.frame_processor', SimpleNamespace(
         FrameDirection=direction, FrameProcessor=FrameProcessor))
     module = load('fast_path.py', 'test_local_command_processor')
@@ -198,6 +200,35 @@ def test_local_clarification_explicitly_reopens_a_follow_up(processor):
     asyncio.run(step.process_frame(ContextFrame([{'role': 'user', 'content': 'turn it off'}]), direction.DOWNSTREAM))
     assert protocol.continuation_requested
     assert step.sent[0][0].text == 'Which room?'
+
+
+def test_missing_second_transcript_cannot_replay_previous_request(processor):
+    module, ContextFrame, direction = processor
+    messages = [{'role': 'user', 'content': 'weather'}, {'role': 'assistant', 'content': 'Cloudy.'}]
+    context = SimpleNamespace(get_messages=lambda: messages)
+    step = module.FastPathStep(state=None, language='en', bridge=None, tool_names={}, context=context)
+    async def run():
+        await step.process_frame(module.VADUserStartedSpeakingFrame(), direction.DOWNSTREAM)
+        step.sent.clear()
+        await step.process_frame(ContextFrame(messages), direction.DOWNSTREAM)
+    asyncio.run(run())
+    assert step.sent == []
+
+
+def test_same_context_cannot_execute_a_command_twice(processor):
+    module, ContextFrame, direction = processor
+    seen = []
+    async def process(text):
+        seen.append(text)
+        return commands.LocalReply('Playing.')
+    step = module.FastPathStep(state=None, language='en', bridge=None, tool_names={},
+                               local_commands=SimpleNamespace(process=process))
+    frame = ContextFrame([{'role': 'user', 'content': 'play music'}])
+    async def run():
+        await step.process_frame(frame, direction.DOWNSTREAM)
+        await step.process_frame(frame, direction.DOWNSTREAM)
+    asyncio.run(run())
+    assert seen == ['play music']
 
 
 def test_restricted_fallback_still_matches_real_ha_custom_sentence(processor, tmp_path):

@@ -16,6 +16,7 @@ new utterance reconnects.
 from __future__ import annotations
 
 import json
+import asyncio
 from collections.abc import AsyncGenerator
 
 import numpy as np
@@ -29,6 +30,7 @@ from pipecat.frames.frames import (
     Frame,
     StartFrame,
     TranscriptionFrame,
+    TTSSpeakFrame,
     UserStartedSpeakingFrame,
     UserStoppedSpeakingFrame,
     VADUserStartedSpeakingFrame,
@@ -36,6 +38,7 @@ from pipecat.frames.frames import (
 )
 from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.stt_service import WebsocketSTTService
+from pipecat.services.settings import STTSettings
 from pipecat.utils.time import time_now_iso8601
 
 
@@ -43,13 +46,24 @@ class SherpaOnnxSTTService(WebsocketSTTService):
     """Speech-to-text against a local sherpa-onnx online-websocket-server."""
 
     def __init__(self, *, host: str, port: int, sample_rate: int | None = None, **kwargs):
-        super().__init__(sample_rate=sample_rate, **kwargs)
+        super().__init__(sample_rate=sample_rate, settings=STTSettings(model=None, language=None), **kwargs)
         self._url = f"ws://{host}:{port}"
         self._receive_task = None
         self._finalized_sent = False
+        self._audio_lock = asyncio.Lock()
+        self._pending_audio = bytearray()
+        self._utterance_done = asyncio.Event()
+        self._last_partial = ""
+        self._emitted_text = False
 
     def can_generate_metrics(self) -> bool:
         return True
+
+    @property
+    def supports_ttfs(self) -> bool:
+        # Done defines the utterance boundary; there is no streaming-STT
+        # p99 latency estimate for the downstream strategy to wait out.
+        return False
 
     async def start(self, frame: StartFrame):
         await super().start(frame)
@@ -64,9 +78,9 @@ class SherpaOnnxSTTService(WebsocketSTTService):
         await self._disconnect()
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
-        await super().process_frame(frame, direction)
         if isinstance(frame, (VADUserStartedSpeakingFrame, UserStartedSpeakingFrame)):
             await self._ensure_fresh_connection()
+        await super().process_frame(frame, direction)
         if isinstance(frame, (VADUserStoppedSpeakingFrame, UserStoppedSpeakingFrame)):
             await self._send_done()
 
@@ -83,12 +97,35 @@ class SherpaOnnxSTTService(WebsocketSTTService):
         is a hung STT stage -- no transcript, no LLM call, no reply --
         until something else (a timeout, a new wake) tears the turn down.
         """
-        if self._finalized_sent or not self._websocket or self._websocket.state is not State.OPEN:
-            await self._disconnect()
-            await self._connect()
+        async with self._audio_lock:
+            if self._finalized_sent or not self._websocket or self._websocket.state is not State.OPEN:
+                # Finish receiving the prior utterance before replacing its
+                # socket. A short pause can precede the previous final result.
+                if self._finalized_sent and not self._utterance_done.is_set():
+                    try:
+                        await asyncio.wait_for(self._utterance_done.wait(), 2.0)
+                    except TimeoutError:
+                        logger.warning("Sherpa did not finish the previous utterance before reconnect")
+                pending = bytes(self._pending_audio)
+                self._pending_audio.clear()
+                await self._disconnect()
+                await self._connect()
+                if pending:
+                    await self._send_audio(pending)
 
     async def run_stt(self, audio: bytes) -> AsyncGenerator[Frame | None, None]:
         """Forward one chunk of int16 PCM to sherpa as float32; results arrive via the receive task."""
+        async with self._audio_lock:
+            if self._finalized_sent:
+                # VAD starts AFTER speech has already begun. Keep its leading
+                # audio instead of sending it into the previous Done socket.
+                self._pending_audio.extend(audio)
+                del self._pending_audio[:-24000]  # 750 ms, 16 kHz mono int16
+            else:
+                await self._send_audio(audio)
+        yield None
+
+    async def _send_audio(self, audio: bytes):
         if self._websocket and self._websocket.state is State.OPEN:
             pcm16 = np.frombuffer(audio, dtype=np.int16)
             pcm_f32 = (pcm16.astype(np.float32) / 32768.0).tobytes()
@@ -96,15 +133,15 @@ class SherpaOnnxSTTService(WebsocketSTTService):
                 await self._websocket.send(pcm_f32)
             except Exception as e:
                 logger.warning(f"{self}: sherpa send failed: {e}")
-        yield None
 
     async def _send_done(self):
-        if self._websocket and self._websocket.state is State.OPEN and not self._finalized_sent:
-            self._finalized_sent = True
-            try:
-                await self._websocket.send("Done")
-            except Exception as e:
-                logger.warning(f"{self}: sherpa 'Done' send failed: {e}")
+        async with self._audio_lock:
+            if self._websocket and self._websocket.state is State.OPEN and not self._finalized_sent:
+                self._finalized_sent = True
+                try:
+                    await self._websocket.send("Done")
+                except Exception as e:
+                    logger.warning(f"{self}: sherpa 'Done' send failed: {e}")
 
     async def _connect(self):
         await self._connect_websocket()
@@ -126,6 +163,9 @@ class SherpaOnnxSTTService(WebsocketSTTService):
             logger.debug(f"Connecting to sherpa-onnx at {self._url}")
             self._websocket = await websocket_connect(self._url)
             self._finalized_sent = False
+            self._utterance_done.clear()
+            self._last_partial = ""
+            self._emitted_text = False
         except Exception as e:
             self._websocket = None
             await self.push_error(error_msg=f"Unable to connect to sherpa-onnx: {e}", exception=e)
@@ -144,6 +184,12 @@ class SherpaOnnxSTTService(WebsocketSTTService):
             return
         async for message in self._websocket:
             if message == "Done!":
+                if self._last_partial:
+                    await self._emit_transcript(self._last_partial)
+                if not self._emitted_text:
+                    logger.warning("Sherpa finished an utterance without recognized speech")
+                    await self.push_frame(TTSSpeakFrame(text="I didn't catch that. Please try again."))
+                self._utterance_done.set()
                 logger.debug("sherpa-onnx finished this utterance")
                 return
             try:
@@ -151,12 +197,15 @@ class SherpaOnnxSTTService(WebsocketSTTService):
             except (json.JSONDecodeError, TypeError):
                 continue
             text = (data.get("text") or "").strip()
+            if text:
+                self._last_partial = text
             if data.get("is_final") and text:
-                await self.push_frame(
-                    TranscriptionFrame(
-                        text=text,
-                        user_id=self._user_id,
-                        timestamp=time_now_iso8601(),
-                        finalized=True,
-                    )
-                )
+                await self._emit_transcript(text)
+                self._last_partial = ""
+
+    async def _emit_transcript(self, text):
+        self._emitted_text = True
+        logger.debug("Sherpa final transcript: {!r}", text)
+        await self.push_frame(TranscriptionFrame(
+            text=text, user_id=self._user_id, timestamp=time_now_iso8601(), finalized=True,
+        ))

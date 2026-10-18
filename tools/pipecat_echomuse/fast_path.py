@@ -45,7 +45,7 @@ from hassil import Intents, RecognizeResult, TextSlotList, errors, recognize
 from hassil.util import merge_dict
 from loguru import logger
 
-from pipecat.frames.frames import Frame, LLMContextFrame, TTSSpeakFrame
+from pipecat.frames.frames import Frame, LLMContextFrame, TTSSpeakFrame, VADUserStartedSpeakingFrame
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 # Action intents only: each has a clean action_done/action_failed result
@@ -368,6 +368,7 @@ class FastPathStep(FrameProcessor):
         tool_names: dict[str, str],
         local_commands: Any = None,
         protocol: Any = None,
+        context: Any = None,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -377,9 +378,21 @@ class FastPathStep(FrameProcessor):
         self._tool_names = tool_names
         self._local_commands = local_commands
         self._protocol = protocol
+        self._context = context
+        self._awaiting_user_context = False
+        self._user_baseline = self._user_count(context.get_messages()) if context is not None else 0
+        self._last_routed_user_count = self._user_baseline
+
+    @staticmethod
+    def _user_count(messages):
+        return sum(message.get("role") == "user" for message in messages)
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
+        if isinstance(frame, VADUserStartedSpeakingFrame):
+            self._awaiting_user_context = True
+            if self._context is not None:
+                self._user_baseline = self._user_count(self._context.get_messages())
 
         # Run AFTER user aggregation: several finalized STT segments may belong
         # to one utterance. Absorbing transcripts before the aggregator leaves
@@ -387,8 +400,17 @@ class FastPathStep(FrameProcessor):
         if isinstance(frame, LLMContextFrame) and direction == FrameDirection.DOWNSTREAM:
             messages = frame.context.get_messages()
             last = messages[-1] if messages else {}
+            user_count = self._user_count(messages)
+            if self._awaiting_user_context and user_count <= self._user_baseline:
+                logger.warning("Ignoring inference for an utterance without a new user transcript")
+                return
             text = last.get("content") if last.get("role") == "user" else None
             if isinstance(text, str) and text.strip():
+                if user_count <= self._last_routed_user_count:
+                    logger.warning("Ignoring duplicate inference for the same user transcript")
+                    return
+                self._last_routed_user_count = user_count
+                self._awaiting_user_context = False
                 if self._local_commands is not None:
                     reply = await self._local_commands.process(text.strip())
                     if reply is not None:

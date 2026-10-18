@@ -278,6 +278,7 @@ async def handshake(config, device_id):
             if config.get("_scheduler_url") and not hello.get("echomuse", {}).get("stop"):
                 raise ProtocolError("echomuse_pipecat_adapter_required")
             ws.echomuse_audio_format = (audio["output_sample_rate"], audio["channels"])
+            ws.echomuse_device_endpoint = hello.get("echomuse", {}).get("device_endpoint") is True
     except BaseException:
         await ws.close()
         raise
@@ -466,6 +467,12 @@ class Bridge:
                 or self.status not in {"connected", "connecting"}):
             return False
         self.endpointed = True
+        if getattr(self.ws, "echomuse_device_endpoint", False):
+            if self.queue.full():
+                self.queue.get_nowait()
+            # Ordered after captured speech, before endpoint silence. Change
+            # the ring now rather than waiting for STT's transcript timeout.
+            self.queue.put_nowait((self.session_epoch, None))
         frames = round(ENDPOINT_SILENCE_S * 1000 / 80)
         for _ in range(frames):
             if self.queue.full():
@@ -714,6 +721,9 @@ class Bridge:
                         or self.reply_gated or epoch != self.session_epoch):
                     continue
                 if transport(self.config) == "va_pipecat":
+                    if pcm is None:
+                        await self.device.workflow_phase("thinking")
+                        continue
                     await ws.send(pcm)
                     continue
                 frame = Frame()
@@ -836,6 +846,12 @@ class Bridge:
             await self.device.workflow_phase("listening")
             return
         phase = event.get("phase")
+        if (phase == "listening" and self.endpointed
+                and getattr(self.ws, "echomuse_device_endpoint", False)
+                and not event.get("follow_up") and not event.get("continuation_question")):
+            # A delayed VAD event cannot reopen an utterance the Echo ended.
+            # A new wake clears endpointed; a real clarification is explicit.
+            return
         if (phase == "thinking" and not event.get("terminal") and self.output_queue is not None
                 and asyncio.get_running_loop().time() - self.last_reply_pcm < THINK_SPLIT_S):
             return

@@ -109,6 +109,14 @@ shared secret. Run only one Pipecat add-on on port 7860. The endpoint URL stays
 
 ### Local commands before the LLM
 
+For composed pipelines, the Echo's own end-of-speech marker closes the uplink
+and switches the ring to thinking immediately, independently of STT latency.
+The controller still sends the endpoint silence needed to finalize recognition.
+This behavior is negotiated by the add-on; realtime Gemini Live is unchanged.
+Sherpa preserves the audio arriving before VAD confirms a new utterance, so
+short commands after the first request retain their initial words. An empty
+recognition asks for a retry and cannot rerun the previous conversation.
+
 In composed STT/LLM/TTS pipelines, fast-path routing first submits the complete
 user utterance to Home Assistant's built-in `homeassistant` conversation agent.
 This stays on the HA host: it does not select your configured cloud agent.

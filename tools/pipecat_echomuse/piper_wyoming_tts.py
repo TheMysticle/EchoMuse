@@ -18,6 +18,7 @@ from wyoming.tts import Synthesize
 
 from pipecat.frames.frames import ErrorFrame, Frame, TTSAudioRawFrame
 from pipecat.services.tts_service import TTSService
+from pipecat.services.settings import TTSSettings
 
 
 class PiperWyomingTTSService(TTSService):
@@ -28,6 +29,7 @@ class PiperWyomingTTSService(TTSService):
             sample_rate=sample_rate,
             push_start_frame=True,
             push_stop_frames=True,
+            settings=TTSSettings(model=None, voice=None, language=None),
             **kwargs,
         )
         self._host = host

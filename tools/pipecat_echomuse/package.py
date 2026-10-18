@@ -22,7 +22,7 @@ def adapt(text):
         text = text.replace(old, new)
     replace('from __future__ import annotations', 'from __future__ import annotations\n\nfrom app import echomuse\nfrom app import fast_path\nfrom app import mcp_bridge')
     replace('    await websocket.send_text(_va_pipecat_protocol(config).hello())', '''    hello = json.loads(_va_pipecat_protocol(config).hello())
-    hello["echomuse"] = {"scheduler": bool(session_options.get("scheduler", {}).get("schedules")), "stop": bool(session_options.get("scheduler")), "barge_in": bool(session_options.get("barge_in"))}
+    hello["echomuse"] = {"scheduler": bool(session_options.get("scheduler", {}).get("schedules")), "stop": bool(session_options.get("scheduler")), "barge_in": bool(session_options.get("barge_in")), "device_endpoint": _runtime_mode(flow) == "composed"}
     await websocket.send_text(json.dumps(hello))''')
     replace('    session_id = str(uuid.uuid4())\n    await websocket.accept()', '''    session_options = echomuse.options(websocket.headers, authenticated=bool(secret))
     session_id = str(uuid.uuid4())
@@ -200,6 +200,7 @@ async def _build_fast_path_step(
     mcp_tools_schema,
     session_options: dict | None = None,
     protocol=None,
+    context=None,
 ) -> "fast_path.FastPathStep | None":
     """Build the fast-path step for one turn, refreshing live entity/area
     names when stale. Returns None if no fast-path-eligible tool is exposed
@@ -217,7 +218,7 @@ async def _build_fast_path_step(
         await commands.resolve_device((session_options or {}).get("satellite_mac", ""))
         return fast_path.FastPathStep(
             state=None, language=language, bridge=bridge, tool_names={},
-            local_commands=commands, protocol=protocol,
+            local_commands=commands, protocol=protocol, context=context,
         )
     tool_names = fast_path.tool_names_for_fast_path(
         [tool.name for tool in mcp_tools_schema.standard_tools]
@@ -237,7 +238,7 @@ async def _build_fast_path_step(
             state.set_slot_lists(names, areas)
             logger.info("Fast-path: refreshed {} names / {} areas", len(names), len(areas))
 
-    return fast_path.FastPathStep(state=state, language=language, bridge=bridge, tool_names=tool_names)
+    return fast_path.FastPathStep(state=state, language=language, bridge=bridge, tool_names=tool_names, context=context)
 
 
 def _composed_vad_analyzer(flow: FlowConfig, is_esphome_satellite: bool = False):''',
@@ -245,7 +246,9 @@ def _composed_vad_analyzer(flow: FlowConfig, is_esphome_satellite: bool = False)
     replace(
         '''        if _flow_enabled(flow):
             initial_flow_node = _flow_node_configs(flow, bridge)''',
-        '''        fast_path_step = None
+        '''        fast_path_step = fast_path.FastPathStep(
+            state=None, language=flow.language or "en", bridge=None, tool_names={}, context=context,
+        ) if is_esphome_satellite and not _flow_enabled(flow) else None
         if (
             config.fast_path_enabled
             and is_esphome_satellite
@@ -258,8 +261,8 @@ def _composed_vad_analyzer(flow: FlowConfig, is_esphome_satellite: bool = False)
                 protocol = getattr(getattr(params, "serializer", None), "protocol", None)
                 fast_path_step = await _build_fast_path_step(
                     config, flow, bridge, mcp_tools_schema,
-                    session_body.get("echomuse", {}), protocol,
-                )
+                    session_body.get("echomuse", {}), protocol, context,
+                ) or fast_path_step
             except Exception as err:
                 logger.warning(
                     "Fast-path setup failed, composed pipeline will use the LLM for every turn: {}", err
