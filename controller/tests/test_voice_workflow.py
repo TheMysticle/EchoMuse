@@ -351,6 +351,7 @@ def test_va_pipecat_raw_pcm_and_semantic_events(fresh_db):
             assert ws.request.headers['X-EchoMuse-Scheduler-Url'].endswith('/voice-workflow/mcp')
             assert ws.request.headers['X-EchoMuse-Scheduler-Token']=='emvoice.test.scoped'
             assert ws.request.headers['X-EchoMuse-Local-Schedules']=='false'
+            assert ws.request.headers['X-EchoMuse-Interrupt-By']=='wake'
             assert parse_qs(urlsplit(ws.request.path).query)['client_id']==['ha-device-id']
             await ws.send(json.dumps({**va_hello(),'echomuse':{'stop':True,'scheduler':False}}))
             async for raw in ws:

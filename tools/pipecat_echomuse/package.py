@@ -141,10 +141,9 @@ def adapt(text):
         "async def _shutdown_esphome_provisioner() -> None:\n    await ESPHOME_PROVISIONER.stop()\n    await close_all_pooled_bridges()",
     )
 
-    # --- energy-threshold VAD for ESPHome satellite sessions: the device's
-    # own wake word and on-device VAD already pre-gate every turn, so a
-    # neural VAD here re-answers a question already answered upstream, at a
-    # model-load cost paid every turn (app/energy_vad.py). ---
+    # Satellite audio still contains room noise before its end marker. An
+    # energy gate mistakes that noise for new speech, interrupting inference.
+    # Keep speech classification and negotiate interruptions separately.
     replace(
         '''def _composed_vad_analyzer(flow: FlowConfig):
     """Return local VAD tuned for browser and ESP32 composed pipelines."""
@@ -156,16 +155,17 @@ def adapt(text):
 
     from pipecat.audio.vad.vad_analyzer import VADParams
 
-    if is_esphome_satellite:
-        from app.energy_vad import EnergyVADAnalyzer
-
-        return EnergyVADAnalyzer(params=VADParams(confidence=0.5, start_secs=0.0, stop_secs=0.1))
-
     from pipecat.audio.vad.silero import SileroVADAnalyzer''',
     )
     replace(
         'vad_processor = VADProcessor(vad_analyzer=_composed_vad_analyzer(flow)) if vad_step else None',
         'vad_processor = VADProcessor(vad_analyzer=_composed_vad_analyzer(flow, is_esphome_satellite)) if vad_step else None',
+    )
+    replace(
+        '                    user_turn_strategies=UserTurnStrategies(\n                        stop=[SpeechTimeoutUserTurnStopStrategy(user_speech_timeout=0.2)]',
+        '''                    user_turn_strategies=UserTurnStrategies(
+                        start=echomuse.composed_turn_start_strategies(session_body.get("echomuse", {})),
+                        stop=[SpeechTimeoutUserTurnStopStrategy(user_speech_timeout=0.2)]''',
     )
 
     # --- fast-path intent matching: a transcript matching one of Home

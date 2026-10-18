@@ -17,6 +17,7 @@ def options(headers, authenticated):
         return {}
     profile = headers.get("x-echomuse-barge-in", "balanced")
     result = {"barge_in": profile if profile in PROFILES else "balanced"}
+    result["interrupt_by"] = headers.get("x-echomuse-interrupt-by", "voice")
     url = headers.get("x-echomuse-scheduler-url", "")
     token = headers.get("x-echomuse-scheduler-token", "")
     if url and token:
@@ -44,6 +45,19 @@ def vad_analyzer(settings, fallback):
     from pipecat.audio.vad.silero import SileroVADAnalyzer
     from pipecat.audio.vad.vad_analyzer import VADParams
     return SileroVADAnalyzer(params=VADParams(**PROFILES[profile], stop_secs=0.3))
+
+
+def composed_turn_start_strategies(settings):
+    """VAD delimits speech; explicit wake/interrupt messages own wake barge-in."""
+    from pipecat.turns.user_start.vad_user_turn_start_strategy import VADUserTurnStartStrategy
+
+    voice_interruptions = settings.get("interrupt_by") != "wake"
+    # The controller already enters listening on wake. A VAD-generated user
+    # start would also serialize a listening phase and reopen its closed mic.
+    return [VADUserTurnStartStrategy(
+        enable_interruptions=voice_interruptions,
+        enable_user_speaking_frames=voice_interruptions,
+    )]
 
 
 def mcp_options(settings, servers, allowlist):

@@ -22,6 +22,47 @@ def load(path, name):
 adapter=load(ROOT/'tools/pipecat_echomuse/echomuse.py','echo_pipecat_adapter_test')
 
 
+@pytest.mark.parametrize('mode,expected', [('wake', False), ('voice', True), (None, True)])
+def test_composed_vad_cannot_interrupt_wake_barge_in(monkeypatch, mode, expected):
+    from types import SimpleNamespace
+    # Exercise the configuration passed to Pipecat's public start-strategy API.
+    module = 'pipecat.turns.user_start.vad_user_turn_start_strategy'
+    monkeypatch.setitem(sys.modules, module, SimpleNamespace(VADUserTurnStartStrategy=SimpleNamespace))
+    headers = {'x-echomuse-barge-in': 'responsive'}
+    if mode is not None:
+        headers['x-echomuse-interrupt-by'] = mode
+    settings = adapter.options(headers, authenticated=True)
+    strategies = adapter.composed_turn_start_strategies(settings)
+    assert strategies[0].enable_interruptions is expected
+    assert strategies[0].enable_user_speaking_frames is expected
+    assert adapter.options(headers, authenticated=False) == {}
+
+
+def test_composed_pipeline_uses_speech_classifier_and_explicit_start_strategy():
+    # Check the packaging transform itself; generated dist is optional in CI.
+    tree = ast.parse((ROOT/'tools/pipecat_echomuse/package.py').read_text(encoding='utf-8'))
+    replacements = [node.args[1].value for node in ast.walk(tree)
+                    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                    and node.func.id == 'replace' and len(node.args) == 2
+                    and isinstance(node.args[1], ast.Constant) and isinstance(node.args[1].value, str)]
+    factory = next(s for s in replacements if s.startswith('def _composed_vad_analyzer('))
+    assert 'SileroVADAnalyzer' in factory
+    assert 'EnergyVADAnalyzer' not in factory
+    strategy = next(s for s in replacements if 'start=echomuse.composed_turn_start_strategies' in s)
+    assert 'SpeechTimeoutUserTurnStopStrategy' in strategy
+
+
+def test_live_vad_settings_are_independent_of_composed_interruption_mode(monkeypatch):
+    from types import SimpleNamespace
+    monkeypatch.setitem(sys.modules, 'pipecat.audio.vad.silero',
+                        SimpleNamespace(SileroVADAnalyzer=SimpleNamespace))
+    monkeypatch.setitem(sys.modules, 'pipecat.audio.vad.vad_analyzer',
+                        SimpleNamespace(VADParams=SimpleNamespace))
+    for mode in ('wake', 'voice'):
+        vad = adapter.vad_analyzer({'barge_in': 'responsive', 'interrupt_by': mode}, None)
+        assert vars(vad.params) == {**adapter.PROFILES['responsive'], 'stop_secs': 0.3}
+
+
 def test_profiles_require_sustained_speech_and_do_not_edit_fallback():
     assert adapter.PROFILES['balanced']=={'confidence':.8,'start_secs':.3,'min_volume':.04}
     assert adapter.PROFILES['low']['start_secs']==.45

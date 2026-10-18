@@ -86,15 +86,12 @@ MAX_REPLY_SECONDS = 120  # reply audio queued ahead of the speaker, per reply
 # arrives, which is the fault the endpointer exists to cure (a TV it hears as
 # speech). This is the ONLY place a device's own VAD-end reaches a pipecat
 # session (device_endpoint, below) -- it never fires for native HA Assist,
-# which has its own turn-ending path. Two server-side VAD stop_secs share
-# this one constant: composed/ESPHome-satellite sessions use the energy
-# gate (app/energy_vad.py, stop_secs=0.1 -- the device already pre-gated
-# the speech, so this is "has the known silence arrived", not a speech
-# classifier needing margin), and realtime Gemini Live sessions use Silero
+# which has its own turn-ending path. Composed sessions use Silero with
+# stop_secs=0.2, and realtime Gemini Live sessions use Silero
 # at a FIXED stop_secs=0.3 regardless of barge-in profile
 # (app/echomuse.py:vad_analyzer). 0.3s is the real floor; this constant
 # must clear it with margin for every pipecat session, not just the
-# energy-gated ones. This path is controller-to-addon only (no Echo WiFi
+# composed ones. This path is controller-to-addon only (no Echo WiFi
 # in the loop), so the margin is for VAD-processing/scheduling jitter, not
 # link loss.
 ENDPOINT_SILENCE_S = 0.4
@@ -234,6 +231,7 @@ async def handshake(config, device_id):
         headers["X-EchoMuse-Google-Api-Key"] = config["google_api_key"]
     if transport(config) == "va_pipecat":
         headers["X-EchoMuse-Barge-In"] = barge_profile(config)
+        headers["X-EchoMuse-Interrupt-By"] = config.get("interrupt_by", INTERRUPT_WAKE)
         if config.get("_scheduler_url") and config.get("_scheduler_token"):
             headers["X-EchoMuse-Scheduler-Url"] = config["_scheduler_url"]
             headers["X-EchoMuse-Scheduler-Token"] = config["_scheduler_token"]
