@@ -50,6 +50,7 @@ def test_composed_pipeline_uses_speech_classifier_and_explicit_start_strategy():
     assert 'EnergyVADAnalyzer' not in factory
     strategy = next(s for s in replacements if 'start=echomuse.composed_turn_start_strategies' in s)
     assert 'SpeechTimeoutUserTurnStopStrategy' in strategy
+    assert 'getattr(stt, "extra_turn_silence_secs", 0.2)' in strategy
 
 
 def test_live_vad_settings_are_independent_of_composed_interruption_mode(monkeypatch):

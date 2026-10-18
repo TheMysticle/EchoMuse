@@ -36,6 +36,12 @@ class HomeAssistantCommands:
         self.language = language
         self.device_id = device_id
         self.conversation_id = None
+        self._client = None
+
+    async def aclose(self):
+        if self._client is not None:
+            await self._client.aclose()
+            self._client = None
 
     async def resolve_device(self, mac: str):
         """Resolve the stored ESPHome MAC, not the unrelated session/client ID."""
@@ -77,10 +83,11 @@ class HomeAssistantCommands:
         if self.conversation_id:
             body["conversation_id"] = self.conversation_id
         try:
-            async with httpx.AsyncClient(timeout=30.0, follow_redirects=False) as client:
-                response = await client.post(
-                    self.url, headers={"Authorization": f"Bearer {self._token}"}, json=body,
-                )
+            if self._client is None:
+                self._client = httpx.AsyncClient(timeout=30.0, follow_redirects=False)
+            response = await self._client.post(
+                self.url, headers={"Authorization": f"Bearer {self._token}"}, json=body,
+            )
         except httpx.ConnectError:
             # No connection was made, so no action could have been dispatched.
             logger.warning("Local commands: Home Assistant is unreachable")

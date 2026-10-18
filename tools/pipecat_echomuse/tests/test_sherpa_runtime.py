@@ -20,6 +20,98 @@ from pipecat.processors.frame_processor import FrameProcessor
 from pipecat.workers.runner import WorkerRunner
 
 
+def test_next_command_after_real_gemini_context_object():
+    from fast_path import FastPathStep
+    from local_commands import LocalReply
+    from pipecat.processors.aggregators.llm_context import LLMContext, LLMSpecificMessage
+    from pipecat.frames.frames import LLMContextFrame
+
+    async def run():
+        context = LLMContext([
+            {'role': 'user', 'content': "what's the weather like"},
+            LLMSpecificMessage(llm='google', message={'role': 'model', 'parts': []}),
+        ])
+        seen = []
+        class Local:
+            async def process(self, text):
+                seen.append(text)
+                return LocalReply('Playing music.')
+        step = FastPathStep(state=None, language='en', bridge=None, tool_names={},
+                            context=context, local_commands=Local())
+        sink = Collect()
+        worker = PipelineWorker(Pipeline([step, sink]), idle_timeout_secs=None)
+        runner = WorkerRunner(handle_sigint=False)
+        await runner.add_workers(worker)
+        running = asyncio.create_task(runner.run())
+        try:
+            await asyncio.wait_for(sink.ready.wait(), 5)
+            context.add_message({'role': 'user', 'content': 'play music'})
+            await worker.queue_frame(LLMContextFrame(context))
+            reply = await asyncio.wait_for(sink.received.get(), 2)
+            assert reply.text == 'Playing music.'
+            assert seen == ['play music']
+        finally:
+            await worker.queue_frame(EndFrame())
+            await asyncio.wait_for(running, 5)
+    asyncio.run(run())
+
+
+def test_zero_extra_silence_still_waits_for_sherpa_final_transcript():
+    from pipecat.frames.frames import LLMContextFrame
+    from pipecat.processors.aggregators.llm_context import LLMContext
+    from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair, LLMUserAggregatorParams
+    from pipecat.turns.user_turn_strategies import UserTurnStrategies
+    from pipecat.turns.user_stop.speech_timeout_user_turn_stop_strategy import SpeechTimeoutUserTurnStopStrategy
+    from echomuse import composed_turn_start_strategies
+
+    async def run():
+        done_received, release_final = asyncio.Event(), asyncio.Event()
+        async def sherpa(ws):
+            segment_sent = False
+            async for message in ws:
+                if message == 'Done':
+                    done_received.set()
+                    await release_final.wait()
+                    await ws.send(json.dumps({'text': 'MUSIC', 'is_final': True}))
+                    await ws.send('Done!')
+                elif isinstance(message, bytes) and not segment_sent:
+                    segment_sent = True
+                    await ws.send(json.dumps({'text': 'PLAY', 'is_final': True}))
+        class Sink(Collect):
+            async def process_frame(self, frame, direction):
+                await super().process_frame(frame, direction)
+                if isinstance(frame, LLMContextFrame):
+                    await self.received.put(frame)
+        async with serve(sherpa, '127.0.0.1', 0) as server:
+            stt = SherpaOnnxSTTService(host='127.0.0.1', port=server.sockets[0].getsockname()[1])
+            pair = LLMContextAggregatorPair(LLMContext([]), user_params=LLMUserAggregatorParams(
+                user_turn_strategies=UserTurnStrategies(
+                    start=composed_turn_start_strategies({'interrupt_by': 'wake'}),
+                    stop=[SpeechTimeoutUserTurnStopStrategy(user_speech_timeout=stt.extra_turn_silence_secs)])))
+            sink = Sink()
+            worker = PipelineWorker(Pipeline([stt, pair.user(), sink]), idle_timeout_secs=None)
+            runner = WorkerRunner(handle_sigint=False)
+            await runner.add_workers(worker)
+            running = asyncio.create_task(runner.run())
+            try:
+                await asyncio.wait_for(sink.ready.wait(), 5)
+                await worker.queue_frames([VADUserStartedSpeakingFrame(), audio(1000), VADUserStoppedSpeakingFrame(stop_secs=.2)])
+                await asyncio.wait_for(done_received.wait(), 2)
+                with pytest.raises(TimeoutError):
+                    # A finalized server segment plus VAD stop must still wait
+                    # for Done!, otherwise a partial command can execute.
+                    await asyncio.wait_for(sink.received.get(), .05)
+                release_final.set()
+                frame = await asyncio.wait_for(sink.received.get(), 2)
+                assert isinstance(frame, LLMContextFrame)
+                assert frame.context.get_messages()[-1]['content'] == 'PLAY MUSIC'
+            finally:
+                release_final.set()
+                await worker.queue_frame(EndFrame())
+                await asyncio.wait_for(running, 5)
+    asyncio.run(run())
+
+
 class Collect(FrameProcessor):
     def __init__(self):
         super().__init__()

@@ -36,6 +36,27 @@ def mock_api(monkeypatch, handler):
                         lambda **kw: real_client(transport=httpx.MockTransport(handler), **kw))
 
 
+def test_multiple_commands_reuse_connection_pool_and_close_on_cleanup(monkeypatch):
+    created = []
+    real_client = httpx.AsyncClient
+    def create(**kwargs):
+        client = real_client(transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json=payload())), **kwargs)
+        created.append(client)
+        return client
+    monkeypatch.setattr(commands.httpx, 'AsyncClient', create)
+    async def run():
+        client = commands.HomeAssistantCommands('http://ha/api', 'token', language='en')
+        await client.process('turn off the bedroom light')
+        await client.process('turn off the bedroom light')
+        assert len(created) == 1
+        assert not created[0].is_closed
+        await client.aclose()
+        assert created[0].is_closed
+        await client.aclose()
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize('sentence,speech', [
     ('turn off the kitchen lights', 'Turned off the lights.'),
     ('activate movie mode', 'Movie mode activated.'),
@@ -221,6 +242,30 @@ def test_no_match_and_tool_result_context_pass_to_llm_once(processor):
     asyncio.run(run())
     assert seen == ['tell me a joke']
     assert step.sent == [(unmatched, direction.DOWNSTREAM), (tool_result, direction.DOWNSTREAM)]
+
+
+def test_model_specific_history_does_not_break_next_user_turn(processor):
+    module, ContextFrame, direction = processor
+    seen = []
+    async def process(text):
+        seen.append(text)
+        return commands.LocalReply('Playing music.')
+    # Pipecat's Gemini service stores LLMSpecificMessage objects for model
+    # content/thought signatures. They deliberately have no dict.get method.
+    model_message = SimpleNamespace(llm='google', message={'role': 'model'})
+    history = [{'role': 'user', 'content': "what's the weather like"}, model_message]
+    frame = ContextFrame(history)
+    step = module.FastPathStep(state=None, language='en', bridge=None, tool_names={},
+                               local_commands=SimpleNamespace(process=process), context=frame.context)
+    async def run():
+        await step.process_frame(frame, direction.DOWNSTREAM)
+        start = sys.modules['pipecat.frames.frames'].VADUserStartedSpeakingFrame()
+        await step.process_frame(start, direction.DOWNSTREAM)
+        history.append({'role': 'user', 'content': 'play music'})
+        await step.process_frame(frame, direction.DOWNSTREAM)
+    asyncio.run(run())
+    assert seen == ['play music']
+    assert step.sent[-1][0].text == 'Playing music.'
 
 
 @pytest.mark.parametrize('text', ["what's the weather like", 'play music'])

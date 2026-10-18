@@ -385,7 +385,17 @@ class FastPathStep(FrameProcessor):
 
     @staticmethod
     def _user_count(messages):
-        return sum(message.get("role") == "user" for message in messages)
+        # Gemini appends LLMSpecificMessage objects (for example thought
+        # signatures) alongside ordinary messages after a real model turn.
+        return sum(isinstance(message, dict) and message.get("role") == "user" for message in messages)
+
+    async def cleanup(self):
+        try:
+            close = getattr(self._local_commands, "aclose", None)
+            if close is not None:
+                await close()
+        finally:
+            await super().cleanup()
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
@@ -404,7 +414,7 @@ class FastPathStep(FrameProcessor):
             if self._awaiting_user_context and user_count <= self._user_baseline:
                 logger.warning("Ignoring inference for an utterance without a new user transcript")
                 return
-            text = last.get("content") if last.get("role") == "user" else None
+            text = last.get("content") if isinstance(last, dict) and last.get("role") == "user" else None
             if isinstance(text, str) and text.strip():
                 if user_count <= self._last_routed_user_count:
                     logger.warning("Ignoring duplicate inference for the same user transcript")

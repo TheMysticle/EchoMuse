@@ -1,0 +1,324 @@
+{
+  "date": "2026-10-18",
+  "metric": "Milliseconds from end of paced input speech to first response audio chunk",
+  "trials_per_case": 3,
+  "composed_model": "gemini-3.5-flash-lite",
+  "live_model": "gemini-3.1-flash-live-preview",
+  "ha": "192.168.1.47",
+  "sherpa_piper": "192.168.1.211",
+  "runner": "Windows development machine, Pipecat 1.4.0",
+  "notes": [
+    "Same Piper-generated 16 kHz input for both routes per phrase.",
+    "Composed worker and HA HTTP client retained across turns. First trial includes cold HA HTTP client.",
+    "Live uses a fresh ready session each turn, receives until turn_complete, and sends audio_stream_end at the end of input.",
+    "Both use the configured base short-answer instructions and the same 34 real HA MCP tools; EchoMuse scheduler tools and satellite instruction additions are omitted.",
+    "Microphone, controller, device endpoint processing, speaker buffering and acoustic playback are not measured.",
+    "Music player paused before each music trial; music timing is for an explicit named-device resume.",
+    "Ordinary light/weather/general-question measurements preceded the final Sherpa segment-buffering guard; their tested utterances had a single final segment."
+  ],
+  "results": [
+    {
+      "transcript": "TURN OFF QUEST LIGHT IN THE BEDROOM",
+      "ha_local_ms": 241.5198000089731,
+      "route": "local",
+      "local_reply": "Turned off the light",
+      "speech_start_after_speech_ms": -2636.2,
+      "vad_stop_after_speech_ms": 245.9,
+      "transcript_at_after_speech_ms": 382.9,
+      "route_at_after_speech_ms": 383.8,
+      "first_audio_after_speech_ms": 743.1,
+      "phrase": "Turn off Quest Light in the bedroom",
+      "trial": 1,
+      "pipeline": "composed"
+    },
+    {
+      "tools": [
+        "assist__intent__HassTurnOff"
+      ],
+      "response_text": "Turned off the bedroom Quest light.",
+      "speech_start_after_speech_ms": -2649.6,
+      "first_audio_after_speech_ms": 1277.4,
+      "tool_at_after_speech_ms": 627.3,
+      "phrase": "Turn off Quest Light in the bedroom",
+      "trial": 1,
+      "pipeline": "live"
+    },
+    {
+      "tools": [
+        "assist__intent__HassTurnOff"
+      ],
+      "response_text": "Quest light is off.",
+      "speech_start_after_speech_ms": -2630.6,
+      "first_audio_after_speech_ms": 1248.6,
+      "tool_at_after_speech_ms": 628.7,
+      "phrase": "Turn off Quest Light in the bedroom",
+      "trial": 2,
+      "pipeline": "live"
+    },
+    {
+      "transcript": "TURN OFF QUEST LIGHT IN THE BEDROOM",
+      "ha_local_ms": 13.314099996932782,
+      "route": "local",
+      "local_reply": "Turned off the light",
+      "speech_start_after_speech_ms": -2631.4,
+      "vad_stop_after_speech_ms": 306.4,
+      "transcript_at_after_speech_ms": 444.6,
+      "route_at_after_speech_ms": 445.2,
+      "first_audio_after_speech_ms": 545.8,
+      "phrase": "Turn off Quest Light in the bedroom",
+      "trial": 2,
+      "pipeline": "composed"
+    },
+    {
+      "transcript": "TURN OFF QUEST LIGHT IN THE BEDROOM",
+      "ha_local_ms": 13.706500001717359,
+      "route": "local",
+      "local_reply": "Turned off the light",
+      "speech_start_after_speech_ms": -2633.7,
+      "vad_stop_after_speech_ms": 275.9,
+      "transcript_at_after_speech_ms": 369.4,
+      "route_at_after_speech_ms": 370.2,
+      "first_audio_after_speech_ms": 566.5,
+      "phrase": "Turn off Quest Light in the bedroom",
+      "trial": 3,
+      "pipeline": "composed"
+    },
+    {
+      "tools": [
+        "assist__intent__HassTurnOff"
+      ],
+      "response_text": "Alright, I've turned off the Quest light in the bedroom.",
+      "speech_start_after_speech_ms": -2643.6,
+      "first_audio_after_speech_ms": 1251.3,
+      "tool_at_after_speech_ms": 601.1,
+      "phrase": "Turn off Quest Light in the bedroom",
+      "trial": 3,
+      "pipeline": "live"
+    },
+    {
+      "transcript": "WHAT'S THE WEATHER LIKE",
+      "ha_local_ms": 13.991800005896948,
+      "route": "local",
+      "local_reply": "8.9 \u00b0C and partly cloudy",
+      "speech_start_after_speech_ms": -1461.9,
+      "vad_stop_after_speech_ms": 273.6,
+      "transcript_at_after_speech_ms": 410.1,
+      "route_at_after_speech_ms": 411.0,
+      "first_audio_after_speech_ms": 708.2,
+      "phrase": "What's the weather like",
+      "trial": 1,
+      "pipeline": "composed"
+    },
+    {
+      "tools": [
+        "assist__script__get_weather"
+      ],
+      "response_text": "It's partly cloudy and around 9 degrees Celsius out right now. Looks like it'll stay mostly cloudy through the night, with a chance of rain by early morning. Tomorrow should be cloudy with a high around 11. Anything else you'd like to know about the forecast?",
+      "speech_start_after_speech_ms": -1458.4,
+      "first_audio_after_speech_ms": 1276.8,
+      "tool_at_after_speech_ms": 566.6,
+      "phrase": "What's the weather like",
+      "trial": 1,
+      "pipeline": "live"
+    },
+    {
+      "tools": [
+        "assist__script__get_weather"
+      ],
+      "response_text": "It's currently partly cloudy with a temperature of 8.9 degrees. For the rest of the night, expect cloudy skies with temperatures staying around 8 or 9 degrees, though there's a chance of rain early tomorrow morning. Anything else you'd like to know?",
+      "speech_start_after_speech_ms": -1468.6,
+      "first_audio_after_speech_ms": 1300.0,
+      "tool_at_after_speech_ms": 610.1,
+      "phrase": "What's the weather like",
+      "trial": 2,
+      "pipeline": "live"
+    },
+    {
+      "transcript": "WHAT'S THE WEATHER LIKE",
+      "ha_local_ms": 6.344099994748831,
+      "route": "local",
+      "local_reply": "8.9 \u00b0C and partly cloudy",
+      "speech_start_after_speech_ms": -1458.7,
+      "vad_stop_after_speech_ms": 278.6,
+      "transcript_at_after_speech_ms": 418.0,
+      "route_at_after_speech_ms": 418.6,
+      "first_audio_after_speech_ms": 663.9,
+      "phrase": "What's the weather like",
+      "trial": 2,
+      "pipeline": "composed"
+    },
+    {
+      "transcript": "WHAT'S THE WEATHER LIKE",
+      "ha_local_ms": 5.769399998825975,
+      "route": "local",
+      "local_reply": "8.9 \u00b0C and partly cloudy",
+      "speech_start_after_speech_ms": -1457.6,
+      "vad_stop_after_speech_ms": 281.6,
+      "transcript_at_after_speech_ms": 422.0,
+      "route_at_after_speech_ms": 423.1,
+      "first_audio_after_speech_ms": 621.1,
+      "phrase": "What's the weather like",
+      "trial": 3,
+      "pipeline": "composed"
+    },
+    {
+      "tools": [
+        "assist__script__get_weather"
+      ],
+      "response_text": "It's currently partly cloudy and about 9 degrees. The forecast for the rest of the day is mostly cloudy.",
+      "speech_start_after_speech_ms": -1473.6,
+      "first_audio_after_speech_ms": 1167.4,
+      "tool_at_after_speech_ms": 571.2,
+      "phrase": "What's the weather like",
+      "trial": 3,
+      "pipeline": "live"
+    },
+    {
+      "transcript": "TELL ME ONE SHORT JOKE",
+      "ha_local_ms": 33.12990000995342,
+      "route": "llm",
+      "local_reply": null,
+      "speech_start_after_speech_ms": -1703.3,
+      "vad_stop_after_speech_ms": 307.3,
+      "transcript_at_after_speech_ms": 444.2,
+      "route_at_after_speech_ms": 445.1,
+      "llm_first_text_after_speech_ms": 1630.6,
+      "first_audio_after_speech_ms": 1786.1,
+      "phrase": "Tell me one short joke",
+      "trial": 1,
+      "pipeline": "composed"
+    },
+    {
+      "response_text": "Why did the scarecrow win an award? Because he was outstanding in his field! Did you like that one?",
+      "speech_start_after_speech_ms": -1678.5,
+      "first_audio_after_speech_ms": 755.2,
+      "phrase": "Tell me one short joke",
+      "trial": 1,
+      "pipeline": "live"
+    },
+    {
+      "response_text": "Why don't scientists trust atoms? Because they make up everything! Do you want to hear another one?",
+      "speech_start_after_speech_ms": -1698.8,
+      "first_audio_after_speech_ms": 802.5,
+      "phrase": "Tell me one short joke",
+      "trial": 2,
+      "pipeline": "live"
+    },
+    {
+      "transcript": "TELL ME ONE SHORT JOKE",
+      "ha_local_ms": 9.83559999440331,
+      "route": "llm",
+      "local_reply": null,
+      "speech_start_after_speech_ms": -1707.6,
+      "vad_stop_after_speech_ms": 309.5,
+      "transcript_at_after_speech_ms": 402.0,
+      "route_at_after_speech_ms": 402.7,
+      "llm_first_text_after_speech_ms": 1198.3,
+      "first_audio_after_speech_ms": 1408.9,
+      "phrase": "Tell me one short joke",
+      "trial": 2,
+      "pipeline": "composed"
+    },
+    {
+      "transcript": "TELL ME ONE SHORT JOKE",
+      "ha_local_ms": 8.278799999970943,
+      "route": "llm",
+      "local_reply": null,
+      "speech_start_after_speech_ms": -1705.6,
+      "vad_stop_after_speech_ms": 306.8,
+      "transcript_at_after_speech_ms": 399.6,
+      "route_at_after_speech_ms": 400.6,
+      "llm_first_text_after_speech_ms": 1155.5,
+      "first_audio_after_speech_ms": 1338.2,
+      "phrase": "Tell me one short joke",
+      "trial": 3,
+      "pipeline": "composed"
+    },
+    {
+      "response_text": "Why don't scientists trust atoms? Because they make up everything! Ha! Do you want to hear another one?",
+      "speech_start_after_speech_ms": -1703.8,
+      "first_audio_after_speech_ms": 725.3,
+      "phrase": "Tell me one short joke",
+      "trial": 3,
+      "pipeline": "live"
+    },
+    {
+      "transcript": "RESUMED THE BEDROOM SPEAKER",
+      "ha_local_ms": 428.643799998099,
+      "route": "local",
+      "local_reply": "Resumed",
+      "speech_start_after_speech_ms": -2178.1,
+      "vad_stop_after_speech_ms": 308.7,
+      "transcript_at_after_speech_ms": 446.0,
+      "route_at_after_speech_ms": 446.6,
+      "first_audio_after_speech_ms": 957.5,
+      "phrase": "Resume the Bedroom Speaker",
+      "trial": 1,
+      "pipeline": "composed"
+    },
+    {
+      "tools": [
+        "assist__media_player__HassMediaUnpause"
+      ],
+      "response_text": "Resumed.",
+      "speech_start_after_speech_ms": -2139.7,
+      "first_audio_after_speech_ms": 1439.8,
+      "tool_at_after_speech_ms": 581.8,
+      "phrase": "Resume the Bedroom Speaker",
+      "trial": 1,
+      "pipeline": "live"
+    },
+    {
+      "tools": [
+        "assist__media_player__HassMediaUnpause"
+      ],
+      "response_text": "Resumed the bedroom speaker.",
+      "speech_start_after_speech_ms": -2187.7,
+      "first_audio_after_speech_ms": 1319.1,
+      "tool_at_after_speech_ms": 569.1,
+      "phrase": "Resume the Bedroom Speaker",
+      "trial": 2,
+      "pipeline": "live"
+    },
+    {
+      "transcript": "RESUMED THE BEDROOM SPEAKER",
+      "ha_local_ms": 131.24030000471976,
+      "route": "local",
+      "local_reply": "Resumed",
+      "speech_start_after_speech_ms": -2164.5,
+      "vad_stop_after_speech_ms": 280.3,
+      "transcript_at_after_speech_ms": 373.8,
+      "route_at_after_speech_ms": 374.7,
+      "first_audio_after_speech_ms": 608.8,
+      "phrase": "Resume the Bedroom Speaker",
+      "trial": 2,
+      "pipeline": "composed"
+    },
+    {
+      "transcript": "RESUMED THE BEDROOM SPEAKER",
+      "ha_local_ms": 152.66819999669679,
+      "route": "local",
+      "local_reply": "Resumed",
+      "speech_start_after_speech_ms": -2171.4,
+      "vad_stop_after_speech_ms": 310.6,
+      "transcript_at_after_speech_ms": 448.2,
+      "route_at_after_speech_ms": 449.2,
+      "first_audio_after_speech_ms": 680.8,
+      "phrase": "Resume the Bedroom Speaker",
+      "trial": 3,
+      "pipeline": "composed"
+    },
+    {
+      "tools": [
+        "assist__media_player__HassMediaUnpause"
+      ],
+      "response_text": "Resumed.",
+      "speech_start_after_speech_ms": -2191.8,
+      "first_audio_after_speech_ms": 1445.4,
+      "tool_at_after_speech_ms": 609.5,
+      "phrase": "Resume the Bedroom Speaker",
+      "trial": 3,
+      "pipeline": "live"
+    }
+  ]
+}

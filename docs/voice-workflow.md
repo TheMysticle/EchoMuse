@@ -116,6 +116,9 @@ This behavior is negotiated by the add-on; realtime Gemini Live is unchanged.
 Sherpa preserves the audio arriving before VAD confirms a new utterance, so
 short commands after the first request retain their initial words. An empty
 recognition asks for a retry and cannot rerun the previous conversation.
+Sherpa server segments are collected until `Done!` seals the utterance. Its
+aggregator waits for that finalized transcript without adding a second silence
+timer after VAD. Other STT services retain their existing timeout.
 
 In composed STT/LLM/TTS pipelines, fast-path routing first submits the complete
 user utterance to Home Assistant's built-in `conversation.home_assistant` agent.
@@ -128,6 +131,9 @@ permits fallback before any action is dispatched.
 A handler error or an
 uncertain network response is handled locally so an action cannot be repeated
 by the LLM after it may already have succeeded.
+The HA HTTP connection pool is reused for the satellite session and closed
+when the pipeline is cleaned up. Gemini-specific conversation-history objects
+are preserved and skipped when counting new user messages.
 
 The add-on uses its existing Supervisor API access, or the configured core
 `/api/mcp` URL and HA token for standalone deployments. The controller sends

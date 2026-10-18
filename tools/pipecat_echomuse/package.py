@@ -165,7 +165,8 @@ def adapt(text):
         '                    user_turn_strategies=UserTurnStrategies(\n                        stop=[SpeechTimeoutUserTurnStopStrategy(user_speech_timeout=0.2)]',
         '''                    user_turn_strategies=UserTurnStrategies(
                         start=echomuse.composed_turn_start_strategies(session_body.get("echomuse", {})),
-                        stop=[SpeechTimeoutUserTurnStopStrategy(user_speech_timeout=0.2)]''',
+                        stop=[SpeechTimeoutUserTurnStopStrategy(
+                            user_speech_timeout=getattr(stt, "extra_turn_silence_secs", 0.2))]''',
     )
 
     # --- fast-path intent matching: a transcript matching one of Home

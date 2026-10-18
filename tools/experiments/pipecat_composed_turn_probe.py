@@ -45,7 +45,8 @@ async def main(args):
     pair = LLMContextAggregatorPair(context, user_params=LLMUserAggregatorParams(
         user_turn_strategies=UserTurnStrategies(
             start=composed_turn_start_strategies({'interrupt_by': 'wake'}),
-            stop=[SpeechTimeoutUserTurnStopStrategy(user_speech_timeout=.2)]),
+            stop=[SpeechTimeoutUserTurnStopStrategy(
+                user_speech_timeout=SherpaOnnxSTTService.extra_turn_silence_secs)]),
         user_turn_stop_timeout=2.0))
     pipeline = Pipeline([
         VADProcessor(vad_analyzer=SileroVADAnalyzer(params=VADParams(confidence=.7, start_secs=.12, stop_secs=.2, min_volume=.02))),

@@ -45,6 +45,11 @@ from pipecat.utils.time import time_now_iso8601
 class SherpaOnnxSTTService(WebsocketSTTService):
     """Speech-to-text against a local sherpa-onnx online-websocket-server."""
 
+    # VAD has already waited for silence before sending Done. The aggregator
+    # must still await finalized STT, but another silence timer cannot improve
+    # this already-closed Sherpa utterance.
+    extra_turn_silence_secs = 0.0
+
     def __init__(self, *, host: str, port: int, sample_rate: int | None = None, **kwargs):
         super().__init__(sample_rate=sample_rate, settings=STTSettings(model=None, language=None), **kwargs)
         self._url = f"ws://{host}:{port}"
@@ -54,6 +59,7 @@ class SherpaOnnxSTTService(WebsocketSTTService):
         self._pending_audio = bytearray()
         self._utterance_done = asyncio.Event()
         self._last_partial = ""
+        self._final_segments = []
         self._emitted_text = False
 
     def can_generate_metrics(self) -> bool:
@@ -165,6 +171,7 @@ class SherpaOnnxSTTService(WebsocketSTTService):
             self._finalized_sent = False
             self._utterance_done.clear()
             self._last_partial = ""
+            self._final_segments = []
             self._emitted_text = False
         except Exception as e:
             self._websocket = None
@@ -184,8 +191,9 @@ class SherpaOnnxSTTService(WebsocketSTTService):
             return
         async for message in self._websocket:
             if message == "Done!":
-                if self._last_partial:
-                    await self._emit_transcript(self._last_partial)
+                text = " ".join(self._final_segments + ([self._last_partial] if self._last_partial else []))
+                if text:
+                    await self._emit_transcript(text)
                 if not self._emitted_text:
                     logger.warning("Sherpa finished an utterance without recognized speech")
                     await self.push_frame(TTSSpeakFrame(text="I didn't catch that. Please try again."))
@@ -200,7 +208,9 @@ class SherpaOnnxSTTService(WebsocketSTTService):
             if text:
                 self._last_partial = text
             if data.get("is_final") and text:
-                await self._emit_transcript(text)
+                # A server-final segment is not necessarily the end of this
+                # microphone utterance. Only Done! seals the complete text.
+                self._final_segments.append(text)
                 self._last_partial = ""
 
     async def _emit_transcript(self, text):
