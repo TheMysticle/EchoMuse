@@ -107,6 +107,36 @@ add-on's `/data/`, or re-enter its provider/MCP settings and the same satellite
 shared secret. Run only one Pipecat add-on on port 7860. The endpoint URL stays
 `ws://<HA-host>:7860/api/assist/esphome` when hosted on the same machine.
 
+### Local commands before the LLM
+
+In composed STT/LLM/TTS pipelines, fast-path routing first submits the complete
+user utterance to Home Assistant's built-in `homeassistant` conversation agent.
+This stays on the HA host: it does not select your configured cloud agent.
+HA handles its own built-in commands and state queries, custom sentences,
+`intent_script` responses, and sentence-triggered automations. Only
+`no_intent_match` falls through to the configured LLM. An unavailable or
+unauthorized local API also permits fallback before any action is dispatched.
+A handler error or an
+uncertain network response is handled locally so an action cannot be repeated
+by the LLM after it may already have succeeded.
+
+The add-on uses its existing Supervisor API access, or the configured core
+`/api/mcp` URL and HA token for standalone deployments. The controller sends
+the satellite's stored ESPHome MAC; the add-on resolves that to HA's device
+registry ID so room context and satellite-owned commands reach the right
+speaker. The workflow's session device ID remains a conversation-memory key.
+
+Install custom sentences in HA's `/config/custom_sentences/<language>/` and
+configure their handlers in HA as usual, then reload HA's conversation data.
+Sentence-triggered automations remain managed in HA. Reading YAML in Pipecat
+alone does not install an HA intent handler. Local replies use the configured
+TTS service, including Piper, and are added to conversation history.
+
+Flows with an explicit MCP tool allowlist retain the restricted hassil/MCP
+matcher rather than gaining access to the broader conversation API. This is
+also the fallback when no native HA API credentials are configured. The Custom
+Sentences tab labels that fallback separately. Gemini Live is unchanged.
+
 ### Interrupting a reply
 
 **Wake word (default).** The microphone is closed to the server from the first

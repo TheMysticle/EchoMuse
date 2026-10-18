@@ -198,12 +198,27 @@ async def _build_fast_path_step(
     flow: FlowConfig,
     bridge: CombinedMCPBridge,
     mcp_tools_schema,
+    session_options: dict | None = None,
+    protocol=None,
 ) -> "fast_path.FastPathStep | None":
     """Build the fast-path step for one turn, refreshing live entity/area
     names when stale. Returns None if no fast-path-eligible tool is exposed
     (e.g. Home Assistant MCP is not connected)."""
 
     language = (flow.language or "en").split("-")[0]
+    # Ask HA's actual local agent first, with its device/area context and
+    # custom intent handlers. Explicit MCP allowlists retain their restriction.
+    from app.local_commands import from_config
+
+    commands = None if flow.mcp_tool_allowlist else from_config(
+        config, language=flow.language or "en",
+    )
+    if commands is not None:
+        await commands.resolve_device((session_options or {}).get("satellite_mac", ""))
+        return fast_path.FastPathStep(
+            state=None, language=language, bridge=bridge, tool_names={},
+            local_commands=commands, protocol=protocol,
+        )
     tool_names = fast_path.tool_names_for_fast_path(
         [tool.name for tool in mcp_tools_schema.standard_tools]
     )
@@ -239,7 +254,12 @@ def _composed_vad_analyzer(flow: FlowConfig, is_esphome_satellite: bool = False)
             and not _flow_enabled(flow)
         ):
             try:
-                fast_path_step = await _build_fast_path_step(config, flow, bridge, mcp_tools_schema)
+                params = getattr(transport.input(), "_params", None)
+                protocol = getattr(getattr(params, "serializer", None), "protocol", None)
+                fast_path_step = await _build_fast_path_step(
+                    config, flow, bridge, mcp_tools_schema,
+                    session_body.get("echomuse", {}), protocol,
+                )
             except Exception as err:
                 logger.warning(
                     "Fast-path setup failed, composed pipeline will use the LLM for every turn: {}", err
@@ -251,9 +271,10 @@ def _composed_vad_analyzer(flow: FlowConfig, is_esphome_satellite: bool = False)
     replace(
         '        processors.extend([stt, context_aggregator.user(), llm, tts])',
         '''        processors.append(stt)
+        processors.append(context_aggregator.user())
         if fast_path_step:
             processors.append(fast_path_step)
-        processors.extend([context_aggregator.user(), llm, tts])''',
+        processors.extend([llm, tts])''',
     )
     replace(
         '@app.get("/api/assist/mcp/history")\nasync def api_mcp_history():\n    return list_mcp_call_history()',
@@ -277,7 +298,12 @@ async def api_fast_path_status():
             reports.append({"language": language, "error": str(err)})
             continue
         reports.append(fast_path.report_to_dict(state.report) if state.report else {"language": language})
-    return {"enabled": config.fast_path_enabled, "languages": reports}''',
+    from app.local_commands import from_config
+    return {
+        "enabled": config.fast_path_enabled,
+        "home_assistant_agent_configured": from_config(config, language="en") is not None,
+        "languages": reports,
+    }''',
     )
     return text
 
@@ -555,12 +581,17 @@ def adapt_ui(text):
             <span>
               {enabled
                 ? t(
-                    "Files Home Assistant's own Assist pipeline reads from custom_sentences, matched the same way before the LLM is asked.",
+                    "Commands are tried by Home Assistant's built-in local agent before the LLM. Install custom sentences and their intent handlers in Home Assistant. The files below describe the limited MCP fallback used when the local agent is not configured; MCP allowlists keep that restricted fallback.",
                   )
                 : t("Fast-path matching is turned off -- every sentence goes to the LLM.")}
             </span>
           </div>
           <div className="button-row">
+            <span className="status-pill">
+              {fastPathStatus?.home_assistant_agent_configured
+                ? t("HA local agent configured")
+                : t("MCP fallback only")}
+            </span>
             <Button icon={RefreshCw} variant="secondary" onClick={refreshFastPathStatus}>
               {t("Refresh")}
             </Button>
@@ -603,8 +634,8 @@ function CustomSentencesLanguage({ entry }) {
           <h4>{entry.language.toUpperCase()}</h4>
           <span>
             {files.length} custom_sentences file{files.length === 1 ? "" : "s"} -- {customIntents.length} custom
-            intent{customIntents.length === 1 ? "" : "s"}, {fastPathCount} skip{fastPathCount === 1 ? "s" : ""} the
-            LLM; {builtInCount} built-in intent{builtInCount === 1 ? "" : "s"} available
+            intent{customIntents.length === 1 ? "" : "s"}, {fastPathCount} supported by the MCP fallback;
+            {" "}{builtInCount} built-in intent{builtInCount === 1 ? "" : "s"} available
           </span>
         </div>
       </div>
@@ -645,7 +676,7 @@ function SentenceFileCard({ file, byName }) {
                     : ""}
                 </span>
                 <span className={`status-pill ${info?.fast_path_eligible ? "ok" : ""}`}>
-                  {info?.fast_path_eligible ? t("Skips the LLM") : t("Routes to the LLM")}
+                  {info?.fast_path_eligible ? t("MCP fallback supported") : t("Requires HA local agent")}
                 </span>
               </div>
             );
@@ -790,7 +821,7 @@ def main():
     path = args.out/'app/config.py'
     path.write_text(adapt_config(path.read_text(encoding='utf-8')), encoding='utf-8')
     shutil.copyfile(Path(__file__).with_name('echomuse.py'), args.out/'app/echomuse.py')
-    for name in ('sherpa_stt.py', 'piper_wyoming_tts.py', 'energy_vad.py', 'fast_path.py'):
+    for name in ('sherpa_stt.py', 'piper_wyoming_tts.py', 'energy_vad.py', 'fast_path.py', 'local_commands.py'):
         shutil.copyfile(Path(__file__).with_name(name), args.out/'app'/name)
     custom_sentences_src = Path(__file__).with_name('custom_sentences')
     custom_sentences_dst = args.out/'custom_sentences'

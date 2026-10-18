@@ -230,6 +230,8 @@ async def handshake(config, device_id):
     if config.get("google_api_key") and transport(config) != "va_pipecat":
         headers["X-EchoMuse-Google-Api-Key"] = config["google_api_key"]
     if transport(config) == "va_pipecat":
+        import em_db
+        headers["X-EchoMuse-Satellite-Mac"] = await asyncio.to_thread(em_db.get_esphome_mac, device_id)
         headers["X-EchoMuse-Barge-In"] = barge_profile(config)
         headers["X-EchoMuse-Interrupt-By"] = config.get("interrupt_by", INTERRUPT_WAKE)
         if config.get("_scheduler_url") and config.get("_scheduler_token"):

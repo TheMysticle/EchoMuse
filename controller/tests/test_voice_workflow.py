@@ -336,6 +336,24 @@ def va_hello(**audio_changes):
                      'output_sample_rate':24000,'channels':1,**audio_changes}}
 
 
+def test_va_handshake_sends_stored_satellite_identity(fresh_db):
+    async def main():
+        expected = db.get_esphome_mac('satellite')
+        async def server(ws):
+            assert ws.request.headers['X-EchoMuse-Satellite-Mac'] == expected
+            # This remains a memory key; it is not passed as an HA registry ID.
+            assert ws.request.headers['X-EchoMuse-Target-Device'] == 'session-memory-key'
+            await ws.send(json.dumps(va_hello()))
+            await ws.wait_closed()
+        async with serve(server, '127.0.0.1', 0) as host:
+            cfg = {'mode': W.PIPECAT,
+                   'endpoint': f'ws://127.0.0.1:{host.sockets[0].getsockname()[1]}/api/assist/esphome',
+                   'target_device': 'session-memory-key'}
+            ws = await W.handshake(cfg, 'satellite')
+            await ws.close()
+    asyncio.run(main())
+
+
 def test_va_pipecat_raw_pcm_and_semantic_events(fresh_db):
     async def main():
         from urllib.parse import urlsplit,parse_qs
@@ -352,6 +370,7 @@ def test_va_pipecat_raw_pcm_and_semantic_events(fresh_db):
             assert ws.request.headers['X-EchoMuse-Scheduler-Token']=='emvoice.test.scoped'
             assert ws.request.headers['X-EchoMuse-Local-Schedules']=='false'
             assert ws.request.headers['X-EchoMuse-Interrupt-By']=='wake'
+            assert ws.request.headers['X-EchoMuse-Satellite-Mac']==db.get_esphome_mac('satellite')
             assert parse_qs(urlsplit(ws.request.path).query)['client_id']==['ha-device-id']
             await ws.send(json.dumps({**va_hello(),'echomuse':{'stop':True,'scheduler':False}}))
             async for raw in ws:

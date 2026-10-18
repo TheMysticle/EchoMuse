@@ -1,4 +1,8 @@
-"""Local sentence/intent fast-path: skip the LLM entirely for a narrow, exact
+"""Route completed utterances to HA's built-in local conversation agent.
+
+The native route uses local_commands.py and HA's actual configured handlers.
+The remaining grammar/report helpers implement a restricted MCP fallback:
+skip the LLM entirely for a narrow, exact
 set of HA's own built-in voice commands, using the SAME grammar and matching
 engine Home Assistant's Assist pipeline uses for its "custom sentences"
 feature (the `hassil` library plus the `home-assistant-intents` package,
@@ -30,6 +34,7 @@ from __future__ import annotations
 
 import json
 import time
+from copy import deepcopy
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -40,7 +45,7 @@ from hassil import Intents, RecognizeResult, TextSlotList, errors, recognize
 from hassil.util import merge_dict
 from loguru import logger
 
-from pipecat.frames.frames import Frame, TranscriptionFrame, TTSSpeakFrame
+from pipecat.frames.frames import Frame, LLMContextFrame, TTSSpeakFrame
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 # Action intents only: each has a clean action_done/action_failed result
@@ -130,7 +135,7 @@ def load_intents(language: str, custom_sentence_dirs: list[Path]) -> tuple[Inten
     data = home_assistant_intents.get_intents(language)
     if data is None:
         raise RuntimeError(f"home-assistant-intents has no built-in data for language {language!r}")
-    merged = dict(data)
+    merged = deepcopy(data)
     files: list[LoadedFile] = []
     custom_sources: dict[str, str] = {}
 
@@ -144,7 +149,10 @@ def load_intents(language: str, custom_sentence_dirs: list[Path]) -> tuple[Inten
                     custom = yaml.safe_load(file)
                 if isinstance(custom, dict):
                     names = sorted((custom.get("intents") or {}).keys())
-                    merge_dict(merged, custom)
+                    candidate = deepcopy(merged)
+                    merge_dict(candidate, custom)
+                    Intents.from_dict(candidate)  # one bad file must not disable all matching
+                    merged = candidate
                     for name in names:
                         custom_sources[name] = str(path)
                     files.append(LoadedFile(path=str(path), ok=True, intent_names=names))
@@ -285,7 +293,8 @@ def slots_to_tool_args(result: RecognizeResult) -> dict[str, Any]:
     for slot_name, entity in result.entities.items():
         if entity.value is None or entity.value == "":
             continue
-        args[slot_name] = entity.value
+        args[slot_name] = ([entity.value] if slot_name in {"domain", "device_class"}
+                           and not isinstance(entity.value, list) else entity.value)
     return args
 
 
@@ -295,6 +304,11 @@ def build_confirmation(intent_name: str, args: dict[str, Any], tool_result: dict
     (in which case the caller must fall through to the LLM instead of
     guessing at what happened)."""
 
+    speech = ((tool_result.get("speech") or {}).get("plain") or {}).get("speech")
+    if speech:
+        return str(speech)
+    if tool_result.get("response_type") == "error" or (tool_result.get("data") or {}).get("failed"):
+        return "Sorry, that command failed."
     if tool_result.get("response_type") != "action_done":
         return None
     data = tool_result.get("data") or {}
@@ -333,9 +347,10 @@ def report_to_dict(report: FastPathReport) -> dict[str, Any]:
 
 
 class FastPathStep(FrameProcessor):
-    """Intercepts a finalized transcript, and on a clean match against
-    FAST_PATH_INTENTS, calls the matching HA MCP tool directly and speaks a
-    deterministic confirmation -- never reaching the LLM.
+    """Route a completed user turn to HA's local agent before the LLM.
+
+    Without a native HA API connection, retain the narrow hassil/MCP fallback.
+    Responses go through the configured TTS and assistant context aggregation.
 
     Safety property: once a tool call is attempted, this step is ALWAYS
     terminal for the turn (the frame is absorbed, never also forwarded to
@@ -347,10 +362,12 @@ class FastPathStep(FrameProcessor):
     def __init__(
         self,
         *,
-        state: FastPathState,
+        state: FastPathState | None,
         language: str,
         bridge: Any,
         tool_names: dict[str, str],
+        local_commands: Any = None,
+        protocol: Any = None,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -358,17 +375,36 @@ class FastPathStep(FrameProcessor):
         self._language = language
         self._bridge = bridge
         self._tool_names = tool_names
+        self._local_commands = local_commands
+        self._protocol = protocol
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
 
-        if isinstance(frame, TranscriptionFrame) and frame.text.strip():
-            if await self._try_fast_path(frame.text.strip()):
-                return  # absorbed -- never reaches the LLM
+        # Run AFTER user aggregation: several finalized STT segments may belong
+        # to one utterance. Absorbing transcripts before the aggregator leaves
+        # its turn open and can execute a partial command prematurely.
+        if isinstance(frame, LLMContextFrame) and direction == FrameDirection.DOWNSTREAM:
+            messages = frame.context.get_messages()
+            last = messages[-1] if messages else {}
+            text = last.get("content") if last.get("role") == "user" else None
+            if isinstance(text, str) and text.strip():
+                if self._local_commands is not None:
+                    reply = await self._local_commands.process(text.strip())
+                    if reply is not None:
+                        if self._protocol is not None:
+                            self._protocol.continuation_requested = reply.continue_conversation
+                        logger.info("Local command handled by Home Assistant's built-in agent")
+                        await self.push_frame(TTSSpeakFrame(text=reply.text), direction)
+                        return
+                if await self._try_fast_path(text.strip()):
+                    return
 
         await self.push_frame(frame, direction)
 
     async def _try_fast_path(self, text: str) -> bool:
+        if self._state is None:
+            return False
         try:
             result = match(self._state, text, self._language)
         except Exception as err:
@@ -387,7 +423,7 @@ class FastPathStep(FrameProcessor):
         try:
             raw = await self._bridge.call_tool(tool_name, args)
         except Exception as err:
-            # The call itself raised -- connection/HA error, nothing done.
+            # The action may have completed before the connection failed.
             logger.warning("Fast-path: tool call {} failed: {}", tool_name, err)
             confirmation = "Sorry, that didn't work."
         else:
@@ -398,10 +434,10 @@ class FastPathStep(FrameProcessor):
             try:
                 tool_result = json.loads(raw)
                 confirmation = build_confirmation(result.intent.name, args, tool_result)
-            except (json.JSONDecodeError, TypeError):
+            except (json.JSONDecodeError, TypeError, AttributeError):
                 confirmation = None
             if confirmation is None:
-                confirmation = f"{_VERBS.get(result.intent.name, 'Done')}."
+                confirmation = "Sorry, I couldn't confirm whether that command completed."
 
         logger.info("Fast-path hit: {!r} -> {} ({}) args={}", text, result.intent.name, tool_name, args)
         await self.push_frame(TTSSpeakFrame(text=confirmation), FrameDirection.DOWNSTREAM)

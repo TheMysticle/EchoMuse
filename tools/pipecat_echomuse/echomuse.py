@@ -18,6 +18,9 @@ def options(headers, authenticated):
     profile = headers.get("x-echomuse-barge-in", "balanced")
     result = {"barge_in": profile if profile in PROFILES else "balanced"}
     result["interrupt_by"] = headers.get("x-echomuse-interrupt-by", "voice")
+    satellite_mac = headers.get("x-echomuse-satellite-mac", "").strip()
+    if satellite_mac:
+        result["satellite_mac"] = satellite_mac
     url = headers.get("x-echomuse-scheduler-url", "")
     token = headers.get("x-echomuse-scheduler-token", "")
     if url and token:
