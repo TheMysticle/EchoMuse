@@ -84,8 +84,20 @@ MAX_REPLY_SECONDS = 120  # reply audio queued ahead of the speaker, per reply
 # the uplink carries this much digital silence and is then closed. Closing it
 # at once would leave the server's detector waiting for a quiet that never
 # arrives, which is the fault the endpointer exists to cure (a TV it hears as
-# speech). Longer than the slowest profile's stop wait (0.3s) with margin.
-ENDPOINT_SILENCE_S = 0.6
+# speech). This is the ONLY place a device's own VAD-end reaches a pipecat
+# session (device_endpoint, below) -- it never fires for native HA Assist,
+# which has its own turn-ending path. Two server-side VAD stop_secs share
+# this one constant: composed/ESPHome-satellite sessions use the energy
+# gate (app/energy_vad.py, stop_secs=0.1 -- the device already pre-gated
+# the speech, so this is "has the known silence arrived", not a speech
+# classifier needing margin), and realtime Gemini Live sessions use Silero
+# at a FIXED stop_secs=0.3 regardless of barge-in profile
+# (app/echomuse.py:vad_analyzer). 0.3s is the real floor; this constant
+# must clear it with margin for every pipecat session, not just the
+# energy-gated ones. This path is controller-to-addon only (no Echo WiFi
+# in the loop), so the margin is for VAD-processing/scheduling jitter, not
+# link loss.
+ENDPOINT_SILENCE_S = 0.4
 FRAME_BYTES = 2560      # 80ms of 16kHz mono s16, the size the Echo sends
 INTERRUPT_WAKE = "wake"
 INTERRUPT_VOICE = "voice"
