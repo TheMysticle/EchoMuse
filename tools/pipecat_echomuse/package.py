@@ -332,7 +332,8 @@ async def _build_fast_path_step(
     tool_names = fast_path.tool_names_for_fast_path(
         [tool.name for tool in mcp_tools_schema.standard_tools]
     )
-    if not tool_names:
+    if not tool_names and not any(tool.name.endswith("__script__get_weather")
+                                 for tool in mcp_tools_schema.standard_tools):
         return None
 
     state = _fast_path_state(config, language)
@@ -1043,7 +1044,7 @@ def main():
     path.write_text(adapt_text_agent(path.read_text(encoding='utf-8')), encoding='utf-8')
     shutil.copyfile(Path(__file__).with_name('echomuse.py'), args.out/'app/echomuse.py')
     for name in ('sherpa_stt.py', 'piper_wyoming_tts.py', 'energy_vad.py', 'fast_path.py', 'local_commands.py', 'tool_scope.py',
-                 'schedule_language.py', 'schedule_dialogue.py', 'schedule_select.py', 'schedule_mcp.py'):
+                 'schedule_language.py', 'schedule_dialogue.py', 'schedule_select.py', 'schedule_mcp.py', 'weather_commands.py'):
         shutil.copyfile(Path(__file__).with_name(name), args.out/'app'/name)
     custom_sentences_src = Path(__file__).with_name('custom_sentences')
     custom_sentences_dst = args.out/'custom_sentences'
@@ -1066,6 +1067,7 @@ def main():
     "hassil>=2.0.0",
     "home-assistant-intents>=2025.1.0",
     "pyyaml>=6.0",
+    "tzdata>=2025.1",
 ]''')
     pyproject_path.write_text(pyproject, encoding='utf-8')
     build_ui(args.out)

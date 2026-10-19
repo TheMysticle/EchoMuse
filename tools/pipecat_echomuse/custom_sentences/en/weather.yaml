@@ -1,0 +1,41 @@
+# HA-compatible sentences handled locally by Pipecat's weather_commands.py.
+language: en
+intents:
+  EchoMuseWeatherForecast:
+    data:
+      - sentences:
+          - "(what is|what's|how is|how's) [the] weather [like] [on] {echomuse_weather_day}"
+          - "what will [the] weather be [like] [on] {echomuse_weather_day}"
+          - "(what is|what's) [the] [weather] forecast [for|on] {echomuse_weather_day}"
+          - "(tell me|give me) [the] [weather] forecast [for|on] {echomuse_weather_day}"
+          - "[the] [weather] forecast [for|on] {echomuse_weather_day}"
+      - sentences:
+          - "(what is|what's) [the] [weather] forecast"
+          - "(tell me|give me) [the] [weather] forecast"
+          - "[the] [weather] forecast"
+        slots:
+          echomuse_weather_day: today
+  EchoMuseRainForecast:
+    data:
+      - sentences:
+          - "will it rain [on] {echomuse_weather_day}"
+          - "is it going to rain [on] {echomuse_weather_day}"
+          - "(what is|what's) [the] chance of rain [on] {echomuse_weather_day}"
+      - sentences:
+          - "will it rain"
+          - "is it going to rain"
+        slots:
+          echomuse_weather_day: today
+lists:
+  echomuse_weather_day:
+    values:
+      - today
+      - tomorrow
+      - "the day after tomorrow"
+      - monday
+      - tuesday
+      - wednesday
+      - thursday
+      - friday
+      - saturday
+      - sunday

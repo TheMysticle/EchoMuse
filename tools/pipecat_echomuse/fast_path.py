@@ -16,7 +16,9 @@ below for why that set is narrow).
 Why a measured, conservative allowlist rather than every built-in intent:
 state QUERIES (HassGetState, HassClimateGetTemperature, GetWeather, ...) need
 the model's own judgement to phrase a natural answer from structured data,
-and an ambiguous reference ("turn it off", ambiguous area/name) should fall
+The configured Get weather script has a separate, validated local forecast
+formatter (weather_commands.py). Other state-query payloads still need the LLM.
+An ambiguous reference ("turn it off", ambiguous area/name) should fall
 through to the LLM rather than be forced into a hard match -- hassil already
 does this for free: it returns no match (or an unmatched_entities result)
 for anything that is not a clean, grammatical fit, and this module only
@@ -33,6 +35,7 @@ format -- so sentences authored for HA's own Assist work here unchanged.
 from __future__ import annotations
 
 import importlib.util
+import asyncio
 import json
 import os
 import sys
@@ -77,6 +80,7 @@ schedule_language = _load_sibling("schedule_language")
 schedule_dialogue = _load_sibling("schedule_dialogue")
 schedule_select = _load_sibling("schedule_select")
 schedule_mcp = _load_sibling("schedule_mcp")
+weather_commands = _load_sibling("weather_commands")
 
 # EchoMuseCreate/List/Action, handled locally (no LLM) when the parse is
 # clean -- see FastPathStep._start_schedule. Never Hass*: those always skip
@@ -211,7 +215,7 @@ def load_intents(language: str, custom_sentence_dirs: list[Path]) -> tuple[Inten
             name=name,
             source=custom_sources.get(name, "built-in"),
             sentence_count=sum(len(block.get("sentences", [])) for block in (intent_data.get("data") or [])),
-            fast_path_eligible=name in FAST_PATH_INTENTS,
+            fast_path_eligible=name in FAST_PATH_INTENTS or name in {"EchoMuseWeatherForecast", "EchoMuseRainForecast"},
         )
         for name, intent_data in (merged.get("intents") or {}).items()
     ]
@@ -433,6 +437,7 @@ class FastPathStep(FrameProcessor):
         self._local_commands = local_commands
         self._protocol = protocol
         self._context = context
+        self._weather_tool = weather_commands.select_tool(context) if bridge is not None else None
         # Matches em_workflow_tools.handle()'s own fallback for the same
         # question; no session plumbing exists yet to carry the satellite's
         # real configured timezone over this transport (see schedule_mcp.py).
@@ -487,7 +492,33 @@ class FastPathStep(FrameProcessor):
                     # must not be matched against anything else first.
                     if await self._continue_schedule_clarification(text.strip()):
                         return
-                skip_local_agent = False
+                skip_local_agent = weather_commands.requires_forecast(text, self._language)
+                if self._weather_tool:
+                    try:
+                        request = weather_commands.parse_request(text.strip(), self._language)
+                    except Exception as err:
+                        logger.warning('Local weather grammar unavailable; retaining fallback: {}', err)
+                        request = None
+                    if request is not None:
+                        # Do not let HA answer a future forecast with current
+                        # conditions if the local formatter cannot handle it.
+                        skip_local_agent = True
+                        try:
+                            async def timezone():
+                                if request.day in weather_commands.DAYS:
+                                    return None
+                                load = getattr(self._local_commands, 'weather_timezone', None)
+                                return await load() if load else None
+                            raw, zone = await asyncio.gather(
+                                self._bridge.call_tool(self._weather_tool, {}), timezone())
+                            speech = weather_commands.forecast_reply(raw, request, timezone=zone)
+                        except Exception as err:
+                            logger.warning('Local forecast unavailable; using configured LLM: {}', err)
+                            speech = None
+                        if speech is not None:
+                            logger.info('Local forecast response supplied by configured Get weather tool')
+                            await self.push_frame(TTSSpeakFrame(text=speech), direction)
+                            return
                 own_result = None
                 if self._state is not None:
                     try:

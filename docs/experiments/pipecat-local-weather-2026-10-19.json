@@ -1,0 +1,104 @@
+{
+  "date": "2026-10-19",
+  "method": "Real HA MCP and native conversation API; real Piper audio, no playback or LLM. Excludes STT, VAD, speaker buffering.",
+  "local_selection_median_ms": 0.0627,
+  "local_selection_p95_ms": 0.1208,
+  "results": [
+    {
+      "trial": 1,
+      "phrase": "what's the weather forecast tomorrow",
+      "speech": "Tuesday: cloudy, with a high of 13.8 degrees and a low of 6.7 degrees. Chance of rain: 0 percent.",
+      "local_route_ms": 225.89,
+      "piper_first_audio_ms": 681.76,
+      "text_to_first_audio_ms": 907.65
+    },
+    {
+      "trial": 1,
+      "phrase": "will it rain tomorrow",
+      "speech": "Tuesday: cloudy, with a reported 0 percent chance of rain.",
+      "local_route_ms": 33.85,
+      "piper_first_audio_ms": 272.29,
+      "text_to_first_audio_ms": 306.14
+    },
+    {
+      "trial": 1,
+      "phrase": "forecast for Wednesday",
+      "speech": "Wednesday: partly cloudy, with a high of 22.5 degrees and a low of 11.2 degrees. Chance of rain: 0 percent.",
+      "local_route_ms": 36.32,
+      "piper_first_audio_ms": 446.76,
+      "text_to_first_audio_ms": 483.08
+    },
+    {
+      "trial": 1,
+      "phrase": "what's the weather like",
+      "speech": "8.5 \u00b0C and partly cloudy",
+      "local_route_ms": 4.87,
+      "piper_first_audio_ms": 194.3,
+      "text_to_first_audio_ms": 199.16
+    },
+    {
+      "trial": 2,
+      "phrase": "what's the weather forecast tomorrow",
+      "speech": "Tuesday: cloudy, with a high of 13.8 degrees and a low of 6.7 degrees. Chance of rain: 0 percent.",
+      "local_route_ms": 34.79,
+      "piper_first_audio_ms": 357.7,
+      "text_to_first_audio_ms": 392.49
+    },
+    {
+      "trial": 2,
+      "phrase": "will it rain tomorrow",
+      "speech": "Tuesday: cloudy, with a reported 0 percent chance of rain.",
+      "local_route_ms": 33.36,
+      "piper_first_audio_ms": 253.21,
+      "text_to_first_audio_ms": 286.57
+    },
+    {
+      "trial": 2,
+      "phrase": "forecast for Wednesday",
+      "speech": "Wednesday: partly cloudy, with a high of 22.5 degrees and a low of 11.2 degrees. Chance of rain: 0 percent.",
+      "local_route_ms": 41.65,
+      "piper_first_audio_ms": 498.08,
+      "text_to_first_audio_ms": 539.73
+    },
+    {
+      "trial": 2,
+      "phrase": "what's the weather like",
+      "speech": "8.5 \u00b0C and partly cloudy",
+      "local_route_ms": 4.51,
+      "piper_first_audio_ms": 207.57,
+      "text_to_first_audio_ms": 212.08
+    },
+    {
+      "trial": 3,
+      "phrase": "what's the weather forecast tomorrow",
+      "speech": "Tuesday: cloudy, with a high of 13.8 degrees and a low of 6.7 degrees. Chance of rain: 0 percent.",
+      "local_route_ms": 37.2,
+      "piper_first_audio_ms": 411.56,
+      "text_to_first_audio_ms": 448.76
+    },
+    {
+      "trial": 3,
+      "phrase": "will it rain tomorrow",
+      "speech": "Tuesday: cloudy, with a reported 0 percent chance of rain.",
+      "local_route_ms": 33.45,
+      "piper_first_audio_ms": 326.27,
+      "text_to_first_audio_ms": 359.72
+    },
+    {
+      "trial": 3,
+      "phrase": "forecast for Wednesday",
+      "speech": "Wednesday: partly cloudy, with a high of 22.5 degrees and a low of 11.2 degrees. Chance of rain: 0 percent.",
+      "local_route_ms": 32.25,
+      "piper_first_audio_ms": 386.05,
+      "text_to_first_audio_ms": 418.3
+    },
+    {
+      "trial": 3,
+      "phrase": "what's the weather like",
+      "speech": "8.5 \u00b0C and partly cloudy",
+      "local_route_ms": 4.64,
+      "piper_first_audio_ms": 261.74,
+      "text_to_first_audio_ms": 266.39
+    }
+  ]
+}

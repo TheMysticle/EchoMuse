@@ -163,6 +163,16 @@ Sentence-triggered automations remain managed in HA. Reading YAML in Pipecat
 alone does not install an HA intent handler. Local replies use the configured
 TTS service, including Piper, and are added to conversation history.
 
+Before LLM fallback, the add-on's HA-compatible `weather.yaml` sentences
+handle today's/tomorrow's forecasts, the day after tomorrow, named weekdays
+and rain questions locally through the configured `script.get_weather` MCP
+tool. The script's `daily_forecast` must contain the existing weekday-labelled
+high/low/rain format. Relative days use HA's cached timezone; malformed or
+missing data falls back to the configured LLM. Future-weather requests cannot
+be satisfied by HA's current-conditions response. Current-weather questions
+retain the native HA route. No HA configuration-file installation is required
+for this Pipecat handler; native HA Assist is unchanged.
+
 Ordinary composed voice pipelines advertise a smaller weather tool set for
 clear standalone English weather questions that need the LLM. The model can
 call `EchoMuseExpandTools` to restore all configured/allowlisted tools if needed.

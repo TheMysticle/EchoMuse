@@ -19,6 +19,7 @@ from websockets.asyncio.client import connect
 from websockets.exceptions import WebSocketException
 
 _DEVICE_CACHE = {}
+_TIMEZONE_CACHE = {}
 HOME_ASSISTANT_AGENT = "conversation.home_assistant"
 
 
@@ -42,6 +43,26 @@ class HomeAssistantCommands:
         if self._client is not None:
             await self._client.aclose()
             self._client = None
+
+    async def weather_timezone(self):
+        """Cache HA's timezone for relative forecast days; never assume UTC."""
+        key = (self._api_url, self._token)
+        cached = _TIMEZONE_CACHE.get(key)
+        if cached and cached[1] > time.monotonic():
+            return cached[0]
+        try:
+            if self._client is None:
+                self._client = httpx.AsyncClient(timeout=30.0, follow_redirects=False)
+            response = await self._client.get(self._api_url+'/config',
+                headers={"Authorization": f"Bearer {self._token}"}, timeout=2.0)
+            response.raise_for_status()
+            zone = response.json().get('time_zone')
+            from zoneinfo import ZoneInfo
+            ZoneInfo(zone)
+            _TIMEZONE_CACHE[key] = (zone, time.monotonic()+3600)
+            return zone
+        except (httpx.HTTPError, ValueError, TypeError, KeyError, AttributeError):
+            return None
 
     async def resolve_device(self, mac: str):
         """Resolve the stored ESPHome MAC, not the unrelated session/client ID."""
