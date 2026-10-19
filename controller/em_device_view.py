@@ -237,6 +237,10 @@ def merge_device(row, boot: dict | None = None) -> dict:
         # Firmware that asks to pair itself (the owner holds the button); for
         # older firmware on a plain link the dashboard offers Pair instead.
         "pairingCapable":   getattr(live, "pairing_capable", False) if live else False,
+        # Whether this Echo holds its own schedule. The sharing panel offers a
+        # satellite only on this, and tells an unreachable one from an old one
+        # by `connected`: an offline Echo reports no capabilities at all.
+        "scheduleCapable":  "local_schedule" in (getattr(live, "capabilities", []) or []) if live else False,
         # What this Echo is actually doing with its microphone
         # (docs/listening.md, em_listen.resolve) — the one source for every
         # privacy statement the dashboard makes. `streams` is true, false, or

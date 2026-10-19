@@ -1644,6 +1644,7 @@ function SchedulesTab({ device, isAdmin }) {
       try {
         const rows = await API.get('/api/schedules');
         try { const view = await API.get('/api/schedule-sharing'); if (!stopped) setSharing(view); } catch (e) { /* the list matters more */ }
+        try { const list = await API.get('/api/devices'); if (!stopped && Array.isArray(list)) setFleet(list.filter(d => d.approved)); } catch (e) { /* names and chips can wait */ }
         if (!stopped) {
           const row = rows.find(r => r.id === device.device_id);
           const restarted = !!row && epoch.current !== null && epoch.current !== row.epoch;
@@ -1657,11 +1658,6 @@ function SchedulesTab({ device, isAdmin }) {
     poll();
     return () => { stopped = true; clearTimeout(timer); };
   }, [device.device_id, adopt]);
-  useEffect(() => {
-    let stopped = false;
-    API.get('/api/devices').then(list => { if (!stopped) setFleet(Array.isArray(list) ? list.filter(d => d.approved) : []); }).catch(() => {});
-    return () => { stopped = true; };
-  }, [device.device_id]);
   const nameOf = id => { const d = fleet.find(x => x.device_id === id); return (d && d.label) || id; };
   const mine = (sharing && sharing.sharing[device.device_id]) || {};
   const run = async work => {
@@ -1820,10 +1816,11 @@ function SchedulesTab({ device, isAdmin }) {
           <SectionLabel style={{minWidth:84, marginBottom:0}}>{title}</SectionLabel>
           {fleet.filter(d => d.device_id !== device.device_id).map(d => {
             const on = (mine[type] || []).includes(d.device_id);
-            const capable = (d.capabilities || []).includes('local_schedule');
-            return <button key={d.device_id} type="button" aria-pressed={on} disabled={busy || (!capable && !on)}
+            // An offline Echo reports no capabilities, so only a connected one can be called too old.
+            const tooOld = !!d.connected && !d.scheduleCapable;
+            return <button key={d.device_id} type="button" aria-pressed={on} disabled={busy || (tooOld && !on)}
               className={'em-pill em-pill--small' + (on ? ' em-pill--accent' : '')}
-              onClick={() => toggleShare(type, d.device_id)}>{d.label || d.device_id}{!capable && !on ? ' (needs newer firmware)' : ''}</button>;
+              onClick={() => toggleShare(type, d.device_id)}>{d.label || d.device_id}{tooOld && !on ? ' (needs newer firmware)' : !d.connected ? ' (offline)' : ''}</button>;
           })}
         </div>)}
       <div style={{marginTop:'var(--space-7)'}}>

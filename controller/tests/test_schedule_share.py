@@ -1154,3 +1154,23 @@ def test_the_list_a_voice_flow_reads_includes_what_was_shared_to_the_satellite(w
         await b.schedule.request(b.send_control, act)
         assert not b.find(mid)
     _run(world, go)
+
+
+def test_the_devices_list_says_who_can_hold_a_copy_and_the_panel_reads_that(database, fresh):
+    """The panel once read `capabilities` off /api/devices, which has no such field, so every
+    satellite showed 'needs newer firmware'. Offline is a third state: it reports no
+    capabilities and must not be called too old."""
+    import em_device_view
+    from em_controller import Device
+    live = fresh
+    live["A"] = Device("A", "192.0.2.10", ["local_schedule", "mic"], None)
+    live["B"] = Device("B", "192.0.2.10", ["mic"], None)          # connected, firmware without schedules
+    views = {d: em_device_view.merge_device(database.get_device(d)) for d in ("A", "B", "C")}
+    assert (views["A"]["connected"], views["A"]["scheduleCapable"]) == (True, True)
+    assert (views["B"]["connected"], views["B"]["scheduleCapable"]) == (True, False)
+    assert (views["C"]["connected"], views["C"]["scheduleCapable"]) == (False, False)
+    jsx = (Path(__file__).resolve().parents[1] / "static" / "dashboard.jsx").read_text()
+    panel = jsx[jsx.index("Share with other satellites"):]
+    panel = panel[:panel.index("Stop together")]
+    assert "d.scheduleCapable" in panel and "d.capabilities" not in panel
+    assert "d.connected" in panel
