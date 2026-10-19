@@ -1390,7 +1390,20 @@ class Device:
                 await self.listen_close(ev["session"], "ceded")
                 await leds_off(self)
                 return False
-        return await self.workflow.wake(ev["session"], age_ms=ev["age_ms"])
+        info = {"model": em_oww_models.recorded_model_key(self.oww_model),
+                "score": round(float(ev["score"]), 4),
+                "threshold": round(float(ev["threshold"] if ev["threshold"] is not None
+                                         else self.oww_threshold), 4),
+                "noise_floor": round(float(ev["floor"] if ev["floor"] is not None
+                                           else self.noise_floor), 5)}
+        return await self.workflow.wake(ev["session"], age_ms=ev["age_ms"], wake_info=info)
+
+    async def workflow_turn(self, record):
+        """A finished Pipecat session as an Activity row, written as a native turn is."""
+        await esphome._persist_turn(self, record)
+        self.turn_history.append(record)
+        with contextlib.suppress(Exception):
+            await em_events.push({"type": "turn_complete", "device_id": self.device_id, "turn": record})
 
     async def workflow_release(self):
         await self.beam_unlock()

@@ -29,9 +29,11 @@ by em_controller. Libraries and the format bridge ship with the controller.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import os
+import time
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import aiohttp
@@ -334,6 +336,9 @@ class Bridge:
         self.reply_audio = ReplyAudio()
         self.queued_bytes = 0
         self.endpointed = False
+        # The session's timings for the Activity tab (see _turn_record).
+        self.turn: dict | None = None
+        self.turn_tasks = set()
 
     @property
     def active(self):
@@ -363,7 +368,7 @@ class Bridge:
             self.queue.get_nowait()
         self.queue.put_nowait((self.session_epoch, pcm))
 
-    async def wake(self, session=None, *, age_ms=0, button=False):
+    async def wake(self, session=None, *, age_ms=0, button=False, wake_info=None):
         if age_ms > 3000 or (session is not None and self.device.listen_router.is_closed(session)):
             if session is not None:
                 await self.device.listen_close(session, "stale")
@@ -371,9 +376,9 @@ class Bridge:
         if self.playback_tasks and not self.awake:
             await self.cancel_output(force=True)
         async with self.session_lock:
-            return await self._wake(session, age_ms=age_ms, button=button)
+            return await self._wake(session, age_ms=age_ms, button=button, wake_info=wake_info)
 
-    async def _wake(self, session=None, *, age_ms=0, button=False):
+    async def _wake(self, session=None, *, age_ms=0, button=False, wake_info=None):
         """Open only the numbered session announced by the device's wake."""
         if (not self.active or self.switching or self.device.muted
                 or (not button and not self.device.wake_word_enabled)
@@ -423,6 +428,9 @@ class Bridge:
         self.endpointed = False
         self.session_started = asyncio.get_running_loop().time()
         self.session_hard_deadline = self.session_started + SESSION_MAX_S
+        self.turn = {"t0": self.session_started, "wake": wake_info, "button": button,
+                     "composed": bool(getattr(self.ws, "echomuse_device_endpoint", False)),
+                     "vad_end": -1, "stt": -1, "stt_text": "", "first_audio": -1}
         self.arm(LISTEN_IDLE_S, "listen_timeout")
         self.device.listen_session = session
         if session is not None:
@@ -535,10 +543,89 @@ class Bridge:
         async with self.session_lock:
             await self._end_session(session, reason=reason, notify=notify, drain=drain)
 
+    def mark(self, key):
+        """Stamp the first time a stage is reached. A clock read, once per stage."""
+        if self.turn is not None and self.turn[key] < 0:
+            self.turn[key] = int((asyncio.get_running_loop().time() - self.turn["t0"]) * 1000)
+
+    def note_transcript(self, event):
+        """Keep the user's final words and when they arrived, until the reply starts.
+
+        The server already sends these (the text rides every final), so this
+        costs a clock read and a decode per final. A long utterance gets
+        several finals, each carrying the merged text, so the last one before
+        the reply is the whole of what was heard.
+        """
+        turn = self.turn
+        if (turn is None or event.get("role") != "user" or not event.get("final")
+                or turn["first_audio"] >= 0):
+            return
+        try:
+            text = base64.b64decode(event.get("text_b64", "")).decode("utf-8")
+        except (ValueError, UnicodeDecodeError):
+            return
+        turn["stt_text"] = text
+        turn["stt"] = int((asyncio.get_running_loop().time() - turn["t0"]) * 1000)
+
+    def _turn_record(self, turn, reason):
+        """The session as the Activity tab's row, in the shape a native turn has.
+
+        Two pipelines share the protocol and only one has the stages. The
+        composed one (Silero, streaming STT, an LLM, tools, TTS) has a
+        transcript moment, so `stt_ms` is when the final words arrived. The
+        live one (Gemini Live) hears and speaks in one step: its `stt_ms` is -1
+        ("not reached"), and its transcript is Gemini's own side channel, kept
+        for the text only. In both, first reply audio stands in for the TTS URL
+        and the start of playback, so speech end to first audio is the number to
+        read against a native row.
+        """
+        wake = turn["wake"] or {}
+        if turn["button"]:
+            trigger = "button"
+        elif wake.get("score") is not None:
+            trigger = f"wakeword-dev({wake['score']:.3f})"
+        else:
+            trigger = "wakeword"
+        heard = turn["first_audio"] >= 0
+        if reason in ("conversation_ended", "response_finished", "ended") and heard:
+            outcome = "ok"
+        elif not heard and turn["vad_end"] < 0:
+            outcome = "no_speech"
+        elif reason in ("think_timeout", "reply_stalled", "listen_timeout"):
+            outcome = "timeout"
+        else:
+            outcome = "ok" if heard else reason
+        total = int((asyncio.get_running_loop().time() - turn["t0"]) * 1000)
+        composed = turn["composed"]
+        return {
+            "ts": time.time(), "trigger": trigger + (" · pipecat (composed)" if composed else " · pipecat (live)"),
+            "wake_model": wake.get("model"), "wake_score": wake.get("score"),
+            "wake_threshold": wake.get("threshold"), "noise_floor": wake.get("noise_floor"),
+            "outcome": outcome, "total_ms": total,
+            "vad_end_ms": turn["vad_end"], "stt_ms": turn["stt"] if composed else -1,
+            "tts_url_ms": turn["first_audio"], "tts_fetch_ms": -1,
+            "playback_ms": turn["first_audio"], "stt_text": turn["stt_text"],
+        }
+
+    def record_turn(self, turn, reason):
+        """Write the row in the background: the next wake must not wait on a database."""
+        record = getattr(self.device, "workflow_turn", None)
+        if turn is None or record is None:
+            return
+        async def write():
+            try:
+                await record(self._turn_record(turn, reason))
+            except Exception:
+                log.warning("[%s] could not record the Pipecat turn", self.device.device_id, exc_info=True)
+        task = asyncio.create_task(write())
+        self.turn_tasks.add(task)
+        task.add_done_callback(self.turn_tasks.discard)
+
     async def _end_session(self, session=None, *, reason="ended", notify=True, drain=False):
         if not self.awake or (session is not None and session != self.session):
             return
         self.awake = False  # close the uplink synchronously before any await
+        turn, self.turn = self.turn, None
         log.info("[%s] Pipecat session %s ended: %s after %.1fs%s",
                  self.device.device_id, session if session is not None else self.session,
                  reason, asyncio.get_running_loop().time() - self.session_started,
@@ -581,6 +668,7 @@ class Bridge:
             await self.device.mic_start()
         await self.device.workflow_release()
         await self.device.workflow_phase("idle")
+        self.record_turn(turn, reason)
 
     async def poll(self):
         """Keep wake events and device deadlines live during full-duplex audio."""
@@ -729,6 +817,7 @@ class Bridge:
                     continue
                 if transport(self.config) == "va_pipecat":
                     if pcm is None:
+                        self.mark("vad_end")
                         await self.device.workflow_phase("thinking")
                         continue
                     await ws.send(pcm)
@@ -830,6 +919,7 @@ class Bridge:
                     raise
                 finally:
                     self.playback_tasks.discard(asyncio.current_task())
+            self.mark("first_audio")
             task = asyncio.create_task(play())
             # Retrieve errors even if the remote connection closes first.
             task.add_done_callback(lambda done: None if done.cancelled() else done.exception())
@@ -848,6 +938,10 @@ class Bridge:
 
     async def on_event(self, event):
         """Apply one va-pipecat JSON message while a session is open."""
+        if event.get("type") == "transcript":
+            self.note_transcript(event)
+        elif event.get("phase") == "thinking":
+            self.mark("vad_end")    # the live route has no Echo sentinel; the first one wins
         if event.get("type") == "interrupt":
             await self.cancel_output(force=True)
             await self.device.workflow_phase("listening")
