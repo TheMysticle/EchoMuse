@@ -82,8 +82,8 @@ STOP_KINDS = ("timer", "alarm")
 SOUNDING = ("ringing", "queued")
 GRACE_S = 5         # a copy this close to ringing is stopped with the rest
 
-_MIRROR = re.compile(r"^sh-([0-9a-f]{8})-[0-9a-f]{24}$")
-_ASSET = re.compile(r"^[a-f0-9]{64}$")
+_MIRROR = re.compile(r"^sh-([0-9a-f]{8})-[0-9a-f]{24}\Z")
+_ASSET = re.compile(r"^[a-f0-9]{64}\Z")
 TERMINAL = ("completed", "missed", "canceled")
 LIVE_COPY = ("scheduled", "paused", "waiting_for_time")
 

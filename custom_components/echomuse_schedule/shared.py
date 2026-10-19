@@ -12,7 +12,7 @@ duplicate.
 """
 import re
 
-_SHARED = re.compile(r"^sh-[0-9a-f]{8}-[0-9a-f]{24}$")
+_SHARED = re.compile(r"^sh-[0-9a-f]{8}-[0-9a-f]{24}\Z")
 
 
 def is_shared(item):
