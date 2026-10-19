@@ -1418,13 +1418,23 @@ func (d *DataClient) streamMic(conn *websocket.Conn, stopCh <-chan struct{}, loc
 			// ─────────────────────────────────────────────────────────────
 
 			// Notify direction listener — non-blocking, keep it fast.
-			// Only fire when angle is valid (beam locked).
-			if angle >= 0 {
+			// With the wake beam running, the talker's direction is the
+			// beams' own SNR estimate, which follows a talker and ignores a
+			// steady TV; the per-mic energy argmax below it is what the ring
+			// used before, and still serves when the beam is off. With the
+			// beam on and nobody heard recently there is no direction to show,
+			// and no marker beats a wrong one. Otherwise only fire when angle
+			// is valid (beam locked).
+			dirAngle, dirOK := angle, angle >= 0
+			if d.beam.WakeBeamTracking() {
+				dirAngle, dirOK = d.beam.WakeBeamDirection()
+			}
+			if dirOK {
 				d.directionMu.Lock()
 				cb := d.onDirectionChange
 				d.directionMu.Unlock()
 				if cb != nil {
-					cb(angle)
+					cb(dirAngle)
 				}
 			}
 

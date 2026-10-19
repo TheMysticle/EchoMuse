@@ -907,3 +907,73 @@ func TestTheLowCutRemovesRumbleAndKeepsTheVoice(t *testing.T) {
 		t.Errorf("400Hz moved %.1fdB against 1kHz, want within 3dB", d)
 	}
 }
+
+// The ring's direction follows a talker round the room over a steady
+// interferer, under both selection rules, and says nothing when nobody speaks.
+func TestWakeBeamDirectionFollowsTheTalker(t *testing.T) {
+	for _, stock := range []bool{false, true} {
+		rng := rand.New(rand.NewSource(21))
+		interf := tones(rng, 150, 3900, 131, 120)
+		talker := tones(rng, 250, 3700, 83, 220)
+		b := New()
+		enableWakeBeam(b)
+		b.SetWakeBeamStock(stock)
+		burst := func(t int) float64 {
+			if math.Mod(float64(t)/sampleRate, 1) < 0.6 {
+				return 1
+			}
+			return 0
+		}
+		at := 0
+		feed := func(az float64, gate func(int) float64) {
+			x := zeros(NumMics, 2560)
+			render(x, interf, 225, at, always)
+			render(x, talker, az, at, gate)
+			for ch := range x {
+				for i := range x[ch] {
+					x[ch][i] += rng.NormFloat64() * 5
+				}
+			}
+			b.WakeBeam(s16(x))
+			at += 2560
+		}
+		quiet := func(int) float64 { return 0 }
+		for k := 0; k < 80; k++ { // 12.8s: the floors settle on the interferer
+			feed(45, quiet)
+		}
+		if az, ok := b.WakeBeamDirection(); ok {
+			t.Errorf("stock=%v: direction %.0f reported with only a steady interferer", stock, az)
+		}
+		for _, az := range []float64{45, 160, 290} {
+			var worst float64
+			var seen int
+			for k := 0; k < 30; k++ {
+				feed(az, burst)
+				if k < 10 || math.Mod(float64(at)/sampleRate, 1) > 0.6 {
+					continue // let it settle on the new talker; read inside a burst
+				}
+				got, ok := b.WakeBeamDirection()
+				if !ok {
+					t.Errorf("stock=%v talker at %.0f: no direction while he speaks", stock, az)
+					continue
+				}
+				seen++
+				worst = math.Max(worst, math.Abs(angleDiff(got, az)))
+			}
+			if seen == 0 || worst > 35 {
+				t.Errorf("stock=%v talker at %.0f: worst error %.0f deg over %d reads", stock, az, worst, seen)
+			}
+		}
+	}
+}
+
+// With the path off nothing is tracked, so the ring keeps the per-mic angle.
+func TestWakeBeamDirectionIsAbsentWhenOff(t *testing.T) {
+	b := New()
+	if b.WakeBeamTracking() {
+		t.Error("tracking with the wake beam off")
+	}
+	if _, ok := b.WakeBeamDirection(); ok {
+		t.Error("a direction with the wake beam off")
+	}
+}

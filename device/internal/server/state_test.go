@@ -116,3 +116,32 @@ func TestStateUpdatesAreSerialised(t *testing.T) {
 		t.Fatalf("lost update: ok=%v %+v", ok, st)
 	}
 }
+
+// An angle near the edge between two LEDs must not flip the marker between
+// them, and a real move must still get there.
+func TestRingSectorHasHysteresis(t *testing.T) {
+	if got := ringSector(100, 0, false); got != 90 {
+		t.Errorf("fresh 100 = %d, want 90", got)
+	}
+	if got := ringSector(359, 0, false); got != 0 {
+		t.Errorf("359 = %d, want 0 (wraps)", got)
+	}
+	// 100 is in sector 90; 106 would round to 120 if it were fresh? no: the
+	// edge is 105. Stay on 90 until past 115 (edge + 10).
+	if got := ringSector(110, 90, true); got != 90 {
+		t.Errorf("110 from 90 moved to %d, want to stay", got)
+	}
+	if got := ringSector(116, 90, true); got != 120 {
+		t.Errorf("116 from 90 = %d, want 120", got)
+	}
+	// Across north, in both directions.
+	if got := ringSector(334, 0, true); got != 330 {
+		t.Errorf("334 from 0 = %d, want 330", got)
+	}
+	if got := ringSector(10, 330, true); got != 0 {
+		t.Errorf("10 from 330 = %d, want 0", got)
+	}
+	if got := ringSector(352, 0, true); got != 0 {
+		t.Errorf("352 from 0 = %d, want to stay on 0", got)
+	}
+}

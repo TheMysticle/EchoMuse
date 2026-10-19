@@ -145,6 +145,15 @@ const (
 	// fbfNeutral is the output index of the centre mic, delayed to match.
 	fbfNeutral = fbfBeams
 
+	// The direction the ring points at (trackDirection). A beam counts as
+	// hearing speech above fbfDirSNR, where stock's ARA gate has fallen to ~1
+	// (about SNR 3.4), and then pulls with the power it has over its own floor.
+	// fbfDirAlpha is ~160ms at 8ms blocks. With nothing over the bar for
+	// fbfDirMaxAge blocks (3s) the estimate is stale and is not reported.
+	fbfDirSNR    = 3.0
+	fbfDirAlpha  = 0.05
+	fbfDirMaxAge = 375
+
 	// What the wake path is doing with a period. Listening is the normal wake
 	// path; bypassed is a locked turn that does not use the beam (the
 	// default), when the selection is parked and the statistics frozen; turn is
@@ -349,6 +358,13 @@ type wakeBeam struct {
 	// lets a test see the path without them.
 	shelf, lowcut biquad
 	shapeOn       bool
+
+	// dirX, dirY are the smoothed unit-vector sum of the talker's direction
+	// (x = sin az, y = cos az); dirAge counts blocks since a beam last heard
+	// speech, dirSeen is whether one ever has.
+	dirX, dirY float64
+	dirAge     int
+	dirSeen    bool
 
 	cur      int // output in use: fbfNeutral, or a group (0-7, see groupBeams)
 	sel      int // the output the last emitted block used, to fade from
@@ -772,6 +788,7 @@ func (w *wakeBeam) step(s, e int) {
 		w.stockStep(s, e)
 		return
 	}
+	w.trackDirection(&w.snr)
 	if w.blocks < fbfWarmBlocks {
 		return
 	}
@@ -822,6 +839,7 @@ func (w *wakeBeam) stockStep(s, e int) {
 			w.wbFloor[b] = fbfMergeSmooth*w.wbFloor[b] + (1-fbfMergeSmooth)*fl
 		}
 	}
+	w.trackDirection(&w.wb)
 	// Stock has no neutral output: its merger starts on the first group with
 	// the estimates at their initial values (every beam alike, so group 0 and
 	// equal shares) and votes from the first frame, so the path is beamformed
@@ -884,6 +902,58 @@ func (w *wakeBeam) stockStep(s, e int) {
 			w.wts[j] = 1.0 / fbfGroupSize
 		}
 	}
+}
+
+// trackDirection folds one block's beam estimators into the talker's
+// direction. It reads numbers the selection has already computed and runs on no
+// audio, so it adds no latency to the path. A beam is said to hear speech when
+// its SNR is over fbfDirSNR, and then pulls with the power it has above its own
+// floor. That is not the SNR: a beam facing a steady interferer has a high
+// floor and so a low SNR for the same talker, which biases an SNR-weighted
+// direction away from the interferer (measured: a talker at 160 degrees over a
+// TV at 225 read 116). Power over the floor is the talker's alone, and
+// interpolates between beams, so the ring can sit between two look directions
+// and does not hop with every change of the best beam. Stock's own beam index
+// for its metadata is the argmax of the wide-band SNRs (libasp FUN_00086026).
+func (w *wakeBeam) trackDirection(est *[fbfBeams]beamSNR) {
+	if w.dirAge < fbfDirMaxAge*2 {
+		w.dirAge++
+	}
+	var sx, sy, tot float64
+	for b := range est {
+		floor := math.Max(est[b].floor, fbfPowFloor)
+		if est[b].fast < fbfDirSNR*floor {
+			continue
+		}
+		p := est[b].fast - floor
+		rad := w.sd.Azimuths[b] * math.Pi / 180
+		sx += p * math.Sin(rad)
+		sy += p * math.Cos(rad)
+		tot += p
+	}
+	if tot == 0 {
+		return
+	}
+	ux, uy := sx/tot, sy/tot
+	if !w.dirSeen || w.dirAge > fbfDirMaxAge {
+		// Nothing heard for a while: start from this block, not from where the
+		// last talker was.
+		w.dirX, w.dirY, w.dirSeen = ux, uy, true
+	} else {
+		w.dirX += fbfDirAlpha * (ux - w.dirX)
+		w.dirY += fbfDirAlpha * (uy - w.dirY)
+	}
+	w.dirAge = 0
+}
+
+// direction is the talker's azimuth in degrees clockwise from 12 o'clock, and
+// whether a beam has heard speech recently enough to say.
+func (w *wakeBeam) direction() (float64, bool) {
+	if !w.dirSeen || w.dirAge > fbfDirMaxAge || (w.dirX == 0 && w.dirY == 0) {
+		return 0, false
+	}
+	az := math.Atan2(w.dirX, w.dirY) * 180 / math.Pi
+	return math.Mod(az+360, 360), true
 }
 
 func (w *wakeBeam) pick(k int, score float64) {
@@ -1103,6 +1173,21 @@ func (b *Beamformer) UseWakeBeamWeights(sd *SDWeights) {
 	if b.fbf != nil {
 		b.fbf.sd, b.fbf.ownSD = sd, sd
 	}
+}
+
+// WakeBeamTracking reports whether the wake path is running, and so whether
+// WakeBeamDirection is the thing to ask about where the talker is.
+func (b *Beamformer) WakeBeamTracking() bool { return b.fbfWant && b.fbf != nil }
+
+// WakeBeamDirection is where the talker is, in degrees clockwise from 12
+// o'clock, from the wake beams' own SNRs (see trackDirection), and false when
+// no beam has heard speech in the last 3s. Call it on the mic goroutine, after
+// WakeBeam.
+func (b *Beamformer) WakeBeamDirection() (float64, bool) {
+	if !b.WakeBeamTracking() {
+		return 0, false
+	}
+	return b.fbf.direction()
 }
 
 // WakeBeamIndex is the group in use (see groupBeams), or -1 for the centre mic. For logs and

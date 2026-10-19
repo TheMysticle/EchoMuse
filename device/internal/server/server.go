@@ -44,6 +44,10 @@ type Server struct {
 	// listeningLEDs is true when the controller has set the solid green
 	// listening ring — the only state where direction overlay is shown.
 	listeningLEDs bool
+	// dirSector is the direction marker's sector (ringSector), kept for its
+	// hysteresis. Only SetDirectionLEDs, on the mic goroutine, touches it.
+	dirSector   int
+	dirSectorOK bool
 
 	// anim owns the device-rendered ring animation (led_anim messages).
 	anim  animator
@@ -409,6 +413,26 @@ func (s *Server) LEDModeSystem() { s.SetLEDMode(ledModeSystem) }
 // LEDModeDirection releases the LED ring back to the beamformer arc.
 func (s *Server) LEDModeDirection() { s.SetLEDMode(ledModeDirection) }
 
+// ringSectorHysteresisDeg is how far past a sector's edge (15 degrees from its
+// centre) an angle must be before the marker moves to the next one. A talker
+// sitting near the edge between two LEDs would otherwise flip between them on
+// every estimate.
+const ringSectorHysteresisDeg = 10
+
+// ringSector is the angle of the 30-degree sector the marker is in, 0-330. It
+// stays in the previous sector (prevOK) until the angle is more than half a
+// sector plus ringSectorHysteresisDeg from its centre.
+func ringSector(angleDeg float64, prev int, prevOK bool) int {
+	angleDeg = math.Mod(math.Mod(angleDeg, 360)+360, 360)
+	if prevOK {
+		d := math.Abs(math.Mod(angleDeg-float64(prev)+540, 360) - 180)
+		if d <= 15+ringSectorHysteresisDeg {
+			return prev
+		}
+	}
+	return int(math.Round(angleDeg/30)) * 30 % 360
+}
+
 // SetDirectionLEDs overlays a direction marker onto the current LED ring state.
 func (s *Server) SetDirectionLEDs(angleDeg float64) {
 	if angleDeg < 0 {
@@ -425,6 +449,9 @@ func (s *Server) SetDirectionLEDs(angleDeg float64) {
 	listening := s.listeningLEDs
 	s.baseLEDsMu.Unlock()
 	if !listening {
+		// The next listening ring starts from the angle it is given, not from
+		// where the last one stopped.
+		s.dirSectorOK = false
 		return
 	}
 
@@ -440,7 +467,8 @@ func (s *Server) SetDirectionLEDs(angleDeg float64) {
 		ledOffset = ringLEDOffset
 	)
 
-	normAngle := int(math.Round(angleDeg/30)) * 30
+	normAngle := ringSector(angleDeg, s.dirSector, s.dirSectorOK)
+	s.dirSector, s.dirSectorOK = normAngle, true
 	primary := ((normAngle - ledOffset + 360) % 360) / 30 % nLEDs
 	secondary := (primary + 1) % nLEDs
 	tertiary := (primary + nLEDs - 1) % nLEDs
