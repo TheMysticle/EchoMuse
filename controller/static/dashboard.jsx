@@ -1115,11 +1115,13 @@ function turnSegments(t) {
   const tts = t.tts_url_ms >= 0 ? t.tts_url_ms : -1;
   const listen     = vad >= 0 ? vad : Math.max(t.total_ms || 0, 0);
   const transcribe = (stt >= 0 && vad >= 0) ? Math.max(stt - vad, 0) : 0;
+  // A streaming STT can finish before the speech detector's stop, which would
+  // start Respond inside Listening and make the bars sum to more than the turn;
+  // Respond starts at whichever came later, so they always add up to first audio.
   // A Pipecat live turn (Gemini Live) has no STT stage, the model hears and
-  // speaks in one step, so its respond is speech end to first reply audio. A
-  // composed turn has one, and takes the branch above it.
-  const respond    = (tts >= 0 && stt >= 0) ? Math.max(tts - stt, 0)
-                   : (tts >= 0 && vad >= 0) ? Math.max(tts - vad, 0) : 0;
+  // speaks in one step, so its respond is speech end to first reply audio.
+  const respondFrom = stt >= 0 ? Math.max(stt, vad) : vad;
+  const respond    = (tts >= 0 && respondFrom >= 0) ? Math.max(tts - respondFrom, 0) : 0;
   return { listen, transcribe, respond, shown: listen + transcribe + respond };
 }
 

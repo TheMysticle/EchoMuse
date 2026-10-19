@@ -93,6 +93,9 @@ def test_a_full_exchange_records_speech_end_first_audio_and_the_total_in_order(f
             epoch = d.workflow.session_epoch
             d.workflow.queue.put_nowait((epoch, b'\0\0' * 160))
             d.workflow.queue.put_nowait((epoch, None))             # the Echo ended the utterance
+            await asyncio.sleep(.1)
+            assert d.workflow.turn["vad_end"] == -1                # its marker is not the end of speech
+            await events.put(phase('thinking'))                    # the server's own speech-stop is
             await until(lambda: d.workflow.turn["vad_end"] >= 0)
             await asyncio.sleep(.05)
             await events.put((np.zeros(2400, dtype=np.int16)).tobytes())   # the reply begins
@@ -260,3 +263,9 @@ def test_a_transcript_event_changes_nothing_else_about_the_session(fresh_db):
         finally:
             await d.workflow.stop()
     asyncio.run(main())
+
+
+def test_a_streaming_stt_that_finishes_after_the_speech_stop_shows_its_own_stage(fresh_db):
+    # speech stop, then the final words: transcribe is the gap between them.
+    row = run_exchange(True, [phase('thinking'), transcript('turn on the lights')])
+    assert row['stt_ms'] >= row['vad_end_ms'] >= 0

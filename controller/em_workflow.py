@@ -817,7 +817,6 @@ class Bridge:
                     continue
                 if transport(self.config) == "va_pipecat":
                     if pcm is None:
-                        self.mark("vad_end")
                         await self.device.workflow_phase("thinking")
                         continue
                     await ws.send(pcm)
@@ -941,7 +940,11 @@ class Bridge:
         if event.get("type") == "transcript":
             self.note_transcript(event)
         elif event.get("phase") == "thinking":
-            self.mark("vad_end")    # the live route has no Echo sentinel; the first one wins
+            # The server's own speech-stop is the first "thinking" of a turn, and
+            # it is the end of speech a native row means by vad_end_ms. The Echo's
+            # end-of-speech marker is later (it waits out its own quiet period),
+            # so anchoring on it hid a streaming STT that had already finished.
+            self.mark("vad_end")
         if event.get("type") == "interrupt":
             await self.cancel_output(force=True)
             await self.device.workflow_phase("listening")
