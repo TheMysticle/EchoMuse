@@ -49,7 +49,7 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
-      - run: pip install pipecat-ai==1.4.0 pytest hassil home-assistant-intents tzdata
+      - run: pip install 'pipecat-ai[websocket]==1.4.0' pytest hassil home-assistant-intents tzdata
       - run: python -m pytest tools/pipecat_echomuse/tests/ tools/tool_selector_preview/test_preview.py -q
 
   forge-metadata-tests:

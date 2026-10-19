@@ -233,14 +233,14 @@ def test_no_match_and_tool_result_context_pass_to_llm_once(processor):
         return None
     step = module.FastPathStep(state=None, language='en', bridge=None, tool_names={},
                                local_commands=SimpleNamespace(process=process))
-    unmatched = ContextFrame([{'role': 'user', 'content': 'tell me a joke'}])
+    unmatched = ContextFrame([{'role': 'user', 'content': 'find my lost keys'}])
     tool_result = ContextFrame([{'role': 'user', 'content': 'turn off the light'},
                                 {'role': 'tool', 'content': 'done'}])
     async def run():
         await step.process_frame(unmatched, direction.DOWNSTREAM)
         await step.process_frame(tool_result, direction.DOWNSTREAM)
     asyncio.run(run())
-    assert seen == ['tell me a joke']
+    assert seen == ['find my lost keys']
     assert step.sent == [(unmatched, direction.DOWNSTREAM), (tool_result, direction.DOWNSTREAM)]
 
 

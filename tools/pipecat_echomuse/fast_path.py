@@ -81,6 +81,7 @@ schedule_dialogue = _load_sibling("schedule_dialogue")
 schedule_select = _load_sibling("schedule_select")
 schedule_mcp = _load_sibling("schedule_mcp")
 weather_commands = _load_sibling("weather_commands")
+tool_selector = _load_sibling("tool_selector")
 
 # EchoMuseCreate/List/Action, handled locally (no LLM) when the parse is
 # clean -- see FastPathStep._start_schedule. Never Hass*: those always skip
@@ -492,6 +493,13 @@ class FastPathStep(FrameProcessor):
                     # must not be matched against anything else first.
                     if await self._continue_schedule_clarification(text.strip()):
                         return
+                # Share the exact chat predicate used by tool scoping. Preserve
+                # pending local clarifications above; they own the next answer.
+                if (len(text) <= 4000 and tool_selector.select_tools(
+                        text, [], self._language)['mode'] == 'chat'):
+                    logger.info('Local commands: clear conversation; bypassing HA')
+                    await self.push_frame(frame, direction)
+                    return
                 skip_local_agent = weather_commands.requires_forecast(text, self._language)
                 if self._weather_tool:
                     try:

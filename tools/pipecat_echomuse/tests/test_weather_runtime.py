@@ -158,6 +158,23 @@ def test_current_weather_keeps_existing_native_path_without_extra_call():
     asyncio.run(run())
 
 
+@pytest.mark.parametrize('text', ['Tell me a joke.', 'Explain photosynthesis.', 'Hello'])
+def test_clear_chat_bypasses_ha_and_grammar_matching(text):
+    async def run():
+        class Local:
+            async def process(self, text):
+                raise AssertionError('Clear chat must not wait for HA')
+        context = LLMContext([])
+        step = Step(state=None, language='en', bridge=None, tool_names={},
+                    local_commands=Local(), context=context)
+        step.sent = []
+        context.add_message({'role': 'user', 'content': text})
+        frame = LLMContextFrame(context)
+        await step.process_frame(frame, FrameDirection.DOWNSTREAM)
+        assert step.sent == [frame]
+    asyncio.run(run())
+
+
 def test_timezone_lookup_is_cached_and_uses_same_authenticated_client(monkeypatch):
     calls = []
     real_client = httpx.AsyncClient

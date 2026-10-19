@@ -180,6 +180,8 @@ cover or schedule tools for recognized English clauses that need the LLM.
 Multiple clauses expose the union of their categories. Clear self-contained
 chat omits the HA catalogue, retaining only configured conversation continuation
 and tool expansion. Indirect home questions and uncertain chat retain tools.
+Those same clear chat phrases bypass the native HA conversation attempt;
+pending local schedule clarifications still take precedence.
 The model can
 call `EchoMuseExpandTools` to restore all configured/allowlisted tools if needed.
 Ambiguous, conditional and partly unsupported requests retain the full set. Local HA
@@ -189,6 +191,14 @@ See [the tool-scope audit](experiments/pipecat-tool-scope-2026-10-19.md).
 The [local preview](../tools/tool_selector_preview/README.md) runs the exact same
 selector and accepts editable tool catalogues. Tool-result continuations keep
 the current selection; expansion restores only the configured allowlist.
+
+Composed ESPHome output pads the last partial 40 ms TTS packet before reporting
+speech completion. This prevents Pipecat 1.4 from discarding the final PCM
+samples when it clears its output buffer. Padding adds less than 40 ms of
+silence at the end, with no first-audio delay. Real interruption still discards
+pending audio. Gemini Live uses its unchanged output path. The controller's
+normal end-of-session `stop` can produce `InterruptionWorkerFrame` log entries;
+those entries alone do not mean VAD barge-in or prove that playback was cut.
 
 Flows with an explicit MCP tool allowlist retain the restricted hassil/MCP
 matcher rather than gaining access to the broader conversation API. This is
