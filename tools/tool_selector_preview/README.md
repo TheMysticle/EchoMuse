@@ -11,8 +11,8 @@ are required. `--port 8766` selects another local port.
 
 The HTML sends sentences to a loopback-only Python server, which imports
 `tools/pipecat_echomuse/tool_selector.py` directly. There is no JavaScript
-reimplementation of the matching rules. This pure module is intended for the
-future add-on integration; it is **not enabled in the existing pipeline**.
+reimplementation of the matching rules. The packaged add-on imports this same
+module before composed voice LLM inference, after local command handling.
 
 The editable sample catalogue is illustrative, not a snapshot of a real HA
 installation. Paste JSON tool names, MCP tool definitions/list_tools results,
@@ -24,15 +24,23 @@ tools stay available. Selection only removes tools from the supplied list;
 it never discovers new tools or changes configured allowlists.
 
 English whole-clause rules cover lighting, weather, music, climate, covers,
-and speaker schedules. Multiple recognized clauses produce the union of
+speaker schedules, and clear conversation. Multiple recognized clauses produce the union of
 categories. Unknown clauses, conditional dependencies, incomplete commands,
 and ambiguous follow-ups keep the full catalogue. This is intentionally
 conservative. It selects capabilities, not rooms, arguments or actions.
 
+Clear self-contained chat, such as greetings, jokes and general knowledge
+questions, omits HA and custom tools. Only continuation (if configured) and
+the runtime expansion hook remain. Indirect device questions, personal state,
+time queries and uncertain follow-ups keep home capabilities available. This
+is a conservative heuristic, not a guarantee that every chat phrase is detected.
+
 The result flags the need for an `EchoMuseExpandTools` handler when narrowing;
-the preview cannot implement that production conversation lifecycle. Future
-integration must retain the existing runtime expansion handler and turn
-isolation. It must not run the selector again halfway through tool results.
+the preview does not execute that production conversation lifecycle. The
+add-on retains its existing expansion handler and turn isolation, without
+rerunning selection halfway through tool results. Custom provider schemas,
+direct callables and explicit tool choices retain their full original tools.
+Gemini Live, flow graphs and HA Assist's separate text HTTP route are unchanged.
 Reported timing covers selection only, not HTTP, cloud inference or speech.
 
 Nothing is sent to HA or a cloud service, executed, persisted, or logged by

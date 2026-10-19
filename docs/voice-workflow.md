@@ -170,16 +170,25 @@ tool. The script's `daily_forecast` must contain the existing weekday-labelled
 high/low/rain format. Relative days use HA's cached timezone; malformed or
 missing data falls back to the configured LLM. Future-weather requests cannot
 be satisfied by HA's current-conditions response. Current-weather questions
-retain the native HA route. No HA configuration-file installation is required
-for this Pipecat handler; native HA Assist is unchanged.
+retain the native HA route. Copy the supplied `custom_sentences/en/weather.yaml`
+into HA's `custom_sentences/en/` directory for this Pipecat handler; native
+HA Assist is unchanged.
 
-Ordinary composed voice pipelines advertise a smaller weather tool set for
-clear standalone English weather questions that need the LLM. The model can
+Ordinary composed voice pipelines use the shared dependency-free
+`tool_selector.py` to advertise relevant lighting, music, weather, climate,
+cover or schedule tools for recognized English clauses that need the LLM.
+Multiple clauses expose the union of their categories. Clear self-contained
+chat omits the HA catalogue, retaining only configured conversation continuation
+and tool expansion. Indirect home questions and uncertain chat retain tools.
+The model can
 call `EchoMuseExpandTools` to restore all configured/allowlisted tools if needed.
-Ambiguous, multi-part and unsupported requests retain the full set. Local HA
+Ambiguous, conditional and partly unsupported requests retain the full set. Local HA
 responses still bypass the LLM entirely. Gemini Live, flow graphs and the
 separate HA Assist text HTTP route retain their existing tool handling.
 See [the tool-scope audit](experiments/pipecat-tool-scope-2026-10-19.md).
+The [local preview](../tools/tool_selector_preview/README.md) runs the exact same
+selector and accepts editable tool catalogues. Tool-result continuations keep
+the current selection; expansion restores only the configured allowlist.
 
 Flows with an explicit MCP tool allowlist retain the restricted hassil/MCP
 matcher rather than gaining access to the broader conversation API. This is

@@ -22,7 +22,7 @@
   footer{font-size:13px;color:#aab8c9;margin-top:24px}#results[hidden]{display:none}@media(max-width:720px){.grid{grid-template-columns:1fr}main{padding:28px 16px}section,details{padding:18px}}
 </style>
 <main>
-  <div class="eyebrow">EchoMuse / Local routing prototype</div>
+  <div class="eyebrow">EchoMuse / Shared local routing</div>
   <h1>A sentence in. The right tools out.</h1>
   <p>Test which capabilities a sentence exposes to the LLM. Runs the shared Python selector locally. No model, API key, or Home Assistant connection.</p>
   <section>
@@ -54,7 +54,7 @@
     <textarea id="catalogue" spellcheck="false"></textarea>
     <button id="reset" type="button">Reset demo catalogue</button>
   </details>
-  <footer>Preview only: no commands execute and nothing is installed in HA. Rules currently cover English lighting, music, weather, climate, covers and schedules. Unsupported clauses and ambiguous follow-ups keep the full catalogue. Category selection does not validate rooms, arguments, or whether an action will succeed. The eventual add-on integration must preserve tool expansion and keep selections through tool-result continuations.</footer>
+  <footer>This page never executes commands. It uses the same selector as composed voice pipelines in the packaged add-on. Rules cover English lighting, music, weather, climate, covers, schedules and clear conversation. Chat omits the HA catalogue while retaining continuation and expansion hooks. Unsupported clauses and ambiguous follow-ups keep the full catalogue. Category selection does not validate rooms, arguments, or whether an action will succeed.</footer>
 </main>
 <script>
 const $ = id => document.getElementById(id);
@@ -74,6 +74,8 @@ const examples = [
   ['Two lighting actions','Dim the lights in the living room to 50 percent and turn off the lights in the bedroom'],
   ['Lights + music','Dim the living room lights to 50 percent and play music in the bedroom'],
   ['Weather','What will the weather be like tomorrow?'],
+  ['Just chatting','Tell me a joke'],
+  ['General knowledge','Explain photosynthesis'],
   ['Climate','Set the bedroom thermostat to 21 degrees'],
   ['Unknown second action','Turn off the bedroom lights and lock the front door'],
   ['Follow-up','And the bedroom?'],
@@ -100,7 +102,7 @@ $('form').onsubmit=async event=>{
     const result=await response.json(); if(current!==revision)return;
     if(!response.ok)throw new Error(result.error || 'Matching failed');
     $('results').hidden=false;
-    $('mode').textContent=result.mode==='scoped'?'Selected capabilities':'Full catalogue fallback';
+    $('mode').textContent=result.mode==='chat'?'Conversation · no HA tools':result.mode==='scoped'?'Selected capabilities':'Full catalogue fallback';
     $('mode').className='badge'+(result.mode==='full'?' fallback':'');
     $('categories').replaceChildren();
     for(const category of result.categories){const badge=document.createElement('span');badge.className='badge';badge.textContent=category;$('categories').append(badge);}

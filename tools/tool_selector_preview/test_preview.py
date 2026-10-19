@@ -42,7 +42,7 @@ def test_multi_category_selection(sentence, categories):
     'Turn off the bedroom lights and lock the front door',
     'And the bedroom?', 'If it rains tomorrow, turn off the bedroom lights',
     'Play music then open the garage door', '',
-    'Tell me a joke', 'turn off the bedroom lights and',
+    'turn off the bedroom lights and',
 ])
 def test_incomplete_or_unknown_clauses_preserve_all_tools(sentence):
     result = select_tools(sentence, TOOLS)
@@ -62,6 +62,38 @@ def test_unknown_custom_tools_preserved_and_allowlist_never_expanded():
     assert result['selected_tools'] == allowed
     assert result['unmapped_tools'] == ['my_custom_tool']
     assert set(result['selected_tools']) <= set(allowed)
+
+
+@pytest.mark.parametrize('sentence', [
+    'Hello', 'How are you?', 'Tell me a joke', 'Explain photosynthesis',
+    'Who was Albert Einstein?', 'What is the capital of France?',
+])
+def test_clear_chat_omits_ha_and_custom_tools_but_retains_continuation(sentence):
+    result = select_tools(sentence, [*TOOLS, 'my_custom_script'])
+    assert result['mode'] == 'chat'
+    assert result['selected_tools'] == ['EchoMuseRequestContinuation']
+    assert result['expansion_required']
+
+
+@pytest.mark.parametrize('sentence', [
+    "What is my bedroom temperature?", 'How do I turn off the lights?',
+    'Explain that', 'What is playing?', 'What is the time?',
+    'Why are the lights on?', 'How are my batteries?', 'Who is at the door?',
+    'Tell me a joke and unlock the front door',
+])
+def test_indirect_commands_personal_state_and_uncertain_chat_keep_tools(sentence):
+    result = select_tools(sentence, TOOLS)
+    assert result['mode'] == 'full'
+    assert result['selected_tools'] == TOOLS
+
+
+def test_chat_and_action_keep_action_tools_and_newlines_are_clause_boundaries():
+    result = select_tools('tell me a joke and turn off the bedroom lights', TOOLS)
+    assert result['mode'] == 'scoped'
+    assert result['categories'] == ['conversation', 'lighting']
+    assert 'ha__HassTurnOff' in result['selected_tools']
+    assert 'ha__script__get_weather' not in result['selected_tools']
+    assert select_tools('hello\nunlock the front door', TOOLS)['mode'] == 'full'
 
 
 def test_tool_definitions_and_namespaces():

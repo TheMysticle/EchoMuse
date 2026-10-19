@@ -50,7 +50,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install pipecat-ai==1.4.0 pytest hassil home-assistant-intents tzdata
-      - run: python -m pytest tools/pipecat_echomuse/tests/ -q
+      - run: python -m pytest tools/pipecat_echomuse/tests/ tools/tool_selector_preview/test_preview.py -q
 
   forge-metadata-tests:
     name: ONNX metadata round trip

@@ -1,5 +1,8 @@
 """Conservative per-turn tool selection for composed pipelines only."""
-import re
+try:
+    from .tool_selector import select_tools
+except ImportError:
+    from tool_selector import select_tools
 
 from loguru import logger
 from pipecat.adapters.schemas.function_schema import FunctionSchema
@@ -8,28 +11,13 @@ from pipecat.frames.frames import LLMContextFrame
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.processors.aggregators.llm_context import is_given
 
-_WEATHER = re.compile(
-    r"(?:please )?(?:what(?:'s| is) (?:the )?weather(?: like)?|"
-    r"what will (?:the )?weather be(?: like)?|"
-    r"how(?:'s| is) (?:the )?weather|"
-    r"(?:tell me |give me )?(?:the )?(?:weather|weather forecast|forecast)|"
-    r"what(?:'s| is) (?:the )?(?:weather )?forecast|"
-    r"will it (?:rain|snow)|is it (?:raining|snowing))"
-    r"(?: (?:today|tomorrow|tonight|this (?:morning|afternoon|evening|weekend)|over the weekend))?"
-    r"(?: please)?"
-)
-_WEATHER_TOOLS = {
-    'get_weather', 'getweather', 'hassgetweather',
-    'get_weather_forecast', 'getweatherforecast', 'hassgetweatherforecast',
-}
 EXPAND_TOOL = 'EchoMuseExpandTools'
 
 
 def weather_request(text, language):
-    if (language or 'en').lower().replace('_', '-').split('-')[0] != 'en':
-        return False
-    text = ' '.join(text.lower().replace('’', "'").split()).strip(' .?!')
-    return _WEATHER.fullmatch(text) is not None
+    """Compatibility for the weather probe; matching uses the shared selector."""
+    result = select_tools(text, ['get_weather'], language)
+    return result['mode'] == 'scoped' and result['categories'] == ['weather']
 
 
 def user_count(context):
@@ -64,18 +52,22 @@ class ToolScopeStep(FrameProcessor):
                 if (isinstance(self._full, ToolsSchema) and not self._full.custom_tools
                         and not self._full.direct_functions
                         and (not is_given(context.tool_choice) or context.tool_choice in (None, 'auto'))
-                        and weather_request(last['content'], self._language)):
-                    weather = [tool for tool in self._full.standard_tools
-                               if tool.name.split('__')[-1].lower() in _WEATHER_TOOLS]
-                    if weather and not any(tool.name == EXPAND_TOOL for tool in self._full.standard_tools):
-                        selected = self._weather_tools(context, weather, count)
+                        and len(last['content']) <= 4000):
+                    selection = select_tools(last['content'],
+                        [tool.name for tool in self._full.standard_tools], self._language)
+                    if selection['mode'] != 'full' and not any(
+                            tool.name == EXPAND_TOOL for tool in self._full.standard_tools):
+                        wanted = set(selection['selected_tools'])
+                        matched = [tool for tool in self._full.standard_tools if tool.name in wanted]
+                        selected = self._selected_tools(context, matched, count)
                         if len(selected.standard_tools) < len(self._full.standard_tools):
                             context.set_tools(selected)
-                            logger.info('Tool scope: weather, {} -> {} tools (expansion available)',
+                            logger.info('Tool scope: {}, {} -> {} tools (expansion available)',
+                                        ', '.join(selection['categories']),
                                         len(self._full.standard_tools), len(selected.standard_tools))
         await self.push_frame(frame, direction)
 
-    def _weather_tools(self, context, weather, count):
+    def _selected_tools(self, context, matched, count):
         async def expand(params):
             # A late result from an interrupted turn must not alter a new one.
             if context.tools is not selected or user_count(context) != count:
@@ -85,11 +77,10 @@ class ToolScopeStep(FrameProcessor):
             logger.info('Tool scope: restored {} configured tools', len(self._full.standard_tools))
             await params.result_callback({'expanded': True, 'instruction': 'Continue the current request using the restored tools.'})
 
-        continuation = [tool for tool in self._full.standard_tools if tool.name == 'EchoMuseRequestContinuation']
-        selected = ToolsSchema(standard_tools=[*weather, *continuation, FunctionSchema(
+        selected = ToolsSchema(standard_tools=[*matched, FunctionSchema(
             name=EXPAND_TOOL,
-            description=('Restore all configured tools when these weather tools cannot answer, '
-                         'you need entity context, or the request needs other capabilities. '
+            description=('Restore configured tools if this request needs unavailable home, music, '
+                         'schedule, context, or other capabilities. '
                          'Call before guessing a target or claiming a capability is unavailable. '
                          'This only exposes tools; it performs no home action.'),
             properties={}, required=[], handler=expand,

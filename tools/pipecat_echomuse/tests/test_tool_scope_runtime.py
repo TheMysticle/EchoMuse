@@ -45,10 +45,10 @@ def test_standalone_weather_is_recognized(text):
     assert weather_request(text, 'en-US')
 
 
-@pytest.mark.parametrize('text', ["what's the weather and turn off the bedroom lights",
-    'weather, then play music', 'what about tomorrow', 'is it warmer there',
-    'remind me to check the weather', 'weather in London', 'tell me a joke'])
-def test_ambiguous_followup_and_multiple_requests_keep_full_tools(text):
+@pytest.mark.parametrize('text', ['what about tomorrow', 'is it warmer there',
+    'turn off the bedroom lights and lock the front door',
+    'if it rains tomorrow turn off the bedroom lights'])
+def test_ambiguous_followup_and_unknown_clauses_keep_full_tools(text):
     async def run():
         full = tools()
         context = LLMContext([], tools=full)
@@ -64,7 +64,8 @@ def test_scoping_is_per_user_turn_and_tool_continuations_do_not_reset_it():
         context = LLMContext([], tools=full)
         scope = Scope(context=context)
         await user_turn(scope, context, "what's the weather like")
-        assert names(context) == ['assist__script__get_weather', 'EchoMuseRequestContinuation', EXPAND_TOOL]
+        assert names(context) == ['assist__script__get_weather',
+                                 'assist__homeassistant__GetLiveContext', 'EchoMuseRequestContinuation', EXPAND_TOOL]
         assert context.tools.standard_tools[0] is full.standard_tools[0]
         selected = context.tools
         context.add_message({'role': 'tool', 'content': 'Cloudy', 'tool_call_id': 'weather-1'})
@@ -73,6 +74,9 @@ def test_scoping_is_per_user_turn_and_tool_continuations_do_not_reset_it():
         assert context.tools is selected
         context.add_message(LLMSpecificMessage(llm='google', message={'role': 'model'}))
         await user_turn(scope, context, 'turn off the bedroom light')
+        assert 'assist__intent__HassTurnOff' in names(context)
+        assert 'assist__script__get_weather' not in names(context)
+        await user_turn(scope, context, 'and the bedroom?')
         assert context.tools is full
         await user_turn(scope, context, 'will it rain tomorrow')
         assert context.tools is not full
@@ -133,6 +137,22 @@ def test_explicit_tool_choice_is_preserved():
     asyncio.run(run())
 
 
+def test_chat_has_no_ha_tools_and_mixed_command_keeps_both_categories():
+    async def run():
+        full = tools()
+        context = LLMContext([], tools=full)
+        scope = Scope(context=context)
+        await user_turn(scope, context, 'explain photosynthesis')
+        assert names(context) == ['EchoMuseRequestContinuation', EXPAND_TOOL]
+        await user_turn(scope, context, 'turn off the bedroom lights and play music')
+        assert 'assist__intent__HassTurnOff' in names(context)
+        assert 'assist__media_player__HassMediaUnpause' in names(context)
+        assert 'assist__script__get_weather' not in names(context)
+        assert 'EchoMuseCreate' not in names(context)
+        assert all(tool in full.standard_tools for tool in context.tools.standard_tools[:-1])
+    asyncio.run(run())
+
+
 def test_openai_compatible_provider_payload_is_smaller_without_removing_history():
     async def run():
         full = tools()
@@ -143,7 +163,7 @@ def test_openai_compatible_provider_payload_is_smaller_without_removing_history(
         before = adapter.get_llm_invocation_params(context, system_instruction='Keep replies brief.', convert_developer_to_user=True)
         await scope.process_frame(LLMContextFrame(context), FrameDirection.DOWNSTREAM)
         after = adapter.get_llm_invocation_params(context, system_instruction='Keep replies brief.', convert_developer_to_user=True)
-        assert len(after['tools']) == 3
+        assert len(after['tools']) == 4
         assert len(json.dumps(after['tools'])) < len(json.dumps(before['tools']))
         assert before['messages'] == after['messages']
     asyncio.run(run())
@@ -153,7 +173,15 @@ def test_openai_compatible_provider_payload_is_smaller_without_removing_history(
     ('https://api.cerebras.ai/v1', 'gpt-oss-120b'),
     ('https://api.groq.com/openai/v1', 'llama-3.3-70b-versatile'),
 ])
-def test_real_model_tool_loop_can_expand_and_resume(base_url, model):
+@pytest.mark.parametrize('phrase,expected_tools', [
+    ('weather tomorrow', ['assist__script__get_weather',
+        'assist__homeassistant__GetLiveContext', 'EchoMuseRequestContinuation', EXPAND_TOOL]),
+    ('tell me a joke', ['EchoMuseRequestContinuation', EXPAND_TOOL]),
+    ('dim the living room lights to 50 percent and play music', [
+        'assist__intent__HassTurnOff', 'assist__media_player__HassMediaUnpause', 'EchoMuseVolume',
+        'assist__homeassistant__GetLiveContext', 'EchoMuseRequestContinuation', EXPAND_TOOL]),
+])
+def test_real_model_tool_loop_can_expand_and_resume(base_url, model, phrase, expected_tools):
     import httpx
     from openai import AsyncOpenAI
     from pipecat.frames.frames import EndFrame, LLMTextFrame
@@ -174,8 +202,7 @@ def test_real_model_tool_loop_can_expand_and_resume(base_url, model):
             seen.append(body)
             assert str(request.url) == base_url+'/chat/completions'
             if len(seen) == 1:
-                assert [t['function']['name'] for t in body['tools']] == [
-                    'assist__script__get_weather', 'EchoMuseRequestContinuation', EXPAND_TOOL]
+                assert [t['function']['name'] for t in body['tools']] == expected_tools
                 delta = {'tool_calls': [{'index': 0, 'id': 'expand-1', 'type': 'function',
                     'function': {'name': EXPAND_TOOL, 'arguments': '{}'}}]}
                 reason = 'tool_calls'
@@ -211,7 +238,7 @@ def test_real_model_tool_loop_can_expand_and_resume(base_url, model):
         running = asyncio.create_task(runner.run())
         try:
             await asyncio.wait_for(ready.wait(), 5)
-            context.add_message({'role': 'user', 'content': 'weather tomorrow'})
+            context.add_message({'role': 'user', 'content': phrase})
             await worker.queue_frame(LLMContextFrame(context))
             await asyncio.wait_for(finished.wait(), 5)
             assert len(seen) == 2
