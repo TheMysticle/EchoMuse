@@ -3,6 +3,7 @@ from homeassistant.components.todo import TodoListEntity, TodoItem, TodoItemStat
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.exceptions import HomeAssistantError
 from .api import DOMAIN
+from .shared import is_shared
 
 
 async def async_setup_entry(hass, entry, async_add_entities):
@@ -26,7 +27,7 @@ class Reminders(CoordinatorEntity, TodoListEntity):
             status=TodoItemStatus.COMPLETED if i["state"] in ("completed", "missed", "canceled") else TodoItemStatus.NEEDS_ACTION,
             due=datetime.fromtimestamp(i["due"], timezone.utc) if i.get("due") else None,
             description=i["state"] + ("; recurring" if i.get("rule") else ""))
-            for i in self.coordinator.data["items"] if i["kind"] == "reminder"]
+            for i in self.coordinator.data["items"] if i["kind"] == "reminder" and not is_shared(i)]
 
     async def async_update_todo_item(self, item):
         current = next((i for i in self.coordinator.data["items"] if i["id"] == item.uid and i["kind"] == "reminder"), None)

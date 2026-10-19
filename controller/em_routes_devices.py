@@ -29,6 +29,7 @@ import em_http
 import em_labels
 import em_pairing
 import em_reconcile
+import em_schedule_share
 import em_shell
 import em_state
 import em_wifi
@@ -197,6 +198,8 @@ async def _delete_device(request: web.Request) -> web.Response:
     # A refusal belongs to the deleted row; the device comes back as pending.
     em_device_view.clear_link_refused(device_id)
     em_pairing.forget(device_id)
+    # It stops sharing and receiving; its copies elsewhere are cancelled.
+    await em_schedule_share.device_deleted(device_id)
     # ...and the device is told to redial, or it never notices it was deleted.
     # Link auth is decided once, at register time, so a connected device keeps
     # running on the socket it already has: it vanishes from the dashboard and

@@ -18,6 +18,7 @@ import em_auth as auth
 import em_db as db
 import em_http
 import em_schedule_auth as schedule_auth
+import em_schedule_share as share
 import em_state
 
 
@@ -27,6 +28,8 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/schedules", _get_schedules)
     app.router.add_post("/api/devices/{id}/schedules", _post_schedule)
     app.router.add_post("/api/devices/{id}/schedule-assets", _post_schedule_asset)
+    app.router.add_get("/api/schedule-sharing", _get_sharing)
+    app.router.add_put("/api/schedule-sharing", _put_sharing)
 
 
 @schedule_auth.require_auth
@@ -89,6 +92,8 @@ async def _post_schedule_asset(request):
     try:
         asset, pcm = await em_schedule.convert_audio(bytes(data))
         await live.schedule.request(live.send_control, asset=asset, data=pcm)
+        # Kept so a satellite this one shares with can be sent the same clip.
+        await share.cache_asset(asset, pcm)
         return em_http.ok({"asset": asset})
     except (ValueError, asyncio.TimeoutError) as err:
         return em_http.error("asset_failed", str(err) or "Device acknowledgment timed out", 409)
@@ -114,3 +119,28 @@ async def _post_schedule_connection(request):
 async def _delete_schedule_connection(request):
     await asyncio.to_thread(schedule_auth.revoke, request.match_info["id"])
     return em_http.ok({"revoked": True})
+
+
+@auth.require_auth
+async def _get_sharing(request):
+    return em_http.ok(_sharing_view())
+
+
+@auth.require_admin
+async def _put_sharing(request):
+    body = await request.json()
+    if not isinstance(body, dict) or not isinstance(body.get("sharing"), dict):
+        return em_http.error("bad_sharing", "Expected {\"sharing\": {source: {kind: [targets]}}}", 400)
+    stop = body.get("stop_together")
+    if stop is not None and type(stop) is not bool:
+        return em_http.error("bad_sharing", "stop_together must be true or false", 400)
+    await share.set_sharing(body["sharing"], stop)
+    return em_http.ok(_sharing_view())
+
+
+def _sharing_view():
+    config = share.config()
+    return {"sharing": config, "stop_together": share.stop_together(), "kinds": list(share.KINDS),
+            # What a copy's id says about where it came from, for the dashboard's label.
+            "sources": {share.tag(source): source for source in config},
+            "errors": share.errors()}

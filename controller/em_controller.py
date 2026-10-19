@@ -123,6 +123,7 @@ import em_speechgate
 import em_ringlight
 import em_timers
 import em_schedule
+import em_schedule_share
 import em_loglevel
 
 _LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s — %(message)s"
@@ -6347,6 +6348,7 @@ async def event_loop_lag_monitor(interval: float = 1.0,
 async def main():
     log.info(f"EchoMuse Controller {CONTROLLER_VERSION}")
     db.init(DB_PATH)
+    await em_schedule_share.load(DB_PATH)
     auth.maybe_generate_bootstrap_token()
     em_player.init(
         get_device=em_state.devices.get,

@@ -142,6 +142,14 @@ const API = {
     return data;
   },
 
+  async put(path, body) {
+    const r = await fetch(ingressPath(path), { method: 'PUT', headers: this.headers(), body: JSON.stringify(body) });
+    if (r.status === 401) { API.unauthorized(); throw { code: 'not_authenticated', status: 401 }; }
+    const data = await r.json();
+    if (!r.ok) throw data;
+    return data;
+  },
+
   async patch(path, body) {
     const r = await fetch(ingressPath(path), { method: 'PATCH', headers: this.headers(), body: JSON.stringify(body) });
     if (r.status === 401) { API.unauthorized(); throw { code: 'not_authenticated', status: 401 }; }
@@ -1596,6 +1604,12 @@ function scheduleId() {
   return `${hex.slice(0,8)}-${hex.slice(8,12)}-${hex.slice(12,16)}-${hex.slice(16,20)}-${hex.slice(20)}-${Date.now().toString(36)}-${scheduleIdCounter.toString(36)}`;
 }
 
+// A copy of another satellite's alert carries an id of this shape (controller
+// em_schedule_share.mirror_id, and the companion's shared.py: a test holds all
+// three together). The Echo keeps no origin field, so the id is the marker.
+const SHARED_COPY = /^sh-([0-9a-f]{8})-[0-9a-f]{24}$/;
+const SHARE_KINDS = [['reminder', 'Reminders'], ['timer', 'Timers'], ['alarm', 'Alarms']];
+
 function SchedulesTab({ device, isAdmin }) {
   const [snapshot, setSnapshot] = useState(null);
   const [settings, setSettings] = useState(null);
@@ -1612,6 +1626,8 @@ function SchedulesTab({ device, isAdmin }) {
   const [zone, setZone] = useState(() => Intl.DateTimeFormat().resolvedOptions().timeZone);
   const [repeat, setRepeat] = useState('once');
   const [soundFiles, setSoundFiles] = useState({});
+  const [sharing, setSharing] = useState(null);
+  const [fleet, setFleet] = useState([]);
   const soundSettingsCapable = (device.capabilities || []).includes('local_schedule_sounds');
   const base = `/api/devices/${encodeURIComponent(device.device_id)}`;
   const explain = e => e.message || e.error || 'The request failed';
@@ -1627,6 +1643,7 @@ function SchedulesTab({ device, isAdmin }) {
     const poll = async () => {
       try {
         const rows = await API.get('/api/schedules');
+        try { const view = await API.get('/api/schedule-sharing'); if (!stopped) setSharing(view); } catch (e) { /* the list matters more */ }
         if (!stopped) {
           const row = rows.find(r => r.id === device.device_id);
           const restarted = !!row && epoch.current !== null && epoch.current !== row.epoch;
@@ -1640,6 +1657,13 @@ function SchedulesTab({ device, isAdmin }) {
     poll();
     return () => { stopped = true; clearTimeout(timer); };
   }, [device.device_id, adopt]);
+  useEffect(() => {
+    let stopped = false;
+    API.get('/api/devices').then(list => { if (!stopped) setFleet(Array.isArray(list) ? list.filter(d => d.approved) : []); }).catch(() => {});
+    return () => { stopped = true; };
+  }, [device.device_id]);
+  const nameOf = id => { const d = fleet.find(x => x.device_id === id); return (d && d.label) || id; };
+  const mine = (sharing && sharing.sharing[device.device_id]) || {};
   const run = async work => {
     setBusy(true); setError(''); setNotice('');
     try { await work(); } catch (e) { setError(explain(e)); }
@@ -1693,6 +1717,28 @@ function SchedulesTab({ device, isAdmin }) {
       setNotice('Settings saved for all alerts on this satellite');
     });
   };
+  const putSharing = async (next, stop) => {
+    const body = {sharing: next};
+    if (stop !== undefined) body.stop_together = stop;
+    setSharing(await API.put('/api/schedule-sharing', body));
+  };
+  const toggleShare = (type, target) => run(async () => {
+    const now = mine[type] || [];
+    const list = now.includes(target) ? now.filter(t => t !== target) : [...now, target];
+    await putSharing({...sharing.sharing, [device.device_id]: {...mine, [type]: list}});
+    setNotice(list.includes(target)
+      ? `${nameOf(target)} now gets this satellite's ${type}s, including ones already saved`
+      : `${nameOf(target)} no longer gets this satellite's ${type}s; its shared copies were removed`);
+  });
+  const sharedNote = item => {
+    const copy = SHARED_COPY.exec(item.id);
+    if (copy) {
+      const source = sharing && sharing.sources && sharing.sources[copy[1]];
+      return 'Shared copy' + (source ? ' from ' + nameOf(source) : '') + ' · follows the original';
+    }
+    const to = (mine[item.kind] || []).map(nameOf);
+    return to.length ? 'Shared with ' + to.join(', ') : '';
+  };
   const field = (title, control) => <label style={{display:'flex', flexDirection:'column', gap:6, minWidth:0}}><span style={{fontSize:11, color:'var(--text2)'}}>{title}</span>{React.cloneElement(control, {'aria-label':control.props['aria-label'] || title})}</label>;
   const changeSetting = (name, value) => setSettings(old => ({...old,[name]:Number(value)}));
   return <div className="em-schedules" style={{fontFamily:"'DM Sans',sans-serif", display:'grid', gap:18}}>
@@ -1707,9 +1753,10 @@ function SchedulesTab({ device, isAdmin }) {
         {!snapshot.items.length && <div style={{fontSize:12, color:'var(--muted)'}}>No timers, alarms or reminders yet.</div>}
         {snapshot.items.map(item => <div key={item.id} style={{display:'flex', justifyContent:'space-between', gap:12, flexWrap:'wrap', borderTop:'1px solid var(--border)', padding:'12px 0'}}>
           <div style={{minWidth:0, overflowWrap:'anywhere'}}>
-            <SectionLabel style={{marginBottom:5}}>{item.kind} · {item.state}{item.rule?' · recurring':''}{item.rule&&!item.enabled?' · disabled':''}</SectionLabel>
+            <SectionLabel style={{marginBottom:5}}>{item.kind} · {item.state}{item.rule?' · recurring':''}{item.rule&&!item.enabled?' · disabled':''}{SHARED_COPY.test(item.id)?' · shared':''}</SectionLabel>
             <div style={{fontSize:13, color:'var(--text)'}}>{item.message || item.label || item.kind}</div>
             <div style={{fontSize:11, color:'var(--muted)', marginTop:5}}>{item.due?new Date(item.due*1000).toLocaleString(undefined,{timeZone:item.timezone||'UTC'})+' · '+(item.timezone||'UTC'):item.state==='paused'?'Paused':'Waiting for next deadline'}</div>
+            {sharedNote(item) && <div style={{fontSize:'var(--fs-md)', color:'var(--accent-deep)', marginTop:'var(--space-2)'}}>{sharedNote(item)}</div>}
           </div>
           {isAdmin && <div style={{display:'flex', gap:6, flexWrap:'wrap', alignItems:'center'}}>
             {(item.state==='ringing'?['dismiss','snooze']:[]).concat(item.kind==='timer'&&item.state==='scheduled'?['pause']:[], item.state==='paused'?['resume']:[], item.rule?[item.enabled?'disable':'enable']:[], ['cancel']).map(action => <Pill key={action} small danger={action==='cancel'} disabled={busy} onClick={()=>run(()=>command({action,id:item.id}))}>{action}</Pill>)}
@@ -1763,6 +1810,29 @@ function SchedulesTab({ device, isAdmin }) {
         </form></Panel>}
       </div>}
     </>}
+    {isAdmin && sharing && <Panel label="Share with other satellites">
+      <div style={{fontSize:'var(--fs-base)', color:'var(--text2)', lineHeight:1.6, marginBottom:'var(--space-6)'}}>
+        Choose which satellites also get this one's alerts. Alerts already saved are shared straight away and new ones follow; each satellite keeps its own copy, so it rings even if this one is offline. Turning a satellite off removes the shared copies from it and leaves the originals here.
+      </div>
+      {fleet.filter(d => d.device_id !== device.device_id).length === 0
+        ? <div style={{fontSize:'var(--fs-base)', color:'var(--muted)'}}>There are no other approved satellites to share with.</div>
+        : SHARE_KINDS.map(([type, title]) => <div key={type} style={{display:'flex', alignItems:'center', gap:'var(--space-5)', flexWrap:'wrap', padding:'var(--space-4) 0', borderTop:'1px solid var(--border)'}}>
+          <SectionLabel style={{minWidth:84, marginBottom:0}}>{title}</SectionLabel>
+          {fleet.filter(d => d.device_id !== device.device_id).map(d => {
+            const on = (mine[type] || []).includes(d.device_id);
+            const capable = (d.capabilities || []).includes('local_schedule');
+            return <button key={d.device_id} type="button" aria-pressed={on} disabled={busy || (!capable && !on)}
+              className={'em-pill em-pill--small' + (on ? ' em-pill--accent' : '')}
+              onClick={() => toggleShare(type, d.device_id)}>{d.label || d.device_id}{!capable && !on ? ' (needs newer firmware)' : ''}</button>;
+          })}
+        </div>)}
+      <div style={{marginTop:'var(--space-7)'}}>
+        <Toggle label="Stop together" sub="Stopping a shared timer or alarm on one satellite stops it on the others too. Turn off if satellites are far enough apart that you only want the one you silenced to stop. Reminders are unaffected."
+          value={sharing.stop_together} disabled={busy}
+          onChange={v => run(async () => { await putSharing(sharing.sharing, v); setNotice(v ? 'Shared timers and alarms now stop together' : 'Each satellite now stops its own copy'); })}/>
+      </div>
+      {Object.entries(sharing.errors || {}).map(([id, message]) => <div key={id} role="alert" style={{color:'var(--error)', fontSize:'var(--fs-base)', marginTop:'var(--space-4)'}}>{nameOf(id)}: {message}</div>)}
+    </Panel>}
     {isAdmin && <Panel label="Home Assistant connection">
       <div style={{fontSize:12, color:'var(--text2)', lineHeight:1.6, marginBottom:12}}>Generate a key for EchoMuse Scheduler in Home Assistant. It controls only this satellite’s schedules. Generating a new key replaces the previous one. No username or password is needed.</div>
       <div style={{display:'flex', gap:8, flexWrap:'wrap'}}>

@@ -225,6 +225,7 @@ COPY em_ringlight.py .
 COPY em_timers.py .
 COPY em_schedule.py .
 COPY em_schedule_auth.py .
+COPY em_schedule_share.py .
 COPY em_loglevel.py .
 COPY version.py .
 # ESPHome native API subpackage (frame protocol, message registry, vendored protobuf)

@@ -8,6 +8,11 @@ import uuid
 MAX_INPUT = 8 * 1024 * 1024
 MAX_PCM = 4 * 1024 * 1024
 
+# Set by em_schedule_share at start-up: called with (owner, snapshot, epoch) when a
+# satellite's snapshot changes in a way a copy could care about. Left None, a
+# controller that shares nothing pays one tuple comparison per report.
+on_snapshot_change = None
+
 
 class Bridge:
     def __init__(self, owner):
@@ -18,6 +23,7 @@ class Bridge:
         # compare revisions.
         self.epoch = uuid.uuid4().hex
         self.snapshot = None
+        self._seen = None
         self.waiters = {}
         self.lock = asyncio.Lock()
 
@@ -31,6 +37,16 @@ class Bridge:
             raise ValueError("invalid schedule snapshot")
         if self.snapshot is None or revision >= self.snapshot["revision"]:
             self.snapshot = snapshot
+        # The device repeats its report every two seconds; only a new revision
+        # (or the clock becoming trusted, which bumps none) is news.
+        seen = (self.snapshot["revision"], self.snapshot.get("time_valid"))
+        if seen != self._seen:
+            self._seen = seen
+            if on_snapshot_change is not None:
+                try:
+                    on_snapshot_change(self.owner, self.snapshot, self.epoch)
+                except Exception:
+                    pass  # sharing must never cost a satellite its report
 
     def receive(self, msg):
         if msg.get("snapshot") is not None:

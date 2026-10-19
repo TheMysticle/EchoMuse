@@ -81,6 +81,7 @@
  "em_scenes.py": 95.0,
  "em_schedule.py": 94.0,
  "em_schedule_auth.py": 97.0,
+ "em_schedule_share.py": 93.0,
  "em_shadow.py": 97.0,
  "em_shell.py": 30.0,
  "em_speechgate.py": 69.0,

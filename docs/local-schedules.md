@@ -370,6 +370,53 @@ if neither is usable the scheduler refuses mutations and preserves the files
 for repair. Flash failure and exactly-once audible output across arbitrary power
 cuts cannot be guaranteed.
 
+## Sharing alerts between satellites
+
+By default an alert belongs to the satellite it was set on. Under **Schedules →
+Share with other satellites** you can send a satellite's reminders, timers and
+alarms to other satellites, each kind separately and to whichever satellites you
+choose. A reminder for the whole house can ring in every room, while timers stay
+in the kitchen.
+
+- **Nothing changes until you share.** With nothing shared, schedules, the
+  Home Assistant companion and voice commands behave exactly as before.
+- **Alerts you already have are shared too**, and new ones, edits and
+  cancellations follow. Turning a satellite off removes the shared copies from
+  it; the originals stay where they were set.
+- **Each satellite holds its own copy**, so a shared alert still rings with the
+  controller and Home Assistant offline. A satellite that is offline when you
+  change the sharing is brought in line when it reconnects. If the satellite an
+  alert came from is offline, its copies keep running.
+- **Ask any satellite.** "List my reminders", "what's my next alarm", "stop" and
+  the dashboard list work on a satellite that holds shared copies, by voice
+  through Home Assistant or the Pipecat flow alike, because a copy is an
+  ordinary item in that satellite's schedule. The dashboard marks copies
+  "shared" and says where they came from; the original says who it is shared
+  with.
+- **Stop together** (on by default, one switch for the house). Stopping a ringing
+  shared timer or alarm on one satellite stops it on the others, including a copy
+  about to ring. Turn it off in a large house if you only want the satellite you
+  silenced to stop. Reminders are not stopped together.
+- **Cancelling a copy only removes it from that satellite**, and it stays
+  removed ("cancel all timers" in one room leaves the other rooms' timers).
+  To remove an alert everywhere, cancel the original. Editing a copy on its own
+  satellite is overwritten by the original on the next change.
+- **Reminder speech travels with the copy.** The controller keeps recently
+  uploaded sounds (up to 64 MiB in `schedule_assets/` beside the database) so
+  the spoken text reaches the other satellites. A reminder whose speech is no
+  longer cached plays the reminder chime there until the original is next
+  edited. Global alert sounds, volumes and colours are not shared.
+- **Limits are per satellite.** Copies count towards the 64-item limit; a full
+  satellite is reported under the panel and the others still get theirs.
+- **Home Assistant companion 0.1.11** leaves copies out of the reminder
+  to-do list, the timer/alarm sensors and speech caching, so a shared reminder
+  appears once, under the satellite it was set on. Replace
+  `custom_components/echomuse_schedule` and restart Home Assistant; older
+  versions still work but list a copy on both satellites.
+
+Sharing needs no firmware change. It is stored in the controller database and
+the API is `GET`/`PUT /api/schedule-sharing` (admin to change).
+
 ## Design notes
 
 Why the Echo owns the schedule: HA's timer manager keeps its countdowns in

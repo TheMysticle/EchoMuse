@@ -2,6 +2,7 @@ from homeassistant.components.sensor import SensorEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.helpers import entity_registry as er
 from .api import DOMAIN
+from .shared import is_shared
 
 
 async def async_setup_entry(hass, entry, async_add_entities):
@@ -11,7 +12,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
     def sync():
         if not coordinator.last_update_success:
             return
-        items = {i["id"]: i for i in coordinator.data["items"] if i["kind"] in ("timer", "alarm")}
+        items = {i["id"]: i for i in coordinator.data["items"] if i["kind"] in ("timer", "alarm") and not is_shared(i)}
         for uid in list(known):
             if uid not in items:
                 entity = known.pop(uid)

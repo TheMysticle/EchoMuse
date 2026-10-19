@@ -9,6 +9,7 @@ from homeassistant.exceptions import HomeAssistantError
 import logging
 import time
 from .api import DOMAIN
+from .shared import is_shared
 
 
 class Coordinator(DataUpdateCoordinator):
@@ -26,7 +27,7 @@ class Coordinator(DataUpdateCoordinator):
         try:
             data = (await self.api.snapshot())["snapshot"]
             if self.speech_task is None or self.speech_task.done():
-                pending = next((i for i in data["items"] if i.get("message") and (not i.get("speech") or i.get("speech_version") != 1) and i["state"] in ("scheduled", "paused", "waiting_for_time") and time.monotonic() >= self.speech_retry_after.get(i["id"], 0)), None)
+                pending = next((i for i in data["items"] if not is_shared(i) and i.get("message") and (not i.get("speech") or i.get("speech_version") != 1) and i["state"] in ("scheduled", "paused", "waiting_for_time") and time.monotonic() >= self.speech_retry_after.get(i["id"], 0)), None)
                 if pending:
                     self.speech_retry_after[pending["id"]] = time.monotonic() + 300
                     async def retry_speech():
