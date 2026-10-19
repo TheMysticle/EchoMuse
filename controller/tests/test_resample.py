@@ -84,3 +84,34 @@ def test_same_rate_is_passthrough():
 def test_to_int16_clips_instead_of_wrapping():
     out = np.frombuffer(em_resample.to_int16(np.array([40000.0, -40000.0, 0.4, 0.6])), dtype="<i2")
     assert out.tolist() == [32767, -32768, 0, 1]
+
+
+def test_warm_loads_scipy_once_and_off_the_event_loop():
+    import asyncio
+    import sys
+    import time
+
+    import em_resample
+
+    em_resample._warmed = False
+    assert not em_resample.warmed()
+
+    async def main():
+        ticks = []
+
+        async def ticker():
+            while True:
+                ticks.append(time.monotonic())
+                await asyncio.sleep(0.005)
+
+        task = asyncio.create_task(ticker())
+        await asyncio.to_thread(em_resample.warm)
+        await asyncio.sleep(0.03)                       # scipy may already be loaded by an earlier test
+        task.cancel()
+        return ticks
+
+    ticks = asyncio.run(main())
+    assert em_resample.warmed() and "scipy.signal" in sys.modules
+    em_resample.warm()                                        # idempotent
+    # the loop kept running while it loaded: no gap anywhere near a second
+    assert len(ticks) > 1 and max(b - a for a, b in zip(ticks, ticks[1:])) < 0.5

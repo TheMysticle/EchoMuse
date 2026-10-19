@@ -25,6 +25,30 @@ def _design(reach: int) -> np.ndarray:
     return firwin(2 * 10 * reach + 1, 1.0 / reach, window=("kaiser", 5.0))
 
 
+_warmed = False
+
+
+def warmed() -> bool:
+    return _warmed
+
+
+def warm() -> None:
+    """Import scipy and build a filter once, so a reply does not pay for it.
+
+    The first resampled reply after a start imported scipy.signal on the event
+    loop, a 1.5s stall measured on 2026-10-19 that put the answer to "what is the
+    indoor temperature" 1.9s behind the add-on's first audio. It stays lazy for
+    anyone who never resamples (scipy is ~90 MB); a Pipecat connection calls this
+    from a thread once it is up, which is when a reply is first a possibility.
+    """
+    global _warmed
+    if _warmed:
+        return
+    _design(2)
+    from scipy.signal import resample_poly  # noqa: F401  (the other half of what a reply needs)
+    _warmed = True
+
+
 class StreamResampler:
     """Mono float stream, `rate` -> `target`; `process` any number of times, then `flush`."""
 

@@ -116,3 +116,39 @@ def test_errors_spread_over_time_do_not_add_up(fresh_db):
             receiver.cancel()
             await asyncio.gather(receiver, return_exceptions=True)
     asyncio.run(main())
+
+
+def test_a_connection_warms_the_resampler_in_a_thread_without_blocking_the_loop(fresh_db, monkeypatch):
+    import threading
+    import time
+
+    import em_resample
+    seen = {}
+
+    def slow_warm():
+        seen['thread'] = threading.current_thread() is not threading.main_thread()
+        time.sleep(0.3)
+
+    monkeypatch.setattr(em_resample, 'warmed', lambda: False)
+    monkeypatch.setattr(em_resample, 'warm', slow_warm)
+
+    async def main():
+        d = device()
+        started = time.monotonic()
+        d.workflow._warm_resampler()
+        assert time.monotonic() - started < 0.1            # returned at once
+        await until(lambda: 'thread' in seen)
+        await asyncio.gather(*list(d.workflow.turn_tasks))
+        assert seen['thread'] and not d.workflow.turn_tasks
+    asyncio.run(main())
+
+
+def test_an_already_warm_resampler_schedules_nothing(fresh_db, monkeypatch):
+    import em_resample
+    monkeypatch.setattr(em_resample, 'warmed', lambda: True)
+
+    async def main():
+        d = device()
+        d.workflow._warm_resampler()
+        assert not d.workflow.turn_tasks
+    asyncio.run(main())

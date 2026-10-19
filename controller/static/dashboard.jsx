@@ -1381,7 +1381,7 @@ function TurnObservability({ turns, deviceId, deviceLabel, recordingsOn, nearMis
             return (
               <div style={{ marginTop: 'var(--space-5)', background: 'var(--hairline)', border: '1px solid var(--track)', borderRadius: 'var(--radius-md)', padding: 'var(--space-4) var(--space-6)', fontFamily: mono, fontSize: 'var(--fs-sm)', color: 'var(--text2)', lineHeight: 1.7 }}>
                 <span style={{ color: 'var(--muted)' }}>{t.trigger}</span>
-                {' · '}listening {fmtS(seg.listen)} · transcribe {fmtS(seg.transcribe)} · respond {fmtS(seg.respond)} · total {fmtS(Math.max(t.total_ms, 0))}
+                {' · '}listening {fmtS(seg.listen)} · transcribe {fmtS(seg.transcribe)} · respond {fmtS(seg.respond)} · reply starts {fmtS(seg.shown)} · total {fmtS(Math.max(t.total_ms, 0))}
                 {modelLabel ? <><br/>wake {modelLabel}{t.wake_score != null ? ` score ${t.wake_score.toFixed(3)}` : ''}{thrLabel ? ` ${thrLabel}` : ''}{t.noise_floor != null ? ` · noise floor ${t.noise_floor.toFixed(4)}` : ''}</> : null}
                 {t.underruns != null ? <>{modelLabel ? ' · ' : <br/>}underruns <span style={{ color: t.underruns > 0 ? 'var(--warn)' : 'inherit' }}>{t.underruns}</span></> : null}
                 {t.stt_text ? <><br/>“{t.stt_text.length > 90 ? t.stt_text.slice(0, 90) + '…' : t.stt_text}”</> : null}

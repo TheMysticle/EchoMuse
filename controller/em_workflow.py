@@ -552,6 +552,14 @@ class Bridge:
         async with self.session_lock:
             await self._end_session(session, reason=reason, notify=notify, drain=drain)
 
+    def _warm_resampler(self):
+        """Load what the first reply needs in a thread, now, not on the event loop mid-answer."""
+        if em_resample.warmed():
+            return
+        task = asyncio.create_task(asyncio.to_thread(em_resample.warm))
+        self.turn_tasks.add(task)
+        task.add_done_callback(lambda done: (self.turn_tasks.discard(done), done.cancelled() or done.exception()))
+
     def mark(self, key):
         """Stamp the first time a stage is reached. A clock read, once per stage."""
         if self.turn is not None and self.turn[key] < 0:
@@ -779,6 +787,7 @@ class Bridge:
                 # wake, microphone PCM, or unsolicited output to the satellite.
                 self.status = "connected"
                 self.last_error = None
+                self._warm_resampler()
                 sender = asyncio.create_task(self.send(self.ws))
                 await self.receive(self.ws)
             except asyncio.CancelledError:
