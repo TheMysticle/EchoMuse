@@ -20,7 +20,7 @@ def adapt(text):
         if text.count(old) != 1:
             raise ValueError("Upstream adapter anchor changed: " + old[:70])
         text = text.replace(old, new)
-    replace('from __future__ import annotations', 'from __future__ import annotations\n\nfrom app import echomuse\nfrom app import fast_path\nfrom app import mcp_bridge')
+    replace('from __future__ import annotations', 'from __future__ import annotations\n\nfrom app import echomuse\nfrom app import fast_path\nfrom app import mcp_bridge\nfrom app import tool_scope')
     replace('    await websocket.send_text(_va_pipecat_protocol(config).hello())', '''    hello = json.loads(_va_pipecat_protocol(config).hello())
     hello["echomuse"] = {"scheduler": bool(session_options.get("scheduler", {}).get("schedules")), "stop": bool(session_options.get("scheduler")), "barge_in": bool(session_options.get("barge_in")), "device_endpoint": _runtime_mode(flow) == "composed"}
     await websocket.send_text(json.dumps(hello))''')
@@ -389,6 +389,8 @@ def _composed_vad_analyzer(flow: FlowConfig, is_esphome_satellite: bool = False)
         processors.append(context_aggregator.user())
         if fast_path_step:
             processors.append(fast_path_step)
+        if not _flow_enabled(flow):
+            processors.append(tool_scope.ToolScopeStep(context=context, language=flow.language or "en"))
         processors.extend([llm, tts])''',
     )
     replace(
@@ -1040,7 +1042,7 @@ def main():
     path = args.out/'app/text_agent.py'
     path.write_text(adapt_text_agent(path.read_text(encoding='utf-8')), encoding='utf-8')
     shutil.copyfile(Path(__file__).with_name('echomuse.py'), args.out/'app/echomuse.py')
-    for name in ('sherpa_stt.py', 'piper_wyoming_tts.py', 'energy_vad.py', 'fast_path.py', 'local_commands.py',
+    for name in ('sherpa_stt.py', 'piper_wyoming_tts.py', 'energy_vad.py', 'fast_path.py', 'local_commands.py', 'tool_scope.py',
                  'schedule_language.py', 'schedule_dialogue.py', 'schedule_select.py', 'schedule_mcp.py'):
         shutil.copyfile(Path(__file__).with_name(name), args.out/'app'/name)
     custom_sentences_src = Path(__file__).with_name('custom_sentences')

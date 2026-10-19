@@ -163,6 +163,14 @@ Sentence-triggered automations remain managed in HA. Reading YAML in Pipecat
 alone does not install an HA intent handler. Local replies use the configured
 TTS service, including Piper, and are added to conversation history.
 
+Ordinary composed voice pipelines advertise a smaller weather tool set for
+clear standalone English weather questions that need the LLM. The model can
+call `EchoMuseExpandTools` to restore all configured/allowlisted tools if needed.
+Ambiguous, multi-part and unsupported requests retain the full set. Local HA
+responses still bypass the LLM entirely. Gemini Live, flow graphs and the
+separate HA Assist text HTTP route retain their existing tool handling.
+See [the tool-scope audit](experiments/pipecat-tool-scope-2026-10-19.md).
+
 Flows with an explicit MCP tool allowlist retain the restricted hassil/MCP
 matcher rather than gaining access to the broader conversation API. This is
 also the fallback when no native HA API credentials are configured. The Custom
