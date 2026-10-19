@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EchoMuse · Tool selector lab</title>
+<style>
+  :root{color-scheme:dark;font:16px/1.6 system-ui,sans-serif;background:#10151c;color:#e8edf4}
+  *{box-sizing:border-box}body{margin:0}main{max-width:1120px;margin:0 auto;padding:48px 24px}
+  .eyebrow{color:#81e0bc;font-size:12px;letter-spacing:.16em;text-transform:uppercase}
+  h1{font-size:clamp(30px,5vw,48px);line-height:1.15;letter-spacing:-.04em;margin:12px 0}h2{font-size:18px;margin:0 0 12px}
+  p{color:#aab8c9;margin:12px 0 24px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+  section,details{background:#18212b;border:1px solid #304052;border-radius:16px;padding:24px;margin-top:20px}
+  label{display:block;margin-bottom:8px;font-weight:600}textarea{width:100%;resize:vertical;background:#101820;color:#e8edf4;border:1px solid #47596b;border-radius:10px;padding:14px;font:inherit;min-height:130px}
+  textarea:focus,button:focus-visible,summary:focus-visible{outline:2px solid #81e0bc;outline-offset:3px}
+  button{font:inherit;border:1px solid #47596b;background:#223040;color:#e8edf4;border-radius:8px;padding:8px 12px;cursor:pointer}
+  button:hover{background:#304457}.primary{background:#81e0bc;color:#101820;border:0;font-weight:700;padding:11px 20px;margin-top:14px}
+  .examples{display:flex;gap:8px;flex-wrap:wrap;margin-top:16px}.examples button{font-size:13px}
+  .muted,small{color:#aab8c9}.badge{display:inline-block;background:#254637;color:#a6f3ca;border-radius:20px;padding:3px 12px;font-size:13px;margin:0 6px 6px 0}
+  .fallback{background:#493c26;color:#ffda91}.stats{display:flex;gap:32px;margin:16px 0}.stats strong{display:block;font-size:28px;line-height:1.2}.stats span{color:#aab8c9;font-size:13px}
+  ul{padding-left:18px;margin:0}li{overflow-wrap:anywhere;margin:8px 0}code{font-size:13px;color:#b9d6ef}summary{cursor:pointer;font-weight:600}
+  #catalogue{font:13px/1.5 ui-monospace,monospace;min-height:280px;margin-top:14px}#error{color:#ffb2aa}#reason{margin-bottom:8px}.clause{border-top:1px solid #304052;padding:10px 0}.clause span{display:block;font-size:13px;color:#81e0bc}
+  footer{font-size:13px;color:#aab8c9;margin-top:24px}#results[hidden]{display:none}@media(max-width:720px){.grid{grid-template-columns:1fr}main{padding:28px 16px}section,details{padding:18px}}
+</style>
+<main>
+  <div class="eyebrow">EchoMuse / Local routing prototype</div>
+  <h1>A sentence in. The right tools out.</h1>
+  <p>Test which capabilities a sentence exposes to the LLM. Runs the shared Python selector locally. No model, API key, or Home Assistant connection.</p>
+  <section>
+    <form id="form">
+      <label for="sentence">What would you say?</label>
+      <textarea id="sentence" maxlength="4000" placeholder="Dim the lights in the living room to 50 percent and turn off the lights in the bedroom">Dim the lights in the living room to 50 percent and turn off the lights in the bedroom</textarea>
+      <button class="primary" type="submit">Match tools →</button>
+      <small>Ctrl / ⌘ + Enter to test</small>
+    </form>
+    <div class="examples" id="examples" aria-label="Example sentences"></div>
+    <div id="error" role="alert"></div>
+  </section>
+  <div id="results" hidden aria-live="polite">
+    <section>
+      <div id="mode"></div><div id="categories"></div>
+      <div class="stats"><div><strong id="count"></strong><span>catalogue tools exposed</span></div><div><strong id="saved"></strong><span>tools excluded</span></div><div><strong id="latency"></strong><span>selector time · not network time</span></div></div>
+      <p id="reason"></p><small id="expansion"></small>
+      <div id="clauses"></div>
+    </section>
+    <div class="grid">
+      <section><h2>Exposed to the LLM</h2><ul id="selected"></ul></section>
+      <section><h2>Excluded this turn</h2><ul id="excluded"></ul></section>
+    </div>
+  </div>
+  <details>
+    <summary>Tool catalogue · editable demo data</summary>
+    <p>This is a sample catalogue, not your live HA inventory. Paste an array of tool names, MCP tools, an MCP list_tools result, or OpenAI tool definitions. Selection uses exact tool names; namespaced prefixes are supported. Unknown custom tools stay exposed.</p>
+    <label for="catalogue">Available tools (JSON)</label>
+    <textarea id="catalogue" spellcheck="false"></textarea>
+    <button id="reset" type="button">Reset demo catalogue</button>
+  </details>
+  <footer>Preview only: no commands execute and nothing is installed in HA. Rules currently cover English lighting, music, weather, climate, covers and schedules. Unsupported clauses and ambiguous follow-ups keep the full catalogue. Category selection does not validate rooms, arguments, or whether an action will succeed. The eventual add-on integration must preserve tool expansion and keep selections through tool-result continuations.</footer>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const demo = [
+  'assist__intent__HassTurnOn','assist__intent__HassTurnOff','assist__intent__HassLightSet',
+  'assist__script__get_weather','assist__intent__HassMediaPause','assist__intent__HassMediaUnpause',
+  'assist__intent__HassMediaNext','assist__intent__HassMediaPrevious','assist__intent__HassMediaPlayerMute',
+  'assist__intent__HassMediaPlayerUnmute','assist__intent__HassClimateSetTemperature',
+  'assist__intent__HassClimateGetTemperature','assist__intent__HassCoverOpen','assist__intent__HassCoverClose',
+  'assist__intent__HassCoverSetPosition','assist__homeassistant__GetLiveContext',
+  'assist__intent__HassGetState','EchoMuseSpotifySearchAndPlay','EchoMuseVolume','EchoMuseStop',
+  'EchoMuseCreate','EchoMuseList','EchoMuseAction','EchoMuseRequestContinuation'
+];
+function reset(){ $('catalogue').value = JSON.stringify(demo, null, 2); }
+reset(); $('reset').onclick = reset;
+const examples = [
+  ['Two lighting actions','Dim the lights in the living room to 50 percent and turn off the lights in the bedroom'],
+  ['Lights + music','Dim the living room lights to 50 percent and play music in the bedroom'],
+  ['Weather','What will the weather be like tomorrow?'],
+  ['Climate','Set the bedroom thermostat to 21 degrees'],
+  ['Unknown second action','Turn off the bedroom lights and lock the front door'],
+  ['Follow-up','And the bedroom?'],
+  ['Conditional','If it rains tomorrow, turn off the bedroom lights']
+];
+for (const [label, sentence] of examples){
+  const button = document.createElement('button'); button.type='button'; button.textContent=label;
+  button.onclick=()=>{ $('sentence').value=sentence; $('form').requestSubmit(); };
+  $('examples').append(button);
+}
+function list(id, names){
+  $(id).replaceChildren();
+  for(const name of names.length ? names : ['None']){
+    const item=document.createElement('li'); const code=document.createElement('code');
+    code.textContent=name; item.append(code); $(id).append(item);
+  }
+}
+let revision=0;
+$('form').onsubmit=async event=>{
+  event.preventDefault(); const current=++revision; $('error').textContent='';
+  try{
+    const catalogue=JSON.parse($('catalogue').value);
+    const response=await fetch('/api/select', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:$('sentence').value,catalogue})});
+    const result=await response.json(); if(current!==revision)return;
+    if(!response.ok)throw new Error(result.error || 'Matching failed');
+    $('results').hidden=false;
+    $('mode').textContent=result.mode==='scoped'?'Selected capabilities':'Full catalogue fallback';
+    $('mode').className='badge'+(result.mode==='full'?' fallback':'');
+    $('categories').replaceChildren();
+    for(const category of result.categories){const badge=document.createElement('span');badge.className='badge';badge.textContent=category;$('categories').append(badge);}
+    $('count').textContent=`${result.selected_tools.length} / ${result.total_tools}`;
+    $('saved').textContent=result.excluded_tools.length;
+    $('latency').textContent=`${result.elapsed_ms.toFixed(3)} ms`;
+    $('reason').textContent=result.reason;
+    $('expansion').textContent=result.expansion_required?'Production would also add EchoMuseExpandTools so the LLM can restore missing tools. That virtual tool is not included in the catalogue count.':'';
+    $('clauses').replaceChildren();
+    for(const match of result.clauses){const row=document.createElement('div');row.className='clause';row.textContent=match.clause||'(empty)';const label=document.createElement('span');label.textContent=match.categories.join(' + ')||'No confident match → full catalogue';row.append(label);$('clauses').append(row);}
+    list('selected',result.selected_tools);list('excluded',result.excluded_tools);
+  }catch(error){if(current!==revision)return;$('results').hidden=true;$('error').textContent=error.message;}
+};
+$('sentence').onkeydown=event=>{if(event.key==='Enter'&&(event.ctrlKey||event.metaKey)){event.preventDefault();$('form').requestSubmit();}};
+if(location.protocol==='file:')$('error').textContent='Start the Python server and open http://127.0.0.1:8765 to run the shared selector.';
+else $('form').requestSubmit();
+</script>
+</html>
