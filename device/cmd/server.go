@@ -30,6 +30,7 @@ import (
 	"github.com/wilbowes/EchoMuse/internal/bindings/speaker"
 	"github.com/wilbowes/EchoMuse/internal/bluetooth"
 	"github.com/wilbowes/EchoMuse/internal/client"
+	"github.com/wilbowes/EchoMuse/internal/clock"
 	"github.com/wilbowes/EchoMuse/internal/config"
 	"github.com/wilbowes/EchoMuse/internal/cpuprofile"
 	"github.com/wilbowes/EchoMuse/internal/cue"
@@ -94,7 +95,8 @@ func main() {
 			os.Exit(2)
 		}
 	}
-	log.SetOutput(os.Stdout)
+	clock.InstallLogOutput(os.Stdout)
+	clock.LoadLogZone()
 	log.Printf("EchoMuse %s starting", client.Version)
 
 	deviceID := client.GetSerialNo()

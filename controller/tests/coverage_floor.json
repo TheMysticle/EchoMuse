@@ -95,6 +95,7 @@
  "em_tasks.py": 99.0,
  "em_tcp.py": 95.0,
  "em_timers.py": 99.0,
+ "em_timezone.py": 93.0,
  "em_turnclock.py": 99.0,
  "em_volume.py": 99.0,
  "em_wake_samples.py": 85.0,

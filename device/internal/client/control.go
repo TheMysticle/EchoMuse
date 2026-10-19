@@ -70,6 +70,12 @@ type controlMessage struct {
 	// has DNS for an NTP pool. Absent from older controllers, which correctly
 	// reads as "no opinion" — see clock.ShouldStep.
 	TimeMs int64 `json:"time_ms,omitempty"`
+	// TZ is the controller's IANA zone name, sent beside time_ms. The Echo has
+	// no zone of its own, so the log would read in UTC; this dresses its
+	// timestamps in the controller's, so the two logs line up (clock.SetLogZone).
+	// Absent from older controllers and from one that cannot tell: the log
+	// stays on UTC, as before.
+	TZ string `json:"tz,omitempty"`
 	// Session is the private-listening session a listen_ack or listen_close
 	// refers to (docs/listening.md).
 	Session uint32 `json:"session,omitempty"`
@@ -729,6 +735,10 @@ func (c *ControlClient) connect(ctx context.Context, server *discovery.ServerInf
 
 		if !clock.ShouldStep(time.Now(), first.TimeMs) {
 			clock.ConfirmController(first.TimeMs)
+		}
+
+		if err := clock.ApplyControllerZone(first.TZ); err != nil {
+			log.Printf("[clock] ignoring the controller's timezone %q: %v", first.TZ, err)
 		}
 	default:
 		return false, fmt.Errorf("unexpected first message: %s", first.Type)

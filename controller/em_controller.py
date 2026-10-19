@@ -79,6 +79,7 @@ import em_events
 import em_credentials
 import em_device_view
 import em_process_stats
+import em_timezone
 import em_reconcile
 from version import VERSION as CONTROLLER_VERSION
 import em_releases
@@ -5423,6 +5424,7 @@ async def handle_control(ws: WebSocketServerProtocol, secure: bool = False):
             # unnegotiated, older firmware ignores it, and a device that gets
             # no field leaves its clock alone.
             "time_ms": int(time.time() * 1000),
+            **em_timezone.ack_fields(),
         })
 
         config = await loop.run_in_executor(
