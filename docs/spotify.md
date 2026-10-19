@@ -216,7 +216,10 @@ turns up in an open search only when nothing else matched. “Album” and
 “playlist” said in the sentence name the kind even when Home Assistant did not
 split them out, unless the whole sentence is itself an exact title. A word the
 transcriber splits or joins (“every day” and “everyday”) counts as the same
-word. Spotify's popularity is never consulted, so an artist whose name is
+word. A trailing “please” or “for me” is not part of the search, and a search
+that finds nothing is tried once more with spoken numbers as digits (“two one
+one five” as 2115), because Home Assistant turns an empty search into “an
+unexpected error occurred”. Spotify's popularity is never consulted, so an artist whose name is
 exactly a song title will be chosen over that song.
 
 This update requires the HA integration and its new sentence file; it does

@@ -274,6 +274,94 @@ def rank(cands: list[Candidate], prefer=KINDS, limit=MAX_LIMIT) -> list[Candidat
     return scored[:max(0, limit)]
 
 
+# What a transcriber writes for a number said aloud: "white two one one five",
+# "twenty one fifteen", "twenty twenty four". Spotify's catalogue spells them as
+# digits, and a search for the words finds nothing, which Home Assistant then
+# reports as "an unexpected error occurred".
+_ONES = {w: i for i, w in enumerate(
+    "zero one two three four five six seven eight nine".split())}
+_ONES["oh"] = 0
+_TEENS = {w: 10 + i for i, w in enumerate(
+    "ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen".split())}
+_TENS = {w: 10 * i for i, w in enumerate(
+    "_ _ twenty thirty forty fifty sixty seventy eighty ninety".split()) if w != "_"}
+_NUMBER_WORDS = set(_ONES) | set(_TEENS) | set(_TENS)
+_COMMA_IN_NUMBER = re.compile(r"(?<=\d),(?=\d)")
+
+# Politeness a transcript carries to the end of a request. Only removed when
+# something else is left, so a song called "Please" is still searchable.
+_TRAILING_POLITE = ("please", "thanks", "thank you", "for me")
+
+
+def clean_query(query: str) -> str:
+    """The request without trailing politeness ("white 2115 please" -> "white 2115").
+
+    Trailing punctuation goes too. A phrase said twice at the end is a title,
+    not manners ("Please Please Please" stays whole).
+    """
+    text = (query or "").strip()
+    while True:
+        stripped = re.sub(r"[\s.,!?]+$", "", text)
+        low = stripped.lower()
+        for tail in _TRAILING_POLITE:
+            if low.endswith(" " + tail):
+                rest = stripped[: -len(tail)].rstrip(" ,")
+                if rest.lower().endswith(tail):
+                    return stripped
+                text = rest
+                break
+        else:
+            return stripped
+
+
+def spoken_numbers(query: str) -> str:
+    """
+    The query with number words written as digits, for a search that found nothing.
+
+    "two one one five" is 2115 and "twenty one fifteen" is 21 and 15 side by
+    side, which a person says for 2115, and "twenty twenty four" is 2024. Each
+    run of number words becomes the digits of its parts joined, and a comma
+    inside a number goes ("2,115"). "hundred" and "thousand" are left alone:
+    reading them needs a grammar this does not have, and a wrong number is
+    worse than the words. Only used as a retry, because one number word is
+    often a title ("One Direction") and must reach the first search unchanged.
+    """
+    words = _COMMA_IN_NUMBER.sub("", query or "").split()
+    out, i = [], 0
+    while i < len(words):
+        base = re.sub(r"[^\w-]", "", words[i]).lower()
+        if base not in _NUMBER_WORDS:
+            out.append(words[i]); i += 1
+            continue
+        digits, start = "", i
+        while i < len(words):
+            w = re.sub(r"[^\w-]", "", words[i]).lower()
+            if w in _TENS:
+                nxt = re.sub(r"[^\w-]", "", words[i + 1]).lower() if i + 1 < len(words) else ""
+                if nxt in _ONES and 1 <= _ONES[nxt] <= 9:
+                    digits += str(_TENS[w] + _ONES[nxt]); i += 2
+                else:
+                    digits += str(_TENS[w]); i += 1
+            elif w in _TEENS:
+                digits += str(_TEENS[w]); i += 1
+            elif w in _ONES:
+                digits += str(_ONES[w]); i += 1
+            else:
+                break
+        follower = re.sub(r"[^\w-]", "", words[i]).lower() if i < len(words) else ""
+        if follower in ("hundred", "thousand", "million"):
+            out.extend(words[start:i])      # "one hundred" is not "1 hundred"
+        else:
+            out.append(digits)
+    return " ".join(out)
+
+
+def numeral_retry(query: str):
+    """The digit form of a query to search again with, or None when it would be the same."""
+    rewritten = spoken_numbers(query)
+    return rewritten if rewritten and normalise(rewritten) != normalise(query) else None
+
+
 # Words that say which kind of thing is wanted, when the sentence carries them
 # and the intent did not already turn them into a filter.
 _KIND_WORDS = {"album": "album", "playlist": "playlist", "artist": "artist"}

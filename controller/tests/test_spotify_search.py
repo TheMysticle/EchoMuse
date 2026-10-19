@@ -413,3 +413,45 @@ def test_the_named_kind_wins_otherwise_and_the_sentence_is_the_fallback():
     assert s.choose_with_kind_word(whole, named) is named
     assert s.choose_with_kind_word(whole, []) is whole
     assert s.choose_with_kind_word([], []) == []
+
+
+# ── 2026-10-19: what a transcriber writes for a number said aloud ─────────────
+
+
+@pytest.mark.parametrize("query,expected", [
+    ("white two one one five", "white 2115"),            # digit by digit
+    ("white twenty one fifteen", "white 2115"),          # in pairs, as it is said
+    ("white twenty twenty four", "white 2024"),
+    ("forty two", "42"),
+    ("white oh seven", "white 07"),
+    ("white 2,115", "white 2115"),                       # a comma inside a number goes
+    ("blink one eighty two", "blink 182"),
+    ("one hundred", "one hundred"),                      # needs a grammar this does not have
+    ("three thousand miles", "three thousand miles"),
+    ("muse", "muse"),
+    ("", ""),
+])
+def test_spoken_numbers_become_digits(query, expected):
+    assert s.spoken_numbers(query) == expected
+
+
+def test_a_retry_exists_only_when_it_would_search_something_new():
+    assert s.numeral_retry("white two one one five") == "white 2115"
+    assert s.numeral_retry("white 2115") is None
+    assert s.numeral_retry("muse") is None
+
+
+@pytest.mark.parametrize("query,expected", [
+    ("white 2115 please", "white 2115"),
+    ("White 2115, please.", "White 2115"),
+    ("muse for me", "muse"),
+    ("muse thank you", "muse"),
+    ("muse for me please", "muse"),
+    ("please", "please"),                                # a title that is only the word
+    ("thank you", "thank you"),
+    ("Please Please Please", "Please Please Please"),     # a repeated word is the title
+    ("pretty boy album", "pretty boy album"),
+    ("", ""),
+])
+def test_trailing_politeness_is_not_part_of_the_search(query, expected):
+    assert s.clean_query(query) == expected

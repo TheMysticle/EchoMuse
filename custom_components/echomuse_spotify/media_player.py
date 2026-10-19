@@ -330,20 +330,27 @@ class SpotifyConnectPlayer(CoordinatorEntity[SpotifyCoordinator], MediaPlayerEnt
                 return SearchMedia(result=[])
             kinds = tuple(dict.fromkeys(wanted))
 
+        text = ranking.clean_query(query.search_query)
+        ranked = await self._ranked(text, kinds, filtered=bool(query.media_filter_classes))
+        if not ranked:
+            # A transcript writes "two one one five" for 2115, and a search for
+            # the words finds nothing, which Home Assistant then calls an
+            # unexpected error. One more try with digits, only when empty.
+            retry = ranking.numeral_retry(text)
+            if retry:
+                ranked = await self._ranked(retry, kinds, filtered=bool(query.media_filter_classes))
+        return SearchMedia(result=[self._result(c) for c in ranked])
+
+    async def _ranked(self, text, kinds, *, filtered):
+        """The ranking for one wording, honouring a kind word said in the sentence."""
         try:
-            params = ranking.search_params(query.search_query, kinds=kinds)
+            params = ranking.search_params(text, kinds=kinds)
         except ValueError as err:
             raise HomeAssistantError(str(err)) from err
-
-        spoken_kind, rest = (None, query.search_query)
-        if not query.media_filter_classes:
-            spoken_kind, rest = ranking.split_kind(query.search_query)
+        spoken_kind, rest = (None, text) if filtered else ranking.split_kind(text)
         if spoken_kind is None:
             body = await self.coordinator.api.search(params)
-            ranked = ranking.rank(
-                ranking.candidates(body, query.search_query, kinds=kinds), prefer=kinds
-            )
-            return SearchMedia(result=[self._result(c) for c in ranked])
+            return ranking.rank(ranking.candidates(body, text, kinds=kinds), prefer=kinds)
         # "the album X" / "X playlist": search for the kind that was named AND
         # for the words as spoken, side by side so it costs no extra time. An
         # exact title for the whole sentence wins ("The Album Leaf" is a band);
@@ -353,14 +360,11 @@ class SpotifyConnectPlayer(CoordinatorEntity[SpotifyCoordinator], MediaPlayerEnt
             self.coordinator.api.search(params),
             self.coordinator.api.search(ranking.search_params(rest, kinds=(spoken_kind,))),
         )
-        whole = ranking.rank(
-            ranking.candidates(whole_body, query.search_query, kinds=kinds), prefer=kinds
-        )
+        whole = ranking.rank(ranking.candidates(whole_body, text, kinds=kinds), prefer=kinds)
         named = ranking.rank(
             ranking.candidates(kind_body, rest, kinds=(spoken_kind,)), prefer=(spoken_kind,)
         )
-        ranked = ranking.choose_with_kind_word(whole, named)
-        return SearchMedia(result=[self._result(c) for c in ranked])
+        return ranking.choose_with_kind_word(whole, named)
 
     def _result(self, cand: ranking.Candidate) -> BrowseMedia:
         media_class, content_type = _CLASS.get(
