@@ -358,3 +358,62 @@ def test_generated_adapter_guards_the_gemini_connection_task():
     source=path.read_text(encoding='utf-8')
     ast.parse(source)
     assert 'echomuse.keep_connection(self, super()._connection_task_handler, config)' in source
+
+
+# ── how much conversation is kept ────────────────────────────────────────────
+
+
+def _turn(n, tool=False):
+    msgs = [{"role": "user", "content": f"q{n}"}]
+    if tool:
+        msgs += [{"role": "assistant", "tool_calls": [{"id": f"c{n}"}]},
+                 {"role": "tool", "tool_call_id": f"c{n}", "content": f"r{n}"}]
+    return msgs + [{"role": "assistant", "content": f"a{n}"}]
+
+
+def _roles(messages):
+    return [m["role"] for m in messages if isinstance(m, dict)]
+
+
+def test_trim_keeps_everything_when_under_the_limit_or_unlimited():
+    msgs = _turn(1) + _turn(2)
+    assert adapter.trim_messages(msgs, 8) == msgs
+    assert adapter.trim_messages(msgs, 0) == msgs
+    assert adapter.trim_messages([], 5) == []
+
+
+def test_trim_never_starts_on_a_tool_result_or_an_assistant_reply():
+    msgs = _turn(1, tool=True) + _turn(2, tool=True) + _turn(3)       # 4 + 4 + 2
+    for limit in range(1, 12):
+        got = adapter.trim_messages(msgs, limit)
+        assert got[0]["role"] == "user", (limit, _roles(got))
+        assert len(got) <= max(limit, 2)                             # "up to", but the newest turn is always whole
+        assert got[-2:] == msgs[-2:]
+    assert [m["content"] for m in adapter.trim_messages(msgs, 5) if m["role"] == "user"] == ["q3"]
+
+
+def test_trim_keeps_a_tool_call_with_its_result():
+    msgs = _turn(1, tool=True) + _turn(2, tool=True)
+    got = adapter.trim_messages(msgs, 5)                              # would have started at the tool result
+    ids = [m.get("tool_call_id") for m in got if m["role"] == "tool"]
+    calls = [c["id"] for m in got for c in m.get("tool_calls", [])]
+    assert ids == ["c2"] and calls == ["c2"]
+
+
+def test_trim_keeps_system_messages_wherever_they_are_and_counts_only_the_rest():
+    system = {"role": "system", "content": "be brief"}
+    msgs = [system] + _turn(1) + _turn(2) + _turn(3)
+    got = adapter.trim_messages(msgs, 4)
+    assert got[0] == system
+    assert [m["content"] for m in got if m["role"] == "user"] == ["q2", "q3"]
+    assert adapter.trim_messages([system] + _turn(1), 4) == [system] + _turn(1)
+
+
+def test_trim_tolerates_entries_that_are_not_dicts_and_a_pending_user_turn():
+    signature = object()                                              # Gemini's thought signature
+    msgs = _turn(1) + [signature] + _turn(2) + [{"role": "user", "content": "pending"}]
+    got = adapter.trim_messages(msgs, 3)
+    assert got[0]["content"] == "q2" or got[0]["content"] == "pending"
+    assert got[-1]["content"] == "pending"
+    only_replies = [{"role": "assistant", "content": "x"}] * 10
+    assert adapter.trim_messages(only_replies, 3) == only_replies[-1:]

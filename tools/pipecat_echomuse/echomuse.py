@@ -159,6 +159,40 @@ def composed_turn_start_strategies(settings):
     )]
 
 
+_PREAMBLE_ROLES = ("system", "developer")
+
+
+def trim_messages(messages, max_messages):
+    """The conversation cut to its newest `max_messages`, starting at something a model accepts.
+
+    A tool call and its result are separate messages and must stay together:
+    a result with no call before it is refused by OpenAI-style providers, and
+    a plain "last N" cut can start exactly there. So the cut moves forward to
+    the next user message, which means "up to" N, never more. System and
+    developer messages are kept wherever they are. Entries that are not dicts
+    (Gemini's thought signatures ride beside the messages they belong to) are
+    not counted and stay with what follows them. 0 keeps everything.
+    """
+    items = list(messages)
+    if max_messages <= 0:
+        return items
+    body = [i for i, m in enumerate(items)
+            if isinstance(m, dict) and m.get("role") not in _PREAMBLE_ROLES]
+    if len(body) <= max_messages:
+        return items
+    start = body[-max_messages]
+    users = [i for i in body if items[i].get("role") == "user"]
+    later = [i for i in users if i >= start]
+    if later:
+        start = later[0]
+    elif users:
+        start = users[-1]           # the newest user message, whole turn after it
+    else:
+        start = body[-1]
+    return [m for i, m in enumerate(items)
+            if i >= start or (isinstance(m, dict) and m.get("role") in _PREAMBLE_ROLES)]
+
+
 def mcp_options(settings, servers, allowlist):
     result = list(servers)
     allowed = list(allowlist)

@@ -444,6 +444,20 @@ async def api_fast_path_status():
     return text
 
 
+def adapt_session_memory(text):
+    """Cut the cached and restored conversation at a turn, not through a tool call."""
+    for old, new in (
+        ("from loguru import logger\n", "from loguru import logger\n\nfrom app import echomuse\n"),
+        ("serializable = seed[-2:] + body[-max_messages:]",
+         "serializable = seed[-2:] + echomuse.trim_messages(body, max_messages)"),
+        ("reusable = reusable[-max_messages:]", "reusable = echomuse.trim_messages(reusable, max_messages)"),
+    ):
+        if text.count(old) != 1:
+            raise ValueError("Upstream session_memory anchor changed: " + old[:60])
+        text = text.replace(old, new)
+    return text
+
+
 def adapt_config(text):
     """Patches for app/config.py: new provider kinds and fast-path settings."""
 
@@ -1060,6 +1074,8 @@ def main():
     path.write_text(adapt_config(path.read_text(encoding='utf-8')), encoding='utf-8')
     path = args.out/'app/text_agent.py'
     path.write_text(adapt_text_agent(path.read_text(encoding='utf-8')), encoding='utf-8')
+    path = args.out/'app/session_memory.py'
+    path.write_text(adapt_session_memory(path.read_text(encoding='utf-8')), encoding='utf-8')
     shutil.copyfile(Path(__file__).with_name('echomuse.py'), args.out/'app/echomuse.py')
     for name in ('sherpa_stt.py', 'piper_wyoming_tts.py', 'energy_vad.py', 'fast_path.py', 'local_commands.py', 'tool_scope.py', 'tool_selector.py',
                  'schedule_language.py', 'schedule_dialogue.py', 'schedule_select.py', 'schedule_mcp.py', 'weather_commands.py', 'audio_tail.py'):
