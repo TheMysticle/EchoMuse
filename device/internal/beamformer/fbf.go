@@ -148,10 +148,10 @@ const (
 	// The direction the ring points at (trackDirection). A beam counts as
 	// hearing speech above fbfDirSNR, where stock's ARA gate has fallen to ~1
 	// (about SNR 3.4), and then pulls with the power it has over its own floor.
-	// fbfDirAlpha is ~160ms at 8ms blocks. With nothing over the bar for
+	// fbfDirAlpha is ~400ms at 8ms blocks. With nothing over the bar for
 	// fbfDirMaxAge blocks (3s) the estimate is stale and is not reported.
 	fbfDirSNR    = 3.0
-	fbfDirAlpha  = 0.05
+	fbfDirAlpha  = 0.02
 	fbfDirMaxAge = 375
 
 	// What the wake path is doing with a period. Listening is the normal wake

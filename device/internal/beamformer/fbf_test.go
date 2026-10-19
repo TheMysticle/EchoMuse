@@ -949,7 +949,7 @@ func TestWakeBeamDirectionFollowsTheTalker(t *testing.T) {
 			var seen int
 			for k := 0; k < 30; k++ {
 				feed(az, burst)
-				if k < 10 || math.Mod(float64(at)/sampleRate, 1) > 0.6 {
+				if k < 15 || math.Mod(float64(at)/sampleRate, 1) > 0.6 {
 					continue // let it settle on the new talker; read inside a burst
 				}
 				got, ok := b.WakeBeamDirection()

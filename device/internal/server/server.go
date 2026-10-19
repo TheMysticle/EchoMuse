@@ -417,7 +417,7 @@ func (s *Server) LEDModeDirection() { s.SetLEDMode(ledModeDirection) }
 // centre) an angle must be before the marker moves to the next one. A talker
 // sitting near the edge between two LEDs would otherwise flip between them on
 // every estimate.
-const ringSectorHysteresisDeg = 10
+const ringSectorHysteresisDeg = 15
 
 // ringSector is the angle of the 30-degree sector the marker is in, 0-330. It
 // stays in the previous sector (prevOK) until the angle is more than half a
