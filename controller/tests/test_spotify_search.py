@@ -455,3 +455,34 @@ def test_a_retry_exists_only_when_it_would_search_something_new():
 ])
 def test_trailing_politeness_is_not_part_of_the_search(query, expected):
     assert s.clean_query(query) == expected
+
+
+# ── Deepgram numerals writes "2 1 1 5" and "21 15", not 2115 ────────────────
+
+
+@pytest.mark.parametrize("query,expected", [
+    ("white 2 1 1 5", "white 2115"),
+    ("white 21 15.", "white 2115"),
+    ("white 20 24", "white 2024"),
+    ("1 2 3 4 5 6 7", "1234567"),
+    ("white 2115", None),                  # one group: nothing to join
+    ("blink 182", None),
+    ("muse", None),
+    ("3.5 stars", None),                   # a decimal is not two groups
+    ("", None),
+])
+def test_neighbouring_digit_groups_are_offered_joined(query, expected):
+    assert s.joined_digits(query) == expected
+
+
+def test_the_better_matching_wording_wins_and_a_tie_keeps_the_words_as_written():
+    def c(name, score):
+        return s.Candidate("artist", "spotify:artist:" + "a" * 22, name, [], score, 0, 0)
+    as_written = [c("White 2️⃣1️⃣1️⃣5️⃣", 40)]
+    joined = [c("White 2115", 100)]
+    assert s.best_ranking([as_written, joined]) is joined
+    assert s.best_ranking([joined, as_written]) is joined
+    other = [c("White 2115", 100)]
+    assert s.best_ranking([joined, other]) is joined           # a tie keeps the earlier
+    assert s.best_ranking([[], joined]) is joined
+    assert s.best_ranking([[], []]) == []

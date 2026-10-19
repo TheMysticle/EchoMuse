@@ -356,6 +356,44 @@ def spoken_numbers(query: str) -> str:
     return " ".join(out)
 
 
+def joined_digits(query: str):
+    """
+    The query with neighbouring digit groups joined, or None when there are none.
+
+    With numerals on, a transcriber writes "two one one five" as "2 1 1 5" and
+    "twenty one fifteen" as "21 15": digits, but not the one number 2115 that a
+    title has. "white 2 1 1 5" found a stray playlist and never the artist.
+    Joined is only an alternative to search beside the words as written, never
+    a replacement, because "1 2 3" can be a title; the better match wins.
+    """
+    out, run, changed = [], [], False
+    def flush():
+        nonlocal changed
+        if len(run) >= 2:
+            out.append("".join(run)); changed = True
+        else:
+            out.extend(run)
+        run.clear()
+    for word in (query or "").split():
+        core = word.strip(".,!?")
+        if core.isdigit():
+            run.append(core)
+        else:
+            flush()
+            out.append(word)
+    flush()
+    return " ".join(out) if changed else None
+
+
+def best_ranking(rankings: list) -> list:
+    """The ranking whose top candidate matches best; the earlier one on a tie."""
+    best = []
+    for ranking in rankings:
+        if ranking and (not best or ranking[0].score > best[0].score):
+            best = ranking
+    return best
+
+
 def numeral_retry(query: str):
     """The digit form of a query to search again with, or None when it would be the same."""
     rewritten = spoken_numbers(query)

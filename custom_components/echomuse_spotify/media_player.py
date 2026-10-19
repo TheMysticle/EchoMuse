@@ -331,14 +331,19 @@ class SpotifyConnectPlayer(CoordinatorEntity[SpotifyCoordinator], MediaPlayerEnt
             kinds = tuple(dict.fromkeys(wanted))
 
         text = ranking.clean_query(query.search_query)
-        ranked = await self._ranked(text, kinds, filtered=bool(query.media_filter_classes))
+        filtered = bool(query.media_filter_classes)
+        # "2 1 1 5" may be 2115: search the words as written and the joined
+        # digits side by side (no extra wait), and keep the better match.
+        wordings = [text] + [w for w in (ranking.joined_digits(text),) if w]
+        ranked = ranking.best_ranking(await asyncio.gather(
+            *(self._ranked(w, kinds, filtered=filtered) for w in wordings)))
         if not ranked:
             # A transcript writes "two one one five" for 2115, and a search for
             # the words finds nothing, which Home Assistant then calls an
             # unexpected error. One more try with digits, only when empty.
             retry = ranking.numeral_retry(text)
             if retry:
-                ranked = await self._ranked(retry, kinds, filtered=bool(query.media_filter_classes))
+                ranked = await self._ranked(retry, kinds, filtered=filtered)
         return SearchMedia(result=[self._result(c) for c in ranked])
 
     async def _ranked(self, text, kinds, *, filtered):
