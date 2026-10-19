@@ -60,9 +60,15 @@ def adapt(text):
     replace('local_turn_detection=bool(_enabled_step(flow, "vad")),', 'local_turn_detection=bool(_enabled_step(flow, "vad") or session_body.get("echomuse", {}).get("barge_in")),')
     # Pipecat defaults this to True, unlike Deepgram's API. Censoring STT
     # corrupts literal music titles before HA's local search sees them.
+    #
+    # `numerals` writes a spoken number as digits. Without it "White 2115" came
+    # back as "Two one one five" (probed through the add-on, 2026-10-19), a
+    # search for which finds nothing on Spotify, and Home Assistant answers
+    # "an unexpected error occurred". It is a formatting switch on the same
+    # stream, not another pass over the audio, unlike smart_format.
     replace(
         'settings=DeepgramSTTService.Settings(model=model or None),',
-        'settings=DeepgramSTTService.Settings(model=model or None, profanity_filter=False),',
+        'settings=DeepgramSTTService.Settings(model=model or None, profanity_filter=False, numerals=True),',
     )
 
     # --- upstream bug: _step_model_for's "stt" branch never falls back to

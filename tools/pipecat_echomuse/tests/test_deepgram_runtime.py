@@ -22,5 +22,8 @@ def test_composed_deepgram_preserves_literal_titles_instead_of_censoring_them():
     # constructor merges defaults, and the SDK expects a string query value.
     assert before['profanity_filter'] == 'true'
     assert after['profanity_filter'] == 'false'
-    assert {k: v for k, v in before.items() if k != 'profanity_filter'} == {
-        k: v for k, v in after.items() if k != 'profanity_filter'}
+    # Numbers said aloud arrive as digits: "two one one five" is not a Spotify title.
+    assert after['numerals'] == 'true' and before.get('numerals') != 'true'
+    changed = {'profanity_filter', 'numerals'}
+    assert {k: v for k, v in before.items() if k not in changed} == {
+        k: v for k, v in after.items() if k not in changed}
