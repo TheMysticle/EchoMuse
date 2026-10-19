@@ -104,7 +104,10 @@ def _logging_vad(base):
     per VAD frame in the executor thread that already computes them, and a
     log call per second and per state change, so the audio path is unchanged.
     """
-    from loguru import logger
+    try:
+        from loguru import logger
+    except ImportError:  # a test environment without Pipecat's own dependencies
+        return base
 
     class LoggingVAD(base):
         _frames = 0
