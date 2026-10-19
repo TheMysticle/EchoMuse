@@ -159,6 +159,63 @@ def composed_turn_start_strategies(settings):
     )]
 
 
+# Cartesia closes a streaming socket after five minutes without a message and
+# has no keepalive. Pipecat reconnects when it notices, but text sent in the
+# same moment goes to a socket that is closing and is lost: the reply was
+# generated, the speech never arrived, and the error that followed made the
+# controller drop the connection (2026-10-19, "what's the indoor temperature").
+CARTESIA_IDLE_REFRESH_S = 240.0
+
+
+def cartesia_idle_refresh(base):
+    """A Cartesia TTS service that renews its own socket before Cartesia ends it.
+
+    After CARTESIA_IDLE_REFRESH_S without a request the socket is closed from
+    our side, when nothing can be in flight, and Pipecat's own receive loop
+    reconnects as it already does for the server's close. A request arriving
+    in the few hundred milliseconds of that reconnect is handled by Pipecat's
+    existing "socket closed, connect first" check in run_tts. Nothing is added
+    to a request that finds a live socket, so it costs no latency.
+    """
+    import asyncio
+    from loguru import logger
+
+    class IdleRefreshCartesia(base):
+        idle_refresh_s = CARTESIA_IDLE_REFRESH_S
+        _em_active = 0.0
+        _em_refresher = None
+
+        def _em_touch(self):
+            self._em_active = asyncio.get_running_loop().time()
+
+        async def _connect_websocket(self):
+            await super()._connect_websocket()
+            self._em_touch()
+            if self._em_refresher is None or self._em_refresher.done():
+                self._em_refresher = self.create_task(self._em_refresh_idle(), "echomuse_cartesia_refresh")
+
+        async def run_tts(self, text, context_id):
+            self._em_touch()
+            async for frame in super().run_tts(text, context_id):
+                yield frame
+
+        async def _em_refresh_idle(self):
+            loop = asyncio.get_running_loop()
+            while True:
+                await asyncio.sleep(max(min(1.0, self.idle_refresh_s / 2),
+                                        self.idle_refresh_s - (loop.time() - self._em_active)))
+                if loop.time() - self._em_active < self.idle_refresh_s:
+                    continue
+                socket = getattr(self, "_websocket", None)
+                if socket is not None and getattr(getattr(socket, "state", None), "name", "") == "OPEN":
+                    logger.debug("Cartesia socket idle for {:.0f}s; renewing it before Cartesia ends it",
+                                 self.idle_refresh_s)
+                    self._em_touch()           # the reconnect restarts the clock
+                    await socket.close()
+
+    return IdleRefreshCartesia
+
+
 _PREAMBLE_ROLES = ("system", "developer")
 
 

@@ -417,3 +417,57 @@ def test_trim_tolerates_entries_that_are_not_dicts_and_a_pending_user_turn():
     assert got[-1]["content"] == "pending"
     only_replies = [{"role": "assistant", "content": "x"}] * 10
     assert adapter.trim_messages(only_replies, 3) == only_replies[-1:]
+
+
+# ── Cartesia idle socket ─────────────────────────────────────────────────────
+
+
+def test_cartesia_is_renewed_when_idle_and_never_while_in_use():
+    import asyncio
+
+    class FakeSocket:
+        def __init__(self):
+            self.state = type("S", (), {"name": "OPEN"})()
+            self.closed = 0
+
+        async def close(self):
+            self.closed += 1
+            self.state = type("S", (), {"name": "CLOSED"})()
+
+    class Base:
+        def __init__(self):
+            self._websocket = None
+            self.tasks = []
+            self.connects = 0
+
+        def create_task(self, coro, name):
+            task = asyncio.get_event_loop().create_task(coro)
+            self.tasks.append(task)
+            return task
+
+        async def _connect_websocket(self):
+            self.connects += 1
+            self._websocket = FakeSocket()
+
+        async def run_tts(self, text, context_id):
+            yield text
+
+    async def main():
+        import sys
+        import types
+        sys.modules.setdefault("loguru", types.SimpleNamespace(logger=types.SimpleNamespace(debug=lambda *a, **k: None)))
+        service = adapter.cartesia_idle_refresh(Base)()
+        service.idle_refresh_s = 0.2
+        await service._connect_websocket()
+        first = service._websocket
+        for _ in range(4):                                   # used every 0.1s: never idle for 0.2s
+            await asyncio.sleep(0.1)
+            assert [f async for f in service.run_tts("hello", "c")] == ["hello"]
+        assert first.closed == 0
+        await asyncio.sleep(0.5)                              # now idle past the limit
+        assert first.closed == 1                              # renewed from our side, once
+        await asyncio.sleep(0.5)
+        assert first.closed == 1                              # and not again while the same dead socket stays
+        for task in service.tasks:
+            task.cancel()
+    asyncio.run(main())

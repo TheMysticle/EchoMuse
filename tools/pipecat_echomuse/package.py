@@ -87,6 +87,13 @@ def adapt(text):
     replace('if provider_kind == "gemini" and _enabled_step(flow, "vad"):', 'if provider_kind == "gemini" and (_enabled_step(flow, "vad") or session_body.get("echomuse", {}).get("barge_in")):')
     replace('vad_analyzer=_composed_vad_analyzer(flow),', 'vad_analyzer=echomuse.vad_analyzer(session_body.get("echomuse", {}), lambda: _composed_vad_analyzer(flow)),')
 
+    # Cartesia drops an idle socket after 5 minutes and text sent in that moment
+    # is lost (echomuse.cartesia_idle_refresh).
+    replace(
+        '        return CartesiaTTSService(\n            api_key=_integration_api_key(integration, "TTS"),',
+        '        return echomuse.cartesia_idle_refresh(CartesiaTTSService)(\n            api_key=_integration_api_key(integration, "TTS"),',
+    )
+
     # --- local STT/TTS providers (sherpa-onnx, Piper/Wyoming) ---
     replace(
         '    clear_mcp_tools_cache,\n    list_mcp_call_history,\n)',
@@ -1039,6 +1046,15 @@ def main():
     protocol = protocol.replace('            self.active = not terminal\n            self.stop_requested = False', '            continuation_question = self.continuation_requested\n            self.continuation_requested = False\n            self.active = not terminal\n            self.stop_requested = False')
     protocol = protocol.replace('phase_extra = {"terminal": True} if terminal else {"follow_up": True, "continuation_question": self.continuation_requested}', 'phase_extra = {"terminal": True} if terminal else {"follow_up": True, "continuation_question": continuation_question}')
     protocol = protocol.replace('self.phase_message("listening", follow_up=True)', 'self.phase_message("listening", follow_up=True, continuation_question=continuation_question)')
+    # RTVI's error message says whether the pipeline can go on (`fatal`); the
+    # protocol dropped it, so every error was reported to the controller as
+    # recoverable and, before the controller read that flag, as fatal.
+    error_old = '''                str(data.get("message") or data.get("error") or "Pipecat pipeline error"),
+            )'''
+    assert protocol.count(error_old) == 1
+    protocol = protocol.replace(error_old, '''                str(data.get("message") or data.get("error") or "Pipecat pipeline error"),
+                recoverable=not bool(data.get("fatal")),
+            )''')
     path.write_text(protocol, encoding='utf-8')
     path = args.out/'app/mcp_bridge.py'
     bridge = path.read_text(encoding='utf-8')

@@ -60,6 +60,14 @@ LISTEN_IDLE_S = 8.0     # mic open, nothing heard from the server
 THINK_IDLE_S = 30.0     # mic gated, server working (matches the native TTS wait)
 REPLY_IDLE_S = 10.0     # reply audio started, then the server went quiet
 SESSION_MAX_S = 120.0   # whole conversation, continuations included
+# After a recoverable pipeline error the reply may still arrive (a text-to-speech
+# socket renewed and the request was re-sent). Wait this long for it, then end.
+ERROR_AUDIO_S = 6.0
+# ...but a pipeline that keeps reporting errors is not recovering: this many
+# recoverable errors inside this many seconds is treated as fatal, and the
+# connection is rebuilt as every error used to be.
+ERROR_BURST_COUNT = 3
+ERROR_BURST_S = 60.0
 # "thinking" from the server (bot-llm-started, bot-tts-started, a tool call) can
 # arrive just after the first reply audio. Ending the reply stream on it splits
 # one sentence in two, and the device waits ~1s to prime the second stream: a
@@ -339,6 +347,7 @@ class Bridge:
         # The session's timings for the Activity tab (see _turn_record).
         self.turn: dict | None = None
         self.turn_tasks = set()
+        self.error_times: list[float] = []
 
     @property
     def active(self):
@@ -1039,7 +1048,20 @@ class Bridge:
                 if not isinstance(event, dict):
                     raise ProtocolError("invalid_va_pipecat_event")
                 if event.get("type") == "error":
-                    raise ProtocolError("pipecat_pipeline_error")
+                    now = loop.time()
+                    self.error_times = [t for t in self.error_times if now - t < ERROR_BURST_S] + [now]
+                    if event.get("recoverable") is not True or len(self.error_times) >= ERROR_BURST_COUNT:
+                        raise ProtocolError("pipecat_pipeline_error")
+                    # A vendor hiccup (a TTS socket closing on its idle timeout was
+                    # the first one seen, 2026-10-19) is not a reason to drop the
+                    # connection: that cost a rebuild of the whole pipeline and ended
+                    # a turn whose answer was already written. Keep the connection,
+                    # give the turn a short window for a late reply, then end it.
+                    log.warning("[%s] Pipecat reported a recoverable error (%s); keeping the connection",
+                                self.device.device_id, event.get("code"))
+                    if self.awake and self.output_queue is None:
+                        self.arm(ERROR_AUDIO_S, "error_recovery")
+                    continue
                 if self.awake:
                     await self.on_event(event)
                     if self.awake:
