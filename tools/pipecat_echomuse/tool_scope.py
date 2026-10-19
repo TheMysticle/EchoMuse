@@ -10,6 +10,7 @@ from pipecat.processors.aggregators.llm_context import is_given
 
 _WEATHER = re.compile(
     r"(?:please )?(?:what(?:'s| is) (?:the )?weather(?: like)?|"
+    r"what will (?:the )?weather be(?: like)?|"
     r"how(?:'s| is) (?:the )?weather|"
     r"(?:tell me |give me )?(?:the )?(?:weather|weather forecast|forecast)|"
     r"what(?:'s| is) (?:the )?(?:weather )?forecast|"

@@ -27,6 +27,7 @@ def data():
 
 @pytest.mark.parametrize('text,day,rain', [
     ("what's the weather like tomorrow", 'tomorrow', False),
+    ('What will the weather be like tomorrow?', 'tomorrow', False),
     ("what's the weather forecast tomorrow", 'tomorrow', False),
     ('what will the weather be like on Tuesday', 'tuesday', False),
     ('give me the forecast for the day after tomorrow', 'the day after tomorrow', False),
@@ -36,6 +37,29 @@ def data():
 ])
 def test_custom_sentences(text, day, rain):
     assert weather.parse_request(text) == weather.WeatherRequest(day, rain)
+
+
+def test_user_installed_ha_grammar_loads_without_bundled_copy(tmp_path, monkeypatch):
+    import shutil
+    grammar = Path(weather.__file__).parent/'custom_sentences'
+    shutil.copytree(grammar, tmp_path/'ha/custom_sentences')
+    (tmp_path/'app').mkdir()
+    monkeypatch.setattr(weather, '__file__', str(tmp_path/'app/weather_commands.py'))
+    monkeypatch.setattr(weather, 'Path', lambda value: (
+        tmp_path/'ha/custom_sentences/en/weather.yaml'
+        if str(value) == '/homeassistant/custom_sentences/en/weather.yaml' else Path(value)))
+    weather._grammar.cache_clear()
+    try:
+        assert weather.parse_request('What will the weather be like tomorrow?') == weather.WeatherRequest('tomorrow')
+    finally:
+        weather._grammar.cache_clear()
+
+
+def test_missing_bundled_grammar_reports_searched_paths(tmp_path, monkeypatch):
+    monkeypatch.setattr(weather, '__file__', str(tmp_path/'app/weather_commands.py'))
+    weather._grammar.cache_clear()
+    with pytest.raises(FileNotFoundError, match='Weather grammar missing; searched:'):
+        weather.parse_request('What will the weather be like tomorrow?')
 
 
 @pytest.mark.parametrize('text', [

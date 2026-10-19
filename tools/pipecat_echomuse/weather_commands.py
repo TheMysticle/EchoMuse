@@ -26,10 +26,13 @@ class WeatherRequest:
 
 @lru_cache(maxsize=1)
 def _grammar():
-    # Source lives beside the adapter; package.py copies it beside app/.
-    candidates = [Path(__file__).parent/'custom_sentences/en/weather.yaml',
+    # Users install the supplied sentences in HA's mapped configuration folder.
+    candidates = [Path('/homeassistant/custom_sentences/en/weather.yaml'),
+                  Path(__file__).parent/'custom_sentences/en/weather.yaml',
                   Path(__file__).parent.parent/'custom_sentences/en/weather.yaml']
-    path = next(path for path in candidates if path.is_file())
+    path = next((path for path in candidates if path.is_file()), None)
+    if path is None:
+        raise FileNotFoundError('Weather grammar missing; searched: ' + ', '.join(map(str, candidates)))
     return Intents.from_dict(yaml.safe_load(path.read_text(encoding='utf-8')))
 
 

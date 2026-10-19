@@ -39,7 +39,8 @@ async def user_turn(scope, context, text):
 
 
 @pytest.mark.parametrize('text', ["what's the weather like", 'What is the weather tomorrow?',
-    'Will it rain tonight?', 'weather', 'Please give me the forecast this weekend.'])
+    'Will it rain tonight?', 'weather', 'Please give me the forecast this weekend.',
+    'What will the weather be like tomorrow?'])
 def test_standalone_weather_is_recognized(text):
     assert weather_request(text, 'en-US')
 
