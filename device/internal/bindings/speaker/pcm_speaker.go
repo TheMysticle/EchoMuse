@@ -608,24 +608,17 @@ func (p *PcmSpeaker) silenceLoop() {
 			response = p.response.begin(&p.vol, len(voice)/4, volumeTarget)
 			responseGains = p.responseGains[:len(voice)/4]
 			response.fillGains(responseGains)
-			// THE BOOSTED PATH AND A VOLUME-TAKING CHAIN DO NOT COMBINE,
-			// and this is where they are kept apart rather than left to
-			// produce a wrong answer.
-			//
-			// The wide path exists to carry a response above full scale and
-			// apply the master volume afterwards. Radar's chain applies the
-			// volume BEFORE its compressors, because that is where stock
-			// applies it — so on that board the two want the volume at
-			// opposite ends of the same chain, and running both either
-			// doubles it or drops Radar's measured curve.
-			//
-			// So the boost stands down where the chain owns the volume. The
-			// cost is visible (responseLevel does nothing on such a board)
-			// rather than silent, and the audio stays on the S16 path that
-			// is held bit-exact to the Python reference. Combining them
-			// properly needs a decision about which end the volume belongs
-			// at, and a hardware listen to confirm it.
-			wideResponse = response.boosted(responseGains) && !p.chain.TakesVolume()
+			// A chain that takes the volume (Radar) applies it AHEAD of its
+			// compressors, so the boost cannot wait for a volume stage after
+			// the chain the way the wide path does elsewhere. It does not
+			// need to: the boost is mixed in before the chain, the chain's
+			// own volume brings it back into range, and the gain is already
+			// capped at 1/volume, so gain x volume never exceeds unity. The
+			// compressors then see the boosted voice at the level the
+			// listener will hear, as they would a louder source in stock.
+			// responseLevel did nothing on Radar between the 2026-10-11
+			// merge and this change.
+			wideResponse = response.boosted(responseGains)
 			response.finish(responseGains)
 		} else {
 			p.response.settle(&p.vol)
@@ -644,11 +637,21 @@ func (p *PcmSpeaker) silenceLoop() {
 		duckTarget := p.duckTarget.Load()
 		if wideResponse {
 			wide := p.mixer.MixResponse(p.responseMix, voice, music, duckTarget, responseGains)
-			if applied := p.chain.ProcessFloat(wide, responseGains); applied != nil {
+			chainOwnsVolume := p.chain.TakesVolume() && p.chain.Active()
+			var fullScales []float64
+			if !chainOwnsVolume {
+				fullScales = responseGains
+			}
+			if applied := p.chain.ProcessFloat(wide, fullScales); applied != nil {
 				log.Printf("[speaker] output chain: %s", applied)
 			}
 			out = voice
-			p.vol.applyFloat(wide, out, response.volumeTarget)
+			if p.chain.TookVolume() {
+				quantizeFloat(wide, out)
+				p.vol.settle()
+			} else {
+				p.vol.applyFloat(wide, out, response.volumeTarget)
+			}
 		} else {
 			out = p.mixer.Mix(voice, music, duckTarget)
 			process := out != nil
