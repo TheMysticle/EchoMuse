@@ -308,3 +308,108 @@ def test_a_candidate_exposes_only_what_a_client_needs():
     c = s.candidates(body(track=[track("Song", ["A"])]), "song")[0]
     assert set(c.as_json()) == {"kind", "uri", "name", "artists"}
 
+
+
+# ── 2026-10-19: kinds, spacing and spoken kind words ─────────────────────────
+
+
+def _pokemon_body():
+    """What came back for "pokemon go every day": real tracks, plus the one playlist spelled like it."""
+    return {
+        "tracks": {"items": [
+            track("I Play Pokémon GO Everyday", ["Mishovy silenosti"], uri="spotify:track:" + "p" * 22),
+            track("Pokémon GO Song (I Play PG Everyday)", ["Raushna", "ebee"], uri="spotify:track:" + "q" * 22),
+        ]},
+        "playlists": {"items": [{"name": "i play pokemon go every day", "uri": "spotify:playlist:" + "z" * 22,
+                                 "owner": {"display_name": "Sigmond"}}]},
+    }
+
+
+@pytest.mark.parametrize("name,query,expected", [
+    ("Everyday", "every day", 100),                       # a joined word, said as two
+    ("Every Day", "everyday", 100),                       # and the other way round
+    ("Back Street Boys", "backstreet boys", 100),
+    ("I Play Pokémon GO Everyday", "pokemon go every day", 55),
+])
+def test_the_same_letters_with_the_spaces_moved_still_match(name, query, expected):
+    assert s.name_score(name, query) == expected
+
+
+def test_a_short_word_is_never_found_inside_the_join_of_two_others():
+    assert s.name_score("Mu Se Ment", "muse") == 0          # only the join would match
+    assert s.name_score("Ra Dio", "radio go") == 0
+
+
+def test_a_playlist_named_like_the_transcript_does_not_beat_the_tracks_that_are():
+    # The field failure: "pokemon go every day" started a stranger's playlist.
+    got = s.rank(s.candidates(_pokemon_body(), "pokemon go every day"))
+    assert got[0].kind == "track" and got[0].name == "I Play Pokémon GO Everyday"
+    assert got[-1].kind == "playlist"
+
+
+def test_a_playlist_is_still_offered_when_it_is_all_there_is():
+    b = {"playlists": _pokemon_body()["playlists"]}
+    assert [c.kind for c in s.rank(s.candidates(b, "pokemon go every day"))] == ["playlist"]
+
+
+def test_an_open_search_prefers_playlists_last_even_over_a_weaker_match():
+    b = {
+        "tracks": {"items": [track("Workout Mix Vol 2", ["X"], uri="spotify:track:" + "w" * 22)]},
+        "playlists": {"items": [{"name": "workout mix", "uri": "spotify:playlist:" + "v" * 22,
+                                 "owner": {"display_name": "Someone"}}]},
+    }
+    assert [c.kind for c in s.rank(s.candidates(b, "workout mix"))] == ["track", "playlist"]
+
+
+def test_the_artist_comes_before_a_track_of_the_same_name_and_the_track_before_the_album():
+    # "muse" is the band, as it is in Spotify's own search box.
+    b = {
+        "tracks": {"items": [track("Muse", ["Isabel LaRosa"], uri="spotify:track:" + "m" * 22)]},
+        "artists": {"items": [{"name": "Muse", "uri": "spotify:artist:" + "a" * 22}]},
+        "albums": {"items": [{"name": "MUSE", "uri": "spotify:album:" + "b" * 22,
+                              "artists": [{"name": "Jimin"}]}]},
+    }
+    got = s.rank(s.candidates(b, "muse"))
+    assert [c.kind for c in got[:3]] == ["artist", "track", "album"]
+
+
+def test_a_better_match_still_beats_a_better_kind():
+    b = {
+        "tracks": {"items": [track("Muse", ["Isabel LaRosa"], uri="spotify:track:" + "m" * 22)]},
+        "artists": {"items": [{"name": "Muse Quartet", "uri": "spotify:artist:" + "a" * 22}]},
+    }
+    assert s.rank(s.candidates(b, "muse"))[0].kind == "track"
+
+
+def test_the_default_kind_order_is_artist_track_album_playlist():
+    assert s.KINDS == ("artist", "track", "album", "playlist")
+
+
+@pytest.mark.parametrize("query,expected", [
+    ("the album abbey road", ("album", "abbey road")),
+    ("abbey road album", ("album", "abbey road")),
+    ("playlist workout", ("playlist", "workout")),
+    ("The Workout Playlist", ("playlist", "workout")),
+    ("artist muse", ("artist", "muse")),
+    ("muse", (None, "muse")),
+    ("playlist", (None, "playlist")),            # a title that is only the word
+    ("album", (None, "album")),
+    ("", (None, "")),
+])
+def test_a_kind_word_in_the_sentence_names_the_kind(query, expected):
+    assert s.split_kind(query) == expected
+
+
+def test_a_title_containing_a_kind_word_is_split_but_an_exact_whole_title_wins():
+    assert s.split_kind("the album leaf") == ("album", "leaf")
+    band = [s.Candidate("artist", "spotify:artist:" + "l" * 22, "The Album Leaf", [], 100, 0, 0)]
+    album = [s.Candidate("album", "spotify:album:" + "k" * 22, "Leaf", [], 100, 0, 0)]
+    assert s.choose_with_kind_word(band, album) is band
+
+
+def test_the_named_kind_wins_otherwise_and_the_sentence_is_the_fallback():
+    whole = [s.Candidate("track", "spotify:track:" + "t" * 22, "Abbey Road Album Mix", [], 60, 0, 0)]
+    named = [s.Candidate("album", "spotify:album:" + "r" * 22, "Abbey Road", [], 100, 0, 0)]
+    assert s.choose_with_kind_word(whole, named) is named
+    assert s.choose_with_kind_word(whole, []) is whole
+    assert s.choose_with_kind_word([], []) == []

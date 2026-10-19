@@ -21,6 +21,7 @@ exactly one API call** and nothing is fetched merely to decide what to show.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from datetime import datetime
@@ -334,10 +335,31 @@ class SpotifyConnectPlayer(CoordinatorEntity[SpotifyCoordinator], MediaPlayerEnt
         except ValueError as err:
             raise HomeAssistantError(str(err)) from err
 
-        body = await self.coordinator.api.search(params)
-        ranked = ranking.rank(
-            ranking.candidates(body, query.search_query, kinds=kinds), prefer=kinds
+        spoken_kind, rest = (None, query.search_query)
+        if not query.media_filter_classes:
+            spoken_kind, rest = ranking.split_kind(query.search_query)
+        if spoken_kind is None:
+            body = await self.coordinator.api.search(params)
+            ranked = ranking.rank(
+                ranking.candidates(body, query.search_query, kinds=kinds), prefer=kinds
+            )
+            return SearchMedia(result=[self._result(c) for c in ranked])
+        # "the album X" / "X playlist": search for the kind that was named AND
+        # for the words as spoken, side by side so it costs no extra time. An
+        # exact title for the whole sentence wins ("The Album Leaf" is a band);
+        # otherwise the named kind does, and if it finds nothing the words as
+        # spoken are still searched.
+        whole_body, kind_body = await asyncio.gather(
+            self.coordinator.api.search(params),
+            self.coordinator.api.search(ranking.search_params(rest, kinds=(spoken_kind,))),
         )
+        whole = ranking.rank(
+            ranking.candidates(whole_body, query.search_query, kinds=kinds), prefer=kinds
+        )
+        named = ranking.rank(
+            ranking.candidates(kind_body, rest, kinds=(spoken_kind,)), prefer=(spoken_kind,)
+        )
+        ranked = ranking.choose_with_kind_word(whole, named)
         return SearchMedia(result=[self._result(c) for c in ranked])
 
     def _result(self, cand: ranking.Candidate) -> BrowseMedia:

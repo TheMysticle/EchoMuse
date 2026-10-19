@@ -37,7 +37,13 @@ from difflib import SequenceMatcher
 # and episodes are deliberately absent: they are valid Connect contexts but
 # not music, and a podcast surfacing for "play X" is a wrong answer rather
 # than a near miss.
-KINDS = ("track", "artist", "album", "playlist")
+#
+# The order is also the tie-break between kinds, and it is the order a person
+# means them in: "muse" is the band before it is a song called Muse, the way
+# Spotify's own search box puts the artist first for an exact name. A track
+# beats an album of the same name (the single, not the record), and a playlist
+# comes last (see `rank`).
+KINDS = ("artist", "track", "album", "playlist")
 
 # Spotify's development mode caps `limit` at 10, so asking for more fails the
 # request outright rather than returning fewer.
@@ -133,6 +139,13 @@ def name_score(name: str, query: str) -> int:
         return 0
     if n == q:
         return 100
+    # The same letters with the spaces moved. A transcriber splits and joins
+    # compound words freely ("every day" / "everyday", "back street boys"), and
+    # without this the real track scored 0 and was dropped, leaving a lone
+    # playlist that happened to be spelled the way the transcript was.
+    cn, cq = n.replace(" ", ""), q.replace(" ", "")
+    if cn == cq:
+        return 100
     meaningful_name = [w for w in n.split() if w not in _CONNECTING_WORDS]
     meaningful_query = [w for w in q.split() if w not in _CONNECTING_WORDS]
     if len(meaningful_query) >= 2 and meaningful_name == meaningful_query:
@@ -141,6 +154,11 @@ def name_score(name: str, query: str) -> int:
         return 80
     if q in n:
         return 60
+    # Contained across a spacing difference. Only for a query of several words
+    # and some length: for one short word this would match inside the join of
+    # two others.
+    if len(q.split()) >= 2 and len(cq) >= 8 and cq in cn:
+        return 55
     words = q.split()
     if words and all(w in n.split() for w in words):
         return 40
@@ -231,8 +249,16 @@ def rank(cands: list[Candidate], prefer=KINDS, limit=MAX_LIMIT) -> list[Candidat
     The candidates in the order they should be offered.
 
     Sorted on, in order: variant penalty (asked-for things before variants of
-    them), name score, the caller's kind preference, then Spotify's own
-    position. The sort is STABLE and every key is explicit, so the result
+    them), playlists last, name score, the caller's kind preference, then
+    Spotify's own position.
+
+    **Playlists come after everything else** (Wil, 2026-10-19). Somebody who
+    wants a playlist says so, and that request searches playlists alone, so
+    one that turns up in an open search is a stranger's collection that happens
+    to share the words. It still plays when nothing else matched. Left to its
+    score, a playlist named exactly what a transcript said ("i play pokemon go
+    every day") outranked every real track and started with somebody else's
+    first song. The sort is STABLE and every key is explicit, so the result
     cannot depend on dict ordering — the same words give the same answer
     every time, which is the property the whole module exists for.
 
@@ -243,9 +269,50 @@ def rank(cands: list[Candidate], prefer=KINDS, limit=MAX_LIMIT) -> list[Candidat
     """
     rankof = {k: i for i, k in enumerate(prefer)}
     scored = [c for c in cands if c.score > 0]
-    scored.sort(key=lambda c: (c.penalty, -c.score,
+    scored.sort(key=lambda c: (c.penalty, c.kind == "playlist", -c.score,
                                rankof.get(c.kind, len(rankof)), c.order))
     return scored[:max(0, limit)]
+
+
+# Words that say which kind of thing is wanted, when the sentence carries them
+# and the intent did not already turn them into a filter.
+_KIND_WORDS = {"album": "album", "playlist": "playlist", "artist": "artist"}
+
+
+def split_kind(query: str):
+    """
+    ("album", "abbey road") for "the album abbey road" or "abbey road album".
+
+    A kind word at either end, with something left over, names the kind: when
+    somebody says album they mean an album search and when they say playlist
+    they mean a playlist. A query that is only the word ("playlist") is a title,
+    and a title that happens to contain one ("The Album Leaf") is the caller's
+    to protect: this only reads the sentence, it does not know the catalogue.
+    Returns (None, query) when there is no kind word.
+    """
+    words = normalise(query).split()
+    if words and words[0] == "the":
+        words = words[1:]
+    if len(words) >= 2 and words[0] in _KIND_WORDS:
+        return _KIND_WORDS[words[0]], " ".join(words[1:])
+    if len(words) >= 2 and words[-1] in _KIND_WORDS:
+        return _KIND_WORDS[words[-1]], " ".join(words[:-1])
+    return None, query
+
+
+def choose_with_kind_word(whole: list, named: list) -> list:
+    """
+    Which of two rankings answers "the album X" / "X playlist".
+
+    `whole` ranks the words as spoken across every kind, `named` ranks what is
+    left of them within the kind that was named. An exact title for the whole
+    sentence wins, because "The Album Leaf" is a band and not a request; after
+    that the named kind does, and if it found nothing the sentence as spoken is
+    still searched. Pure so each branch can be tested without Home Assistant.
+    """
+    if whole and whole[0].score >= 100:
+        return whole
+    return named or whole
 
 
 def search_params(query: str, kinds=KINDS, limit=MAX_LIMIT, market=None) -> dict:

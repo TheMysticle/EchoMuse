@@ -208,6 +208,17 @@ small multiword speech differences while preserving Spotify's relevance order
 among equivalent results. The phone app may still rank differently because
 its candidate set and personalization are outside this integration.
 
+**What an open “play *X*” picks.** An exact name goes to the artist first, then
+a track, then an album, as Spotify's own search box does (so “play Muse” is the
+band, not a song called Muse). A playlist comes last, whatever its name:
+saying “playlist” (“play the *X* playlist”) searches playlists alone, and one
+turns up in an open search only when nothing else matched. “Album” and
+“playlist” said in the sentence name the kind even when Home Assistant did not
+split them out, unless the whole sentence is itself an exact title. A word the
+transcriber splits or joins (“every day” and “everyday”) counts as the same
+word. Spotify's popularity is never consulted, so an artist whose name is
+exactly a song title will be chosen over that song.
+
 This update requires the HA integration and its new sentence file; it does
 not require rebuilding `server` or `em-spotify`.
 
