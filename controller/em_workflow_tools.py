@@ -245,8 +245,7 @@ async def _stop_active_local_audio(live, schedules_enabled):
         await finish(item, "cancel" if item.get("kind") == "timer" else "dismiss")
     # A Home Assistant timer rings from the controller, not the speaker's store.
     try:
-        import em_controller
-        if await em_controller.stop_timer_alarm(live):
+        if await live.stop_timer_alarm():
             actions.append({"type": "ringing_timer"})
     except Exception as error:
         errors.append(f"ringing timer: {error}")

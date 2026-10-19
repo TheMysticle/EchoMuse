@@ -51,7 +51,7 @@ type vectorCase struct {
 	// biscuit, not "unset", same rule as pkg/board.IDOf.
 	Board    string `json:"board"`
 	Schedule [][2]json.RawMessage
-	Stats      struct {
+	Stats    struct {
 		GuardReductionDb   float64 `json:"guardReductionDb"`
 		LimiterReductionDb float64 `json:"limiterReductionDb"`
 		Clipped            uint64  `json:"clipped"`
@@ -142,7 +142,11 @@ func TestMatchesControllerChain(t *testing.T) {
 			if boardID == "" {
 				boardID = "biscuit"
 			}
-			c := NewForBoard(vc.SampleRate, boardID)
+			var rt *RadarTuning
+			if boardID == "radar" {
+				rt = radarTuningForTest(t)
+			}
+			c := NewForBoard(vc.SampleRate, boardID, rt)
 			c.SetActive(true)
 			got := make([]int16, 0, len(in))
 			for k := 0; k < vc.Chunks; k++ {

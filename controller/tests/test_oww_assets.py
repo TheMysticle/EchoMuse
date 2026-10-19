@@ -8,6 +8,7 @@ the model a device is using; a wrong "keep" leaves it scoring against a
 stale classifier that silently disagrees with the controller.
 """
 
+import _sources
 import time
 
 import pytest
@@ -284,6 +285,14 @@ def test_the_stock_set_is_installed_alongside_the_selected_model():
     res = A.openwakeword_resources()
     if res is None:
         pytest.skip("openwakeword not installed in this environment")
+    # The codebase pins openwakeword==0.6.0 in the image (Dockerfile); older
+    # installs (0.4.0) ship a smaller model set. Where the local install does
+    # not have every STOCK_MODELS entry on disk, the test's assertion is no
+    # longer the package's contract — skip rather than mislead.
+    missing = [m for m in A.STOCK_MODELS
+               if not (res / f"{m}.onnx").is_file()]
+    if missing:
+        pytest.skip(f"openwakeword install lacks {missing} (image pins 0.6.0)")
     assets, problems = A.desired_assets(["alexa_v0.1"], resources=res)
     names = [a.name for a in assets if a.kind == "classifier"]
     assert names[0] == "alexa_v0.1.onnx", "the selected model must stay first (it is pinned)"
@@ -509,13 +518,11 @@ def test_the_connect_reconcile_is_not_gated_on_the_wake_word_mode():
     model, and could not switch mode without an install first."""
     import ast
     from pathlib import Path
-    src = (Path(__file__).resolve().parents[1] / "em_api.py").read_text()
-    fn = next(n for n in ast.walk(ast.parse(src))
-              if isinstance(n, ast.AsyncFunctionDef) and n.name == "reconcile_oww_assets")
+    _, fn = _sources.find_def("em_oww_sync.reconcile")
     for node in ast.walk(fn):
         if isinstance(node, ast.If) and "MODE_OFF" in ast.unparse(node.test):
             assert not any(isinstance(b, ast.Return) for b in node.body), (
-                "reconcile_oww_assets returns early on the wake word mode")
+                "em_oww_sync.reconcile returns early on the wake word mode")
     assert "reconcile_action(" in ast.unparse(fn)
 
 
@@ -524,12 +531,84 @@ def test_the_reconcile_never_changes_a_devices_mode():
     answers the button until the install lands (Wil, 2026-09-22)."""
     import ast
     from pathlib import Path
-    src = (Path(__file__).resolve().parents[1] / "em_api.py").read_text()
-    fn = next(n for n in ast.walk(ast.parse(src))
-              if isinstance(n, ast.AsyncFunctionDef) and n.name == "reconcile_oww_assets")
+    _, fn = _sources.find_def("em_oww_sync.reconcile")
     for node in ast.walk(fn):
         if isinstance(node, (ast.Assign, ast.AugAssign)):
             targets = node.targets if isinstance(node, ast.Assign) else [node.target]
             for t in targets:
                 assert "oww_on_device" not in ast.unparse(t), (
-                    "reconcile_oww_assets changes the wake word mode")
+                    "em_oww_sync.reconcile changes the wake word mode")
+
+
+# ── The streaming embedding model (#893) ─────────────────────────────────────
+
+def test_the_streaming_model_is_never_evicted_as_a_leftover_classifier():
+    """Same shape as the speech gate's model: a .onnx no desired list names as
+    a classifier. Deleting it puts the Echo back on the stock embedding at
+    three times the cost, with nothing reported."""
+    desired = _base() + [_asset(A.STREAM_NAME, "s1", "stream"),
+                         _asset("a.onnx", "c1", "classifier")]
+    actual = {a.name: (a.md5, NOW - 999_999) for a in desired}
+    assert A.STREAM_NAME not in A.plan_sync(desired, actual, slots=0).prune
+    # Nor by a controller image that has no copy of its own to offer.
+    without = [a for a in desired if a.kind != "stream"]
+    assert A.STREAM_NAME not in A.plan_sync(without, actual, slots=0).prune
+
+
+def test_the_streaming_model_ships_from_the_image_beside_the_runtime(tmp_path):
+    (tmp_path / A.RUNTIME_NAME).write_bytes(b"rt")
+    assets, problems = A.desired_assets([], runtime_dir=tmp_path, include_stock=False)
+    assert A.STREAM_NAME not in [a.name for a in assets]
+    assert any(A.STREAM_NAME in p for p in problems), "a missing model is reported"
+
+    (tmp_path / A.STREAM_NAME).write_bytes(b"stream")
+    assets, _ = A.desired_assets([], runtime_dir=tmp_path, include_stock=False)
+    s = next(a for a in assets if a.name == A.STREAM_NAME)
+    assert s.kind == "stream" and s.source == tmp_path / A.STREAM_NAME
+
+
+def test_a_changed_streaming_model_is_pushed_again():
+    """Presence is md5: a rebuilt model keeps its name."""
+    desired = _base() + [_asset(A.STREAM_NAME, "new", "stream")]
+    actual = {a.name: (a.md5, NOW) for a in desired}
+    actual[A.STREAM_NAME] = ("old", NOW)
+    assert [a.name for a in A.plan_sync(desired, actual).push] == [A.STREAM_NAME]
+    assert A.STREAM_NAME in A.missing_assets(desired, actual)
+
+
+def test_a_missing_streaming_model_is_a_quiet_repair_never_a_deaf_device():
+    for mode_off in (True, False):
+        assert A.reconcile_action(mode_off, None, [A.STREAM_NAME]) == "repair"
+
+
+def test_streaming_model_name_matches_what_the_device_opens():
+    from pathlib import Path
+    go = (Path(__file__).resolve().parents[2]
+          / "device/internal/wakeword/shadow/open.go").read_text()
+    assert f'EmbeddingStreamFile = "{A.STREAM_NAME}"' in go
+
+
+def test_the_image_builds_the_streaming_model_and_checks_its_pair():
+    """The model is generated from a pinned embedding model, lands where the
+    plan looks, and the package's own copy is held to the same hash: a device
+    given two models from different sources fails its self-check and silently
+    keeps the stock one."""
+    import re
+    from pathlib import Path
+    df = (Path(__file__).resolve().parents[1] / "Dockerfile").read_text()
+    assert f"COPY --from=oww_stream /embedding_stream.onnx {A.RUNTIME_DIR}/{A.STREAM_NAME}" in df
+    stage = df.split("AS oww_stream")[1].split("\nFROM ")[0]
+    pinned_in = re.search(r'echo "([0-9a-f]{64})  /tmp/in\.onnx"', stage).group(1)
+    assert re.search(r'echo "[0-9a-f]{64}  /embedding_stream\.onnx" \| sha256sum -c', stage)
+    final = df.split(f"{A.RUNTIME_DIR}/{A.STREAM_NAME}")[1]
+    assert pinned_in in final.split("\nCOPY ")[0], \
+        "the package's embedding_model.onnx must be checked against the stage's input hash"
+
+
+def test_pushing_only_the_streaming_model_does_not_ask_for_a_restart():
+    """The firmware rebuilds its scorer when the file appears; the reconcile
+    sends the config push that triggers it."""
+    sync = _sources.code_only(_sources.def_source("em_oww_sync._sync_locked"))
+    assert "a.kind not in ('vad', 'stream')" in sync
+    reconcile = _sources.code_only(_sources.def_source("em_oww_sync.reconcile"))
+    assert "em_oww_assets.STREAM_NAME in" in reconcile and "send_control" in reconcile

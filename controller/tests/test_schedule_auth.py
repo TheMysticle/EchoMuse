@@ -7,6 +7,8 @@ from unittest.mock import patch
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 import em_api as api
+import em_ingressauth
+import em_state
 import em_db as db
 import em_schedule_auth as keys
 from em_schedule import Bridge
@@ -62,7 +64,7 @@ def test_real_ingress_and_standalone_routes(database):
             async def send(message, bridge=bridge):
                 bridge.receive({'id':message['id'], 'snapshot':{**bridge.snapshot, 'revision':2}})
             live[device_id] = SimpleNamespace(capabilities=['local_schedule'], schedule=bridge, send_control=send)
-        with patch.object(api, '_devices', live), patch.object(api, 'INGRESS_ONLY', True), patch.object(api, 'INGRESS_GATEWAY_IP', '127.0.0.1'):
+        with patch.object(em_state, 'devices', live), patch.object(em_ingressauth, 'INGRESS_ONLY', True), patch.object(em_ingressauth, 'INGRESS_GATEWAY_IP', '127.0.0.1'):
             async with TestClient(TestServer(await api.create_app())) as client:
                 # The genuine ingress admin creates a scoped key, never a password.
                 r = await client.post('/api/devices/A/schedule-connection', headers={'Authorization':'Bearer dashboard-session'}, json={})
@@ -72,7 +74,7 @@ def test_real_ingress_and_standalone_routes(database):
                 r = await client.post('/api/devices/A/schedule-connection', headers={'Authorization':'Bearer readonly-session'}, json={})
                 assert r.status == 403
                 headers = {'Authorization':'Bearer '+key}
-                with patch.object(api, 'INGRESS_GATEWAY_IP', '172.30.32.2'):
+                with patch.object(em_ingressauth, 'INGRESS_GATEWAY_IP', '172.30.32.2'):
                     r = await client.get('/api/schedules', headers=headers)
                     assert r.status == 200, await r.text()
                     assert [row['id'] for row in await r.json()] == ['A']
@@ -108,7 +110,7 @@ def test_real_ingress_and_standalone_routes(database):
                         r = await client.get('/api/schedules', headers=h)
                         assert r.status == 403
                     # Keys also work on standalone controllers, but keep their scope.
-                    with patch.object(api, 'INGRESS_ONLY', False):
+                    with patch.object(em_ingressauth, 'INGRESS_ONLY', False):
                         r = await client.get('/api/schedules', headers=headers)
                         assert r.status == 200
                         r = await client.post('/api/devices/B/schedules', headers=headers, json={'action':'list'})

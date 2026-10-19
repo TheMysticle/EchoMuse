@@ -4,6 +4,8 @@ import sys
 
 import pytest
 
+import _sources
+
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 import em_oww_assets as A
@@ -65,9 +67,8 @@ def test_selecting_the_engine_makes_the_stand_in_the_pinned_selected_classifier(
 
 
 def test_an_echo_without_the_engine_is_not_told_to_use_it():
-    # em_api cannot be imported by the suite; hold the ordering in the source.
-    src = (pathlib.Path(__file__).resolve().parents[1] / "em_api.py").read_text()
-    body = src[src.index("def _hold_back_oww_model"):src.index("async def _install_then_switch")]
+    # em_oww_sync pulls in the ESPHome layer; hold the ordering in the source.
+    body = _sources.def_source("em_oww_sync.hold_back_model")
     assert "em_oww_models.is_device_only(new_model)" in body
     assert body.index("is_device_only") > body.index("if not (was_local or now_local)"), \
         "controller-scored Echoes are unaffected: the check comes after that gate"

@@ -6,7 +6,7 @@ an update is a REBUILD: read the running image off the boot partition, keep its
 kernel and cmdline byte for byte, swap the ramdisk for one built from the
 release's init, and write it back. `em_emos_build` does the packing; this
 module holds every decision around it, so they can be tested without a device
-or aiohttp. `em_api._run_emos_update_locked` only carries.
+or aiohttp. `em_emos_ota._run_update_locked` only carries.
 
 amonet 1 and 2 need no separate path. The running image is on mmcblk0p10 on
 both (emos/init/init.c hardcodes it for its own rollback), and everything that
@@ -217,11 +217,24 @@ def ramdisk_os_release(image: bytes) -> dict:
 
 
 def is_ours(image: bytes) -> bool:
-    """The wizard's two markers: the stamp, and the ramoops block every image
-    this packer has built carries (pre-0.5 images have no stamp)."""
+    """Whether the image was built by this packer.
+
+    Two signals, either is enough:
+      - the emos.system= cmdline stamp (every release since 0.5), or
+      - the ramoops block this packer always writes (pre-0.5 too) AND
+        a kernel this packer can identify — Amazon's stock image also
+        has the ramoops block in its cmdline, so a positive on ramoops
+        alone admits stock images. The actual gate is the kernel
+        content: a recognisable ARM zImage (or aarch64 Image) is
+        something we only ever see on a device whose kernel we built.
+    """
     cmdline = image[64:576]
-    return (build.SYSTEM_CMDLINE_KEY.encode() in cmdline
-            or b"ramoops.mem_address=0x44400000" in cmdline)
+    if build.SYSTEM_CMDLINE_KEY.encode() in cmdline:
+        return True
+    if (b"ramoops.mem_address=0x44400000" in cmdline
+            and build.reference_kernel_arch(image)):
+        return True
+    return False
 
 
 def reference_problems(image: bytes, device_osr: dict) -> list:
@@ -613,7 +626,7 @@ def _uptime(text: str):
 #
 # Written against `io`, the handful of things only the controller can do, so
 # the whole sequence runs in a test against a simulated device with a real
-# shell (tests/test_emos_update_flow.py). em_api._EmosIO is the real one.
+# shell (tests/test_emos_update_flow.py). em_emos_ota._EmosIO is the real one.
 #
 #   await io.sh(cmd, timeout) -> str    run on the device; "" if it could not
 #   await io.send(data, dest) -> str    verified file push; "" ok, else why
@@ -707,7 +720,7 @@ async def run_update(io) -> str:
         raise Refused("the installed image does not identify itself as Radar "
                       "(missing emos.board=radar)" + UNCHANGED)
     io.board_id = board_id
-    init_bin, sbin, version = await io.payload(arch)
+    init_bin, sbin, version = await io.payload(arch, board_id)
     if not _VERSION_SAFE.fullmatch(version or ""):
         raise Refused(f"{version!r} is not a usable version string" + UNCHANGED)
     if not init_supports_trial(init_bin):

@@ -15,6 +15,7 @@ from websockets.asyncio.client import connect
 from websockets.asyncio.server import serve
 
 import em_player
+import em_state
 import em_workflow as W
 from test_voice_workflow import device, until, va_hello
 import test_voice_workflow as workflow_fixtures
@@ -141,7 +142,7 @@ def test_the_marker_on_the_real_data_plane_reaches_the_server_as_silence(fresh_d
         d = bridge()
         d.data_ws = None
         d.data_ready.clear()
-        monkeypatch.setattr(C, '_devices', {d.device_id: d})
+        monkeypatch.setattr(em_state, 'devices', {d.device_id: d})
         monkeypatch.setattr(C, '_link_auth_ok', AsyncMock(return_value=True))
         monkeypatch.setattr(C, '_not_from_control', lambda *a: None)
         monkeypatch.setattr(C.em_ble_proxy, 'sync_slots', AsyncMock())

@@ -7,7 +7,7 @@ specification rather than by reading the Dot's source. The controller is
 already board-agnostic; a new board is almost entirely a fresh set of hardware
 **Bindings** behind this same wire protocol.
 
-Terms in **bold** are defined in [CONTEXT.md](../CONTEXT.md). The authoritative
+The authoritative
 source for every message and field is the code cited inline; where this
 document and the code disagree, the code wins and this document is the bug.
 
@@ -185,7 +185,7 @@ absent optional fields take prior/default behaviour.
 | `oww_wake` | `score`, `threshold`, `ageMs`, `capturedMono`; `level`, `peak` when the crossing frame is still buffered; under private listening also `session`, `floor`, `barge` | On-device trigger fired (`owwOnDevice=on`). With `session` it opened a private-listening session whose audio follows as `0x07` ([listening.md](listening.md)); without, it lands in `Device.pending_wake` and the continuous stream carries the audio. `level`/`peak` are the wake word's loudness in dBFS with `micGainDb` removed, over the 2.0s ending at the crossing frame (definition: `controller/em_wakelevel.py`); logged, not acted on |
 | `listen_state` | `state` (`local`/`stream`/`degraded`), `reason?` | What the device is doing with its wake stream. Sent on every change and after every `ack` |
 | `listen_end` | `session`, `reason` | The device closed a session itself (`ack_timeout`, `max_open`, `muted`, `link`, `stopped`) |
-| `ambient_light` | `value` | Light reading (only if `ambient_light`) |
+| `ambient_light` | `lux` | Light reading, sent on a real change (only if `ambient_light`); the ~30s `stats` report carries it as `ambientLux` |
 | `stats` | hardware and link telemetry (`internal/client/stats.go`, `DeviceStats`) | Every ~30s, plus once on connect. Every field is optional and absence means **not measured**, never zero. `tcpUpRetrans` is the device's own TCP retransmits across its planes since the last report, `tcpUpSegs` the segments sent where the kernel counts them (FireOS 5's 3.18 does not); `ble` carries the scanner's counters, including `yields`/`yieldedMs` for time the scan stood aside for the link |
 | `ble_adverts` | `adverts[]` | Batch from the passive BLE scanner. **Legacy path** — send these on `/data` as `0x06` whenever the controller announced `ble_adverts_data`, and use this message only when it did not (#404) |
 | `wifi_scan_result` | `networks[]` of `{ssid, ssid_hex, signal}`, or `error` | Answer to `wifi_scan` |
@@ -193,6 +193,12 @@ absent optional fields take prior/default behaviour.
 | `pair_request` | — | The owner held the action button on a connected device (only if `pairing`). The controller shows **Approve pairing**; approval issues a rotated token and the CA over the shell plane, then bounces the link |
 | `sendspin_status` | `status` (`sendspin.Status`), or null when the player stopped | The Sendspin player's state as it changes: `state` (`listening`, `connected`, `playing`, `busy` while Home Assistant holds the music plane, `error`), `server`, `paired`, `pairedWith`, `group`, `synced`, `syncErrUs`, `bufferedMs`, player counters. No secrets. The `stats` report carries the same object as `sendspin` |
 | `sendspin_token` | `token`, `clientId`, or `error` | Answer to `sendspin_token_request`. The token (`SP:0…`) carries the device's Sendspin pairing key: the controller hands it to the one waiting request and never logs or stores it |
+| `spotify_status` | `status` | The Spotify Connect engine's state as it changes (emOS only). The `stats` report carries the same object as `spotify`. Firmware that has no engine never sends it |
+| `spotify_reply` | `id`, and the engine's reply fields (`error` on failure) | Answer to `spotify_cmd`, matched by `id`. A device with Spotify off answers `error: "spotify is off"` |
+| `schedule_state` | `snapshot` | The Echo's own timers, alarms and reminders, sent when they change. The schedule lives on the device; the controller only reads and commands it |
+| `schedule_reply` | the scheduler's reply fields | Answer to `schedule_cmd` |
+| `playback_stats` | `periods`, `underruns`, `stats`, `barge?` | One completed speaker stream (a response or announcement), sent once it has drained. `stats` is the delivery margin (`minDepth`, `primeWaitMs`, `recvSpanMs`, `maxGapMs`, `bytesRecv`, from `speaker.StreamStats`); `periods`/`underruns` are also sent flat for controllers that predate `stats`. `barge` is the on-device scorer's `{peak, bar, frames}` over the stream when it scored one |
+| `log` | `level`, `message` | A device log line for the dashboard and support bundles. The controller persists and pushes it |
 | `pong` | `id`, `mono` when answering a `ping` that carried an `id` | Keepalive reply. `id` echoes the ping's; `mono` is the device's monotonic clock in ms (any fixed origin), which the controller maps onto its own to date `capturedMono`. Unsolicited keepalive pongs carry neither |
 
 **Controller → Device**
@@ -218,6 +224,8 @@ absent optional fields take prior/default behaviour.
 | `play_cue` | `cue` | Play a cue the device generates itself. Only `"wake"` today, sent when `wakeSound` is on and a wake outside a private-listening session has won arbitration; unknown names are ignored |
 | `music_flush` / `speaker_flush` | — | Flush the music / voice buffer (barge-in uses `speaker_flush`) |
 | `sendspin_token_request` | — | Ask for the Sendspin pairing token, for the dashboard to show on an admin's request; answered with `sendspin_token` |
+| `spotify_cmd` | `id`, `cmd`, `fields` | One transport or load command for the Spotify engine, validated by the controller before it is sent; answered with `spotify_reply` carrying the same `id` |
+| `schedule_cmd` | the schedule request | One command for the device-owned schedule (add, change, cancel, settings, an audio asset); answered with `schedule_reply` |
 
 **An SSID is 0–32 arbitrary bytes**, so a name alone cannot always address
 one. `ssid` is for display (invalid UTF-8 shown as U+FFFD); `ssid_hex` is the
@@ -466,8 +474,8 @@ to do its own job (see the direction note in the repo-root `CLAUDE.md`).
 
 The `crown` bindings are built behind a Go build tag mirroring `server`
 (ADR-0001). The hardware inventory — ALSA cards/devices, formats, input-device
-paths, autostart — lives in
-[echo-show-8-hardware-map.md](echo-show-8-hardware-map.md); this section records
+paths, autostart — lives in `docs/echo-show-8-hardware-map.md` on the branch of
+[PR #358](https://github.com/wilbowes/EchoMuse/pull/358), which has not merged; this section records
 only what the *interface* commits to for MVP.
 
 **Capabilities for MVP** (subset of the Dot's):
@@ -498,8 +506,8 @@ real hardware 2026-08-26 with `device/tools/capture_mics`: opens clean, real
 signal on all 4 mic channels, no digital zeros. `device/tools/hw_refine_probe`
 confirms the driver's own range matches checkers' constants exactly. Full
 history (why "digital zeros" was the original wrong read, the gain-fix
-investigation, the actual capture data) is in
-[echo-show-8-hardware-map.md](echo-show-8-hardware-map.md#on-hardware-capture-2026-08-26--the-gono-go-measurement-done).
+investigation, the actual capture data) is in the same file on
+[PR #358](https://github.com/wilbowes/EchoMuse/pull/358)'s branch.
 
 **Still open: quiet-room/across-room SNR**, not raw capture — today's test was
 a loud-room sanity check with music playing, not a wake-reliability

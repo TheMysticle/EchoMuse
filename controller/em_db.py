@@ -318,12 +318,13 @@ DEFAULT_DEVICE_CONFIG = {
     "wakeEndpoint":     False,
     "eqBands":          [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
     "eqLoudness":       False,
-    # Radar's own stock FIR curve (em_eq._OverlapSaveFIR), layered under the
-    # 8 bands above rather than instead of them. Only meaningful on a Radar
-    # device not running output_chain on its own firmware, and only when
-    # radar_eq_taps.json is present — see em_eq.py. Off by default: it is a
-    # personal-build option, not a fleet default.
-    "eqStockCurve":     False,
+    # Radar's own stock curve (FIR, ParametricEQ, OutputTrim), layered under
+    # the 8 bands above rather than instead of them. Read from the Echo's own
+    # files: by the device for its output chain, and by the controller only
+    # with ECHOMUSE_RADAR_TUNING (em_radar_tuning). On by default: without
+    # it a Radar's speaker has no audible bass, and it changes nothing on
+    # any other board.
+    "eqStockCurve":     True,
     # Output limiter. On by default: the EQ chain hard-clipped anything it
     # boosted past full scale (#231), and a default that leaves that in place
     # protects nobody. Threshold/release are config rather than constants
@@ -2047,7 +2048,7 @@ def get_global_device_config_raw() -> dict:
     The stored fleet config with defaults NOT underlaid — i.e. exactly the
     keys an operator has persisted.
 
-    Used by the config-clobber guard (em_api._dropped_keys). The guard must
+    Used by the config-clobber guard (em_device_config.dropped_keys). The guard must
     compare against what is really stored: if it compared against the
     defaults-underlaid view, a controller upgrade that introduces a new
     default key would make every save from an already-open dashboard tab

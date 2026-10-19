@@ -10,6 +10,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/wilbowes/EchoMuse/internal/atomicfile"
 )
 
 var confirmed atomic.Bool
@@ -46,9 +48,7 @@ func confirmTime() {
 	if os.MkdirAll(filepath.Dir(trustFile), 0700) != nil {
 		return
 	}
-	if os.WriteFile(trustFile+".tmp", boot, 0600) == nil {
-		_ = os.Rename(trustFile+".tmp", trustFile)
-	}
+	_ = atomicfile.Write(trustFile, boot, 0600)
 }
 
 // ConfirmController is called only after an authenticated/approved ack and a

@@ -13,6 +13,8 @@ import base64
 import pathlib
 import sys
 
+import _sources
+
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 import pytest
@@ -115,19 +117,28 @@ def test_pairing_is_not_advertised():
 # ── the key goes to one request and nowhere else ──────────────────────────────
 
 def test_key_endpoint_is_admin_only_and_says_nothing_else():
-    fn = _func("em_api.py", "_get_ble_proxy_key")
+    _, fn = _sources.find_def("_get_ble_proxy_key")
     assert [ast.unparse(d) for d in fn.decorator_list] == ["auth.require_admin"]
-    calls = _calls(fn)
-    for forbidden in ("info", "warning", "debug", "error", "log_device", "broadcast", "_push_event"):
-        assert forbidden not in calls, f"the key handler calls {forbidden}"
-    src = (CONTROLLER / "em_api.py").read_text()
-    assert 'add_get("/api/devices/{id}/ble_proxy/key", _get_ble_proxy_key)' in src
+    # Full call names: `em_http.error` answers the request, `log.error` would
+    # put the key in the log.
+    calls = [ast.unparse(n.func) for n in ast.walk(fn) if isinstance(n, ast.Call)]
+    for forbidden in ("log.info", "log.warning", "log.debug", "log.error",
+                      "log_device", "broadcast", "em_events.push", "em_events.push_log"):
+        assert not any(c == forbidden or c.endswith("." + forbidden) for c in calls), \
+            f"the key handler calls {forbidden}"
+    # all_code() is unparsed, which writes every string single-quoted.
+    assert "add_get('/api/devices/{id}/ble_proxy/key', _get_ble_proxy_key)" in _sources.all_code()
 
 
 def test_key_is_not_in_a_support_bundle_or_the_device_list():
     assert "ble_proxy_key" not in (CONTROLLER / "em_support.py").read_text()
-    api = ast.parse((CONTROLLER / "em_api.py").read_text())
-    users = [n.name for n in ast.walk(api)
+    # Everything that answers an HTTP request or builds the device list. A
+    # second caller there is a second way out for the key. (em_ble_proxy reads
+    # it too, to run the encrypted listener; that is not a way out.)
+    api = [m for m in _sources.MODULES
+           if m.stem in ("em_api", "em_device_view") or m.stem.startswith("em_routes_")]
+    assert len(api) > 10, [m.stem for m in api]
+    users = [n.name for m in api for n in ast.walk(_sources.tree(m))
              if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
              and "ensure_ble_proxy_key" in ast.unparse(n)]
     assert users == ["_get_ble_proxy_key"], users

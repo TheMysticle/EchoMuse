@@ -54,12 +54,12 @@ type bassGuard struct {
 	enabled bool
 	floorDb float64
 
-	thresholdDb     float64
-	thresholdLin    float64 // thresholdDb as a sample magnitude
-	lp, hp          [2]biquad // LR4 = the Butterworth section applied twice
-	slew            float64   // dB per sample the gain may rise
-	gainDb          float64
-	gain            gainCache
+	thresholdDb  float64
+	thresholdLin float64   // thresholdDb as a sample magnitude
+	lp, hp       [2]biquad // LR4 = the Butterworth section applied twice
+	slew         float64   // dB per sample the gain may rise
+	gainDb       float64
+	gain         gainCache
 
 	maxReductionDb float64
 }
@@ -116,7 +116,7 @@ func (g *bassGuard) reset() {
 // chain.go. Radar's radarMultiband implements the same interface, so
 // Chain.guard can hold either without the Process loop or apply() caring
 // which board it is on.
-func (g *bassGuard) setEnabled(enabled bool)   { g.enabled = enabled }
+func (g *bassGuard) setEnabled(enabled bool)    { g.enabled = enabled }
 func (g *bassGuard) setFloorDb(floorDb float64) { g.floorDb = floorDb }
 
 func (g *bassGuard) takeMaxReductionDb() float64 {

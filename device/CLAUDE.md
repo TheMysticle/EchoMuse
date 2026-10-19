@@ -510,7 +510,7 @@ docs/configuration.md. Worth remembering before adding any new bounce.
 
 **The fix is install-before-switch, not a fallback.** A device is never told
 about a new `owwModel` until the classifier is on it
-(`em_api._hold_back_oww_model` swaps the key back to the current model, and
+(`em_oww_sync.hold_back_model` swaps the key back to the current model, and
 `_install_then_switch` pushes the real config once the file has landed). The
 device keeps listening for its CURRENT wake word, on-device, throughout; if the
 install fails it simply stays there and says so loudly.
@@ -531,7 +531,7 @@ scoring while changing the wake word slips through on the old mode.
 
 **A missing model never changes the mode — for the offline case either.**
 Install-before-switch covers every path where the device is connected;
-**`em_api.reconcile_oww_assets`**, run in the background from the connect
+**`em_oww_sync.reconcile`**, run in the background from the connect
 handler, covers the one where it was not — a device whose wake word changed
 while it was offline is told to use the new model by the ordinary connect-time
 config push, with nothing checking it has the classifier. The reconcile
@@ -571,8 +571,8 @@ so under the old rule installing them would have silently deleted every custom
 model on the device — including ones a user trained and cannot re-download.
 Stock models are required by definition and never evictable.
 
-**Reconcile-on-connect** (`em_api.reconcile_oww_assets`, reached through
-`reconcile_on_connect` — see controller/CLAUDE.md for the other two payloads
+**Reconcile-on-connect** (`em_oww_sync.reconcile`, reached through
+`em_reconcile.on_connect` — see controller/CLAUDE.md for the other two payloads
 that ride with it) closes the offline case, and three rules keep it from doing
 harm:
 
@@ -1280,7 +1280,7 @@ offered a switch it will ignore.
 
 Volume is **state, not a setting** — it rides the config channel but has no dashboard control (the slider was removed 2026-07-25: `SeedVolume` ignores later pushes, so moving it did nothing until the device restarted and any real volume change overwrote it). It is listed in `em_config_sections.STATE_KEYS`, exempt from section scoping, and shown read-only on the Status tab.
 
-Volume persists through reboots **controller-side**: every device `volume_state` report is stored into the device's `startupVolume` config, and the device restores it via `Server.SeedVolume` on the **first config push per run only** (later pushes must not stomp live changes). Until seeded (or a local volume change makes the device authoritative), the device suppresses its connect-time `volume_state` report — reporting the boot-default level is what used to clobber the stored value on reboot. Mute is the opposite: **device-sovereign**, persisted locally in `/data/local/etc/echomuse/state.json` (survives OTA slot flips; written on toggle, restored at boot pre-connect — ADC mute immediately, red ring/button LED after LED init).
+Volume persists through reboots **controller-side**: every device `volume_state` report is stored into the device's `startupVolume` config, and the device restores it via `Server.SeedVolume` on the **first config push per run only** (later pushes must not stomp live changes). Until seeded (or a local volume change makes the device authoritative), the device suppresses its connect-time `volume_state` report — reporting the boot-default level is what used to clobber the stored value on reboot. Mute is the opposite: **device-sovereign**, persisted locally in `/data/local/etc/echomuse/state.json` (survives OTA slot flips; written on toggle, restored at boot pre-connect — ADC mute immediately, red ring/button LED after LED init). **The write is synced, not only atomic (#849, 2026-10-11):** temp file, `Sync`, rename, then a sync of the directory. Write-then-rename alone survives a torn write but not a power cut: ext4 can commit the rename ahead of the data. In the 2.26.0 UAT a mute followed by pulling the power within seconds left VVV with a zero-length `state.json` ("unreadable, ignoring", boots unmuted) and 15LE with the previous `{"muted":false}`, twice each, while C95 kept its mute on timing; the same step had passed in the 2.25.0 UAT for the same reason. An unreadable file still boots unmuted. `sendspin/store.go`, `aec/persist.go` and `config/report.go` use the unsynced pattern and were left: losing them costs a re-pair, a re-learn or a snapshot.
 
 ## LED priority system
 

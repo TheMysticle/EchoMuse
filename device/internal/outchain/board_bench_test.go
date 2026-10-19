@@ -29,7 +29,7 @@ import (
 // budget into a tight one, and a late write is an underrun — which is heard
 // as a click.
 func benchBoard(b *testing.B, boardID string, p Params) {
-	c := NewForBoard(48000, boardID)
+	c := NewForBoard(48000, boardID, nil)
 	c.SetActive(true)
 	c.SetParams(p)
 	if c.TakesVolume() {

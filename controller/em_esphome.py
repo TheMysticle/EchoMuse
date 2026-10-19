@@ -79,7 +79,7 @@ from zeroconf.asyncio import AsyncZeroconf
 from zeroconf import ServiceInfo
 
 import em_db as db
-import em_api as api
+import em_events
 import em_hostip
 import em_ns
 import em_announce
@@ -230,10 +230,40 @@ MDNS_NAME    = os.environ.get("MDNS_NAME", "echomuse")
 # Defaults to the real controller version (version.py) so HA's device page
 # shows the same thing as the dashboard header; env var kept as an override.
 from version import VERSION as _CONTROLLER_VERSION
-# HA's ESPHome integration displays the segment after the dot in
-# project_name as the device Model (overriding DeviceInfo's model field),
-# so carry the hardware model there — not the device label.
-ESPHOME_DEVICE_MODEL = "Echo Dot Gen 2 (biscuit)"
+# Hardware model reported to Home Assistant. The string carries the
+# board name in parentheses — HA shows it verbatim under "Device info"
+# alongside the manufacturer. One binary supports two boards, so the
+# value MUST be derived from the device's own register message rather
+# than baked in: HA would otherwise show "Echo Dot Gen 2" on every
+# Radar, with no signal that anything is wrong. biscuit is the original
+# target and stays the default for firmware that doesn't report `board`.
+# Add a new board here, not at the call site — see CLAUDE.md "Resolve
+# hardware by NAME".
+ESPHOME_BOARD_MODELS: dict[str | None, str] = {
+    None:    "Echo Dot Gen 2 (biscuit)",   # older firmware without `board`
+    "biscuit": "Echo Dot Gen 2 (biscuit)",
+    "radar":   "Echo 2 (radar)",
+}
+
+
+def esphome_device_model(board_id: str | None) -> str:
+    """
+    The ESPHome device model string for a given board.
+
+    Looked up rather than baked in so the project's two boards (biscuit /
+    radar) each show the right name in Home Assistant's device page.
+    Unknown boards — anything beyond the table — fall back to biscuit so a
+    newly-supported board does not silently mis-identify itself; the fix
+    is to add it to ESPHOME_BOARD_MODELS.
+    """
+    if board_id in ESPHOME_BOARD_MODELS:
+        return ESPHOME_BOARD_MODELS[board_id]
+    log.warning(
+        "esphome: unknown board_id %r, defaulting model to biscuit",
+        board_id,
+    )
+    return ESPHOME_BOARD_MODELS[None]
+
 
 ESPHOME_PROJECT_VERSION = os.environ.get(
     "ESPHOME_PROJECT_VERSION", _CONTROLLER_VERSION
@@ -449,6 +479,7 @@ class EchoMuseSatellite(SatelliteServerProtocol):
         # that has not finished is still emitting onto this socket,
         # and its tail belongs to no turn but this one.
         self._run_finished      = False
+        self._ha_ended_early    = False
         self._ha_never_started  = False
         # Barge-in run serialisation — the protocol has no run id, so the
         # satellite is what keeps two runs from overlapping on one connection.
@@ -604,18 +635,29 @@ class EchoMuseSatellite(SatelliteServerProtocol):
         """
         if isinstance(msg, api_pb2.DeviceInfoRequest):
             log.debug(f"[{self._log_name}] DeviceInfoRequest from {self.peer}")
+            # The model's hardware suffix follows the device's own board,
+            # so Home Assistant shows "Echo Dot Gen 2 (biscuit)" or "Echo 2
+            # (radar)" instead of one constant for everything. board_id is
+            # set on the owning server by device_connected() before the
+            # TCP listener comes up, so it is in place for HA's first
+            # request after a wizard setup. None (older firmware without
+            # `board` in the register message) defaults to biscuit — see
+            # ESPHOME_BOARD_MODELS.
+            _board_id = (self._owning_server.board_id
+                         if self._owning_server is not None else None)
+            _model = esphome_device_model(_board_id)
             yield api_pb2.DeviceInfoResponse(
                 uses_password=False,
                 name=self.server_name,
                 friendly_name=f"{self.label} Voice Assistant",
                 mac_address=self.mac_address,
                 manufacturer="EchoMuse",
-                model=ESPHOME_DEVICE_MODEL,
+                model=_model,
                 # CRITICAL: dot notation required — HA's manager.py does
                 # project_name.split(".") unconditionally. No dot → IndexError
                 # → device silently never appears in Devices & Services.
                 # (session handoff finding #1)
-                project_name=f"EchoMuse.{ESPHOME_DEVICE_MODEL}",
+                project_name=f"EchoMuse.{_model}",
                 project_version=ESPHOME_PROJECT_VERSION,
                 voice_assistant_feature_flags=self._voice_assistant_flags(),
             )
@@ -744,6 +786,8 @@ class EchoMuseSatellite(SatelliteServerProtocol):
             # how "No wake word" survives a reconnect.
             srv = self._owning_server
             enabled = srv is None or srv.wake_word_enabled
+            if srv is not None:
+                srv.wake_word_told = enabled
             yield api_pb2.VoiceAssistantConfigurationResponse(
                 available_wake_words=[
                     api_pb2.VoiceAssistantWakeWord(
@@ -1158,6 +1202,24 @@ class EchoMuseSatellite(SatelliteServerProtocol):
                 # against — the overwhelmingly common case.
                 self._run_finished = True
                 self._tts_event.set()
+            elif self._stt_ended:
+                # HA ended the run between STT and the intent's result, which
+                # is HA cancelling its own pipeline: ask_question, announce
+                # and start_conversation all open with
+                # _cancel_running_pipeline(). When the turn's own intent is
+                # what asked (#506), that is this run, the question follows
+                # 2ms later, and waiting out the reply timeout holds the
+                # voice lock the question needs. The premature RUN_END this
+                # guard is for arrives before STT_START, so STT_END tells the
+                # two apart. Measured 2026-10-12 on 15LE, twice: STT result,
+                # RUN_END +5ms, AnnounceRequest +7ms, then 30s of nothing.
+                log.info(
+                    f"[{self._log_name}] HA ended the run before the intent "
+                    f"finished — ending the turn"
+                )
+                self._run_finished = True
+                self._ha_ended_early = True
+                self._tts_event.set()
             else:
                 log.debug(
                     f"[{self._log_name}] Ignoring RUN_END — INTENT_END not yet "
@@ -1309,6 +1371,10 @@ class EchoMuseSatellite(SatelliteServerProtocol):
             on_finished=reply,
             log_name=self._log_name,
             preannounce_media_id=preannounce_media_id,
+            # The Echo listens straight after this message, so its quiet
+            # tail is time the person waits before they can answer.
+            tail=((lambda pcm: em_announce.set_trailing_quiet(pcm, WIRE_RATE))
+                  if start_conversation else None),
         )
 
         # AFTER the reply, deliberately. HA blocks on AnnounceFinished for the
@@ -1406,6 +1472,7 @@ class EchoMuseSatellite(SatelliteServerProtocol):
         )
         self._run_started           = False
         self._run_finished          = False
+        self._ha_ended_early        = False
         self._ha_never_started      = False
         # Takes ownership of an abort armed during the PREVIOUS turn (at the
         # barge). Deliberately not a plain reset: the arm has to survive this
@@ -1619,6 +1686,11 @@ class EchoMuseSatellite(SatelliteServerProtocol):
                 # read every question answered as a turn that produced nothing.
                 log.info(f"[{self._log_name}] Question answered — no reply expected")
                 if trace: trace.outcome = "answered"
+            elif self._ha_ended_early:
+                # HA cancelled this run to do something else on this Echo,
+                # which is not a turn that produced nothing.
+                log.info(f"[{self._log_name}] Turn superseded by Home Assistant")
+                if trace: trace.outcome = "superseded"
             else:
                 log.info(f"[{self._log_name}] No TTS audio URL received — turn ended without response")
                 if trace: trace.outcome = "no_tts"
@@ -1632,7 +1704,11 @@ class EchoMuseSatellite(SatelliteServerProtocol):
             # of "Responding." RUN_END only signals server-side pipeline completion;
             # the satellite may still be fetching and playing audio at that point.
             if self._transport and not self._transport.is_closing():
-                self._send_one(api_pb2.VoiceAssistantAnnounceFinished(success=True))
+                # Not after HA cancelled the run: nothing was played, and HA
+                # is by then waiting on AnnounceFinished for the announcement
+                # it cancelled us for, which this would answer early.
+                if not self._ha_ended_early:
+                    self._send_one(api_pb2.VoiceAssistantAnnounceFinished(success=True))
                 # The MEDIA state, not a hardcoded IDLE.
                 #
                 # This used to assert IDLE at the end of every turn regardless
@@ -1700,7 +1776,7 @@ class EchoMuseSatellite(SatelliteServerProtocol):
                 await _persist_turn(device, turn_record)
                 device.turn_history.append(turn_record)
                 try:
-                    await api._push_event({
+                    await em_events.push({
                         "type":      "turn_complete",
                         "device_id": device.device_id,
                         "turn":      turn_record,
@@ -2505,6 +2581,8 @@ class DeviceESPhomeServer:
         # compared against to tell a press from the device's re-report.
         self.mic_muted: bool = False
         self.wake_word_enabled: bool = True
+        # What HA last read of it, None until it asks (em_wakeword.ha_needs_refresh).
+        self.wake_word_told: bool | None = None
         # Injected by device_connected(); applies HA's wake word choice
         # synchronously. None when no device is connected.
         self._set_wake_word = None
@@ -3351,10 +3429,28 @@ async def device_connected(
     server._ring_alarm = ring_alarm
     server._stop_alarm = stop_alarm
     server._start_conversation = start_conversation
-    server.board_id = board_id
     server._set_wake_word = set_wake_word
     server._set_ring_light = set_ring_light
     server.wake_word_enabled = bool(wake_word_enabled)
+    # Refresh the mDNS TXT when the device's board arrives — at startup
+    # the Echo hasn't connected yet, so mDNS was published with the
+    # biscuit default. Re-publishing with the right project_name keeps
+    # HA's discovery in step with what DeviceInfoResponse.model now
+    # reports; otherwise a Radar ships "Echo Dot Gen 2 (biscuit)" via
+    # mDNS until the next controller restart.
+    previous_board = server.board_id
+    server.board_id = board_id
+    if (server._mdns_info is not None
+            and board_id is not None
+            and board_id != previous_board):
+        server._mdns_info = _make_device_mdns_info(
+            device_id, server.label, server.port,
+            server.mac_address, board_id=board_id)
+        try:
+            await _azc.async_update_service(server._mdns_info)
+        except Exception as exc:
+            log.warning(
+                f"[{device_id}] mDNS refresh with board={board_id} failed: {exc}")
     if server._server is not None:
         log.debug(f"[esphome.{device_id[-8:]}] device_connected: port {server.port} already listening")
         return
@@ -3542,13 +3638,24 @@ def update_mic_muted(device_id: str, muted: bool) -> None:
     satellite._send_one(satellite._mic_muted_msg())
 
 
-def update_wake_word(device_id: str, enabled: bool) -> None:
-    """Record HA's wake word choice (#286). Nothing to push: HA re-reads the
-    configuration itself after writing it."""
+def update_wake_word(device_id: str, enabled: bool, refresh: bool = False) -> None:
+    """Record the wake word state HA's picker shows (#286). After HA's own
+    write there is nothing to push: it re-reads the configuration itself.
+    `refresh` is for a change HA did not ask for (#776): it reads the state
+    only at connect, so the connection is bounced when what it last read is
+    now wrong, as update_oww_model does."""
     server = _servers.get(device_id)
     if server is None:
         return
     server.wake_word_enabled = bool(enabled)
+    if not refresh or not em_wakeword.ha_needs_refresh(
+            told=server.wake_word_told, enabled=server.wake_word_enabled):
+        return
+    satellite = server.get_satellite()
+    if satellite is not None:
+        log.info(f"[{device_id}] Wake word state changed — bouncing HA "
+                 f"connection so its picker reads it again")
+        satellite.disconnect()
 
 
 def output_mute_report(device_id: str, level: int) -> tuple[bool, int | None]:
@@ -3630,8 +3737,16 @@ def _mdns_service_name(device_id: str) -> str:
 
 
 def _make_device_mdns_info(device_id: str, label: str, port: int,
-                           mac: str) -> ServiceInfo:
+                           mac: str, board_id: str | None = None) -> ServiceInfo:
     svc_name = _mdns_service_name(device_id)
+    # The mDNS project_name has to agree with what DeviceInfoResponse.model
+    # says — HA keys discovery on mac_address, but the project_name in the
+    # TXT is what tells a re-running config flow "this is the device I have"
+    # (HA shows the part after the dot under Device info on re-imports).
+    # board_id may be None at startup (the Echo hasn't connected yet) and
+    # esphome_device_model() resolves that to the biscuit default; we
+    # re-publish once the device reports its real board.
+    _model = esphome_device_model(board_id)
     return ServiceInfo(
         "_esphomelib._tcp.local.",
         f"{svc_name}._esphomelib._tcp.local.",
@@ -3650,7 +3765,7 @@ def _make_device_mdns_info(device_id: str, label: str, port: int,
             # required to agree, and nothing reports it if they stop.
             "mac": mac.replace(":", "").lower(),
             "network": "ethwifi",
-            "project_name": f"EchoMuse.{ESPHOME_DEVICE_MODEL}",
+            "project_name": f"EchoMuse.{_model}",
             "project_version": ESPHOME_PROJECT_VERSION,
         },
         server=f"{svc_name}.local.",

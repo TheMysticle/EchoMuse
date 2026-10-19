@@ -20,8 +20,8 @@ Deeper technical references live elsewhere:
 - [support-bundle.md](support-bundle.md) — what a support bundle contains,
   what it deliberately excludes, and how to check before you share one.
 - [rooting.md](rooting.md) — what a device needs before EchoMuse can use it.
-  The exploit itself is R0rt1z2's work on XDA Forums and that thread is canon;
-  this covers where EchoMuse picks up, and what the wizard does for you.
+  It covers unlocking with firebreak, where EchoMuse picks up, and what the
+  wizard does for you. The exploit itself is R0rt1z2's work on XDA Forums.
 - [device-controller-interface.md](device-controller-interface.md) — the wire
   contract a device binary implements: the three WebSocket planes, capability
   negotiation, `/control` messages, `/data` frames, config push, link auth, and
@@ -45,3 +45,5 @@ Deeper technical references live elsewhere:
   chronological record of what was built, what broke, and what we got wrong.
 - [CLAUDE.md](../CLAUDE.md) — codebase orientation for developers (and AI
   assistants).
+- [archived/](archived/) — documents kept as a record and no longer current.
+  The v2.2.0 controller design spec is there.

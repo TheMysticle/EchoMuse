@@ -255,7 +255,7 @@ def test_state_path_sits_beside_the_database(tmp_path):
 # ── em_api wiring, checked from source (aiohttp is not imported in tests) ───
 
 def _api_source():
-    return (Path(__file__).resolve().parent.parent / "em_api.py").read_text("utf-8")
+    return (Path(__file__).resolve().parent.parent / "em_routes_spotify.py").read_text("utf-8")
 
 
 def _func_src(name):

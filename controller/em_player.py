@@ -749,9 +749,8 @@ class MediaSession:
         is_radar = device.board_id == "radar"
 
         def _limiter_params():
-            if is_radar:
-                return em_limiter.RADAR_THRESHOLD_DB, em_limiter.RADAR_RELEASE_MS
-            return device.limiter_threshold, device.limiter_release
+            return em_limiter.params_for(device.board_id, device.limiter_threshold,
+                                         device.limiter_release)
 
         # A device that runs the chain itself gets the music untouched.
         if device.output_chain_on_device:
@@ -844,7 +843,7 @@ class MediaSession:
             await self._push_state()
 
             while True:
-                # Config is pushed live (_apply_live_config), so re-read it
+                # Config is pushed live (em_device_config.apply_live_config), so re-read it
                 # per chunk. update() compares before it touches anything, so
                 # the steady-state cost is a tuple comparison ~23×/s.
                 #

@@ -4,7 +4,7 @@ Controller test suite, shared setup.
 The suite imports `em_api`, `em_controller` and `em_esphome` since 2026-10-03
 (#739); before that it covered pure-logic modules only. It needs:
 
-    pip install pytest pytest-cov numpy scipy pyyaml aiohttp websockets bcrypt zeroconf protobuf
+    pip install pytest pytest-cov numpy scipy pyyaml aiohttp websockets bcrypt zeroconf protobuf onnxruntime onnx
 
 openwakeword is not installed. A test that needs em_controller calls
 `_oww_stub.install()`; see that file for why it is per test.
@@ -17,3 +17,17 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+import pytest  # noqa: E402
+
+
+@pytest.fixture
+def radar_tuning():
+    """A Radar's stock tuning, from ECHOMUSE_RADAR_TUNING (a copy of an Echo
+    2's /system/vendor/etc/audio-algorithms). The files are not in this
+    repository, so a test that needs them is skipped without it."""
+    import em_radar_tuning
+    t = em_radar_tuning.current()
+    if t is None:
+        pytest.skip(f"{em_radar_tuning.ENV} not set: needs a copy of a Radar's audio-algorithms")
+    return t

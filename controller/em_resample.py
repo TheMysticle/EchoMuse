@@ -16,7 +16,13 @@ from __future__ import annotations
 import math
 
 import numpy as np
-from scipy.signal import firwin, resample_poly
+
+
+def _design(reach: int) -> np.ndarray:
+    # scipy is ~90 MB and ~2 s to import, so it is imported here, where a
+    # satellite that resamples needs it, and not at startup.
+    from scipy.signal import firwin
+    return firwin(2 * 10 * reach + 1, 1.0 / reach, window=("kaiser", 5.0))
 
 
 class StreamResampler:
@@ -37,8 +43,7 @@ class StreamResampler:
         # call against 37us with the taps supplied). scipy copies the window and
         # applies the `up` gain itself, so these are the unscaled coefficients.
         reach = max(self.up, self.down)
-        self._taps = (None if self.up == self.down == 1 else
-                      firwin(2 * 10 * reach + 1, 1.0 / reach, window=("kaiser", 5.0)))
+        self._taps = None if self.up == self.down == 1 else _design(reach)
         self._buf = np.zeros(0, dtype=np.float64)
         self._base = 0       # absolute input index of _buf[0]; a multiple of `down`
         self._emitted = 0    # absolute output samples already returned
@@ -63,6 +68,7 @@ class StreamResampler:
         n = self._buf.size
         if n == 0:
             return np.zeros(0, dtype=np.float64)
+        from scipy.signal import resample_poly
         y = resample_poly(self._buf, self.up, self.down, window=self._taps)
         # Output j of this call is absolute output (base*up/down + j), because
         # base is kept a multiple of `down`.

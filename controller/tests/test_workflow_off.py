@@ -16,6 +16,7 @@ from websockets.asyncio.server import serve
 
 import em_db as db
 import em_resample
+import em_state
 import em_workflow as W
 from test_voice_workflow import device, until
 import test_voice_workflow as workflow_fixtures
@@ -87,7 +88,7 @@ def test_the_vad_marker_still_reaches_the_native_turn_queue(fresh_db, monkeypatc
         d = device()
         d.data_ws = None
         d.data_ready.clear()
-        monkeypatch.setattr(C, "_devices", {d.device_id: d})
+        monkeypatch.setattr(em_state, "devices", {d.device_id: d})
         monkeypatch.setattr(C, "_link_auth_ok", AsyncMock(return_value=True))
         monkeypatch.setattr(C, "_not_from_control", lambda *a: None)
         monkeypatch.setattr(C.em_ble_proxy, "sync_slots", AsyncMock())
@@ -105,8 +106,9 @@ def test_the_vad_marker_still_reaches_the_native_turn_queue(fresh_db, monkeypatc
 
 def test_the_resampler_designs_its_filter_once_not_per_message(monkeypatch):
     calls = []
-    real = em_resample.firwin
-    monkeypatch.setattr(em_resample, "firwin", lambda *a, **k: (calls.append(1), real(*a, **k))[1])
+    import scipy.signal
+    real = scipy.signal.firwin
+    monkeypatch.setattr(scipy.signal, "firwin", lambda *a, **k: (calls.append(1), real(*a, **k))[1])
     r = em_resample.StreamResampler(44100, 48000)
     x = np.arange(4410, dtype=float)
     for i in range(0, x.size, 441):

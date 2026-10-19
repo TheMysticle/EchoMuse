@@ -9,6 +9,8 @@ from aiohttp.test_utils import TestClient, TestServer
 import pytest
 
 import em_api as api
+import em_ingressauth
+import em_state
 import em_schedule_auth as keys
 import em_workflow_tools as tools
 from em_schedule import Bridge
@@ -62,7 +64,7 @@ def test_mcp_auth_source_scope_device_ack_and_failure(database):
         key=keys.issue('A',voice=True)
         companion=keys.issue('A')  # does not revoke the voice key
         assert keys._resolve(key)=='A' and keys._resolve(companion)=='A'
-        with patch.object(api,'_devices',{'A':live}), patch.object(api,'INGRESS_ONLY',True), patch.object(api,'INGRESS_GATEWAY_IP','172.30.32.2'):
+        with patch.object(em_state,'devices',{'A':live}), patch.object(em_ingressauth, 'INGRESS_ONLY',True), patch.object(em_ingressauth, 'INGRESS_GATEWAY_IP','172.30.32.2'):
             async with TestClient(TestServer(await api.create_app())) as client:
                 headers={'Authorization':'Bearer '+key}
                 url='/api/devices/A/voice-workflow/mcp'
@@ -111,7 +113,7 @@ def test_volume_sets_only_this_speaker_never_an_ha_area(database, monkeypatch):
         live=SimpleNamespace(device_id='A',capabilities=[],
             workflow=SimpleNamespace(active=True,config={}))
         key=keys.issue('A',voice=True)
-        with patch.object(api,'_devices',{'A':live}), patch.object(api,'INGRESS_ONLY',True), patch.object(api,'INGRESS_GATEWAY_IP','172.30.32.2'):
+        with patch.object(em_state,'devices',{'A':live}), patch.object(em_ingressauth, 'INGRESS_ONLY',True), patch.object(em_ingressauth, 'INGRESS_GATEWAY_IP','172.30.32.2'):
             async with TestClient(TestServer(await api.create_app())) as client:
                 headers={'Authorization':'Bearer '+key}
                 url='/api/devices/A/voice-workflow/mcp'
@@ -133,7 +135,7 @@ def test_volume_refuses_anything_but_a_bare_percentage(database, args):
         live=SimpleNamespace(device_id='A',capabilities=[],
             workflow=SimpleNamespace(active=True,config={}))
         key=keys.issue('A',voice=True)
-        with patch.object(api,'_devices',{'A':live}), patch.object(api,'INGRESS_ONLY',True), patch.object(api,'INGRESS_GATEWAY_IP','172.30.32.2'):
+        with patch.object(em_state,'devices',{'A':live}), patch.object(em_ingressauth, 'INGRESS_ONLY',True), patch.object(em_ingressauth, 'INGRESS_GATEWAY_IP','172.30.32.2'):
             async with TestClient(TestServer(await api.create_app())) as client:
                 headers={'Authorization':'Bearer '+key}
                 url='/api/devices/A/voice-workflow/mcp'
@@ -149,7 +151,7 @@ def test_volume_reports_a_disconnected_speaker_rather_than_claiming_success(data
         live=SimpleNamespace(device_id='A',capabilities=[],
             workflow=SimpleNamespace(active=True,config={}))
         key=keys.issue('A',voice=True)
-        with patch.object(api,'_devices',{'A':live}), patch.object(api,'INGRESS_ONLY',True), patch.object(api,'INGRESS_GATEWAY_IP','172.30.32.2'):
+        with patch.object(em_state,'devices',{'A':live}), patch.object(em_ingressauth, 'INGRESS_ONLY',True), patch.object(em_ingressauth, 'INGRESS_GATEWAY_IP','172.30.32.2'):
             async with TestClient(TestServer(await api.create_app())) as client:
                 headers={'Authorization':'Bearer '+key}
                 url='/api/devices/A/voice-workflow/mcp'
@@ -173,16 +175,14 @@ def _stop_rig(monkeypatch, items, spotify='playing', stream=True, ha_ring=False)
             'owner':'A','revision':bridge.snapshot['revision']+1,'items':bridge.snapshot['items']}})
     spotify_stop=AsyncMock(return_value={})
     player_stop=AsyncMock()
-    em_controller=ModuleType('em_controller')
-    em_controller.stop_timer_alarm=AsyncMock(return_value=ha_ring)
     em_player=ModuleType('em_player')
     em_player._sessions={'A':SimpleNamespace(state='playing' if stream else 'idle',resume_after=False)}
     em_player.PLAYING='playing'
     em_player.stop=player_stop
-    monkeypatch.setitem(__import__('sys').modules,'em_controller',em_controller)
     monkeypatch.setitem(__import__('sys').modules,'em_player',em_player)
     live=SimpleNamespace(device_id='A',capabilities=['local_schedule'],schedule=bridge,send_control=send,
-        spotify={'state':spotify},spotify_request=spotify_stop)
+        spotify={'state':spotify},spotify_request=spotify_stop,
+        stop_timer_alarm=AsyncMock(return_value=ha_ring))
     return live,sent,spotify_stop,player_stop
 
 

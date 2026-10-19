@@ -9,6 +9,7 @@ import pytest
 from websockets.asyncio.server import serve
 
 import em_db as db
+import em_state
 import em_workflow as W
 
 
@@ -174,12 +175,12 @@ def test_queue_bounded_and_muting_drops_microphone():
 
 
 def test_api_refuses_failed_handshake_and_redacts_keys(fresh_db, monkeypatch):
-    import em_api as A
+    import em_routes_workflow as A
     async def main():
         async def auth(request):
             return {"role":"admin"}
         monkeypatch.setattr(A.auth, "resolve_session", auth)
-        monkeypatch.setattr(A, "_devices", {})
+        monkeypatch.setattr(em_state, "devices", {})
         req = SimpleNamespace(match_info={"id":"satellite"}, json=AsyncMock(return_value={
             "mode":W.PIPECAT, "endpoint":"ws://127.0.0.1:1", "api_key":"never-log-this"}))
         # Direct handler drives request parsing; permission behavior covered below.
@@ -196,7 +197,7 @@ def test_api_refuses_failed_handshake_and_redacts_keys(fresh_db, monkeypatch):
 
 
 def test_api_requires_admin_for_changes(monkeypatch):
-    import em_api as A
+    import em_routes_workflow as A
     async def main():
         monkeypatch.setattr(A.auth, "resolve_session", AsyncMock(return_value={"role":"readonly"}))
         assert (await A._post_voice_workflow({})).status == 403
@@ -222,15 +223,14 @@ def test_pipecat_blocks_native_turn_entry(fresh_db):
 def test_api_switch_routes_real_satellite_frames_without_reconnecting(fresh_db, monkeypatch):
     from websockets.asyncio.client import connect
     import em_controller as C
-    import em_api as A
+    import em_routes_workflow as A
     import em_esphome as E
     async def main():
         d = device()
         d.data_ws = None
         d.data_ready.clear()
         registry = {d.device_id:d}
-        monkeypatch.setattr(C, "_devices", registry)
-        monkeypatch.setattr(A, "_devices", registry)
+        monkeypatch.setattr(em_state, "devices", registry)
         monkeypatch.setattr(C, "_link_auth_ok", AsyncMock(return_value=True))
         monkeypatch.setattr(C, "_not_from_control", lambda *a: None)
         monkeypatch.setattr(C.em_ble_proxy, "sync_slots", AsyncMock())

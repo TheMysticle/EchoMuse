@@ -8,18 +8,6 @@ import (
 	"sync/atomic"
 )
 
-// Radar's ParametricEQ.cfg ("EQv5.4") and OutputTrim, from its own vendor
-// files. AFE.cfg's Playback.Algorithms runs EQ (FIR) -> ParametricEQ -> MBCL
-// -> OutputTrim, so both ride StockCurve with the FIR, in that order. Only
-// the cfg's first two biquads are not BYPASS; both state Q=0.9, which
-// stock's design uses for the peak only (see stockLowShelf). Mirrors
-// controller/em_eq.py's RADAR_PEQ_* / RADAR_OUTPUT_TRIM_DB.
-const (
-	radarPEQShelfFc, radarPEQShelfDb = 150.0, 5.0 // stock ignores the shelf Q
-	radarPEQPeakFc, radarPEQPeakDb, radarPEQPeakQ    = 80.0, 2.0, 0.9
-	radarOutputTrimDb                                = 3.0
-)
-
 // Params is the chain's whole configuration. Defaults match
 // em_db.DEFAULT_DEVICE_CONFIG.
 type Params struct {
@@ -30,12 +18,17 @@ type Params struct {
 	LimiterEnabled     bool
 	LimiterThresholdDb float64
 	LimiterReleaseMs   float64
-	// StockCurve runs Radar's own stock FIR EQ (eqFIR) ahead of the 8 bands
-	// above, additively — see controller/em_eq.py's stock_curve. Has no
-	// effect at all on a board without a loaded curve (only Radar, and
-	// only when the embedded taps parsed), same as the controller leaving
-	// it unused for every other board.
+	// StockCurve runs Radar's own stock FIR EQ (eqFIR), ParametricEQ and
+	// OutputTrim ahead of the 8 bands above, additively — see
+	// controller/em_eq.py's stock_curve. Has no effect at all on a board
+	// without a loaded curve (only Radar, and only when the Echo's own
+	// files loaded — RadarTuning). On by default: without it a Radar's
+	// speaker has no audible bass (Radar1, 2026-10-10).
 	StockCurve bool
+	// Jack: a plug is in the jack (speaker.chainForJack). On Radar the
+	// stages that exist for its internal speaker — the stock curve and the
+	// MBCL bands — are left out; the limiter stays.
+	Jack bool
 }
 
 // DefaultParams mirrors the controller's defaults, so a device that has not
@@ -47,6 +40,7 @@ func DefaultParams() Params {
 		LimiterEnabled:     true,
 		LimiterThresholdDb: -1,
 		LimiterReleaseMs:   150,
+		StockCurve:         true,
 	}
 }
 
@@ -107,9 +101,6 @@ type peakLimiter interface {
 	// takeStats returns the worst reduction since the last call (and clears
 	// it) and the running clip counts.
 	takeStats() (maxReductionDb float64, clipped, clippedBypassed uint64)
-	// clipCount is the same running totals WITHOUT clearing the reduction,
-	// for a reader that is not publishing a stream report.
-	clipCount() (clipped, clippedBypassed uint64)
 }
 
 // Chain runs EQ → bass guard → limiter on stereo S16_LE periods.
@@ -136,24 +127,28 @@ type Chain struct {
 	pending *Params // set by SetParams, taken by Process
 
 	// Owned by the ALSA goroutine.
-	params  Params
-	eq      eq
-	guard   bassStage
-	lim     peakLimiter
-	idle    bool // state is all zero and input is silence
-	running bool // active on the previous period
+	params Params
+	eq     eq
+	guard  bassStage
+	lim    peakLimiter
+	// limFixed: the limiter runs at its own threshold and release (Radar's
+	// MBCL full-band limiter), not the ones in Params.
+	limFixed                     bool
+	skipGuard                    bool // Params.Jack on Radar's multiband
+	limThresholdDb, limReleaseMs float64
+	idle                         bool // state is all zero and input is silence
+	running                      bool // active on the previous period
 
 	// Stock FIR curve (Radar only — nil taps on every other board, and
 	// newEQFIR(nil, ...) is nil, so fir stays nil there with no extra
 	// gating needed at this level).
 	firBands  [][]float64 // the volume-banded stock FIR; nil = unavailable
 	firBounds []float64   // each band's upper volume index
-	fir      *eqFIR    // lazily sized to the first period's length
-	wantFIR  bool      // params.StockCurve as of the last apply()
-	firScratch []float64 // reused per period — no per-call allocation
+	fir       *eqFIR      // lazily sized to the first period's length
+	wantFIR   bool        // params.StockCurve as of the last apply()
 
 	// ParametricEQ and OutputTrim: present with the FIR (Radar), run only
-	// while it does. See the radarPEQ* constants.
+	// while it does.
 	peq      []biquad
 	trimGain float64
 
@@ -166,7 +161,7 @@ type Chain struct {
 	// a level nobody is listening at. preTarget is written by SetVolumeGain
 	// from any goroutine; preCur belongs to the ALSA goroutine.
 	takesVolume bool
-	tookVolume  bool // the last Process applied the volume; see TookVolume
+	tookVolume  bool          // the last Process applied the volume; see TookVolume
 	preTarget   atomic.Uint64 // math.Float64bits of the gain
 	preCur      float64
 	inScratch   []float64 // the period's mono input, volume applied
@@ -176,53 +171,71 @@ type Chain struct {
 // tuned for biscuit — see NewForBoard for a board-aware chain. Kept so every
 // existing caller and test vector (biscuit-only, to date) is unaffected.
 func New(sampleRate int) *Chain {
-	return NewForBoard(sampleRate, "biscuit")
+	return NewForBoard(sampleRate, "biscuit", nil)
 }
 
 // NewForBoard builds a chain at the given sample rate, inactive, with
 // DefaultParams, with the bass guard tuned for boardID (pkg/board.IDOf) —
-// see bassGuardTuning. The guard always varies by board; the stock FIR
-// curve is only ever available on "radar" (nil firBands on every other
-// board id, so StockCurve has no effect there regardless of config). The
-// EQ bands are not board-specific; the limiter is overridden for Radar —
-// see apply.
-func NewForBoard(sampleRate int, boardID string) *Chain {
+// see bassGuardTuning. On "radar", rt is the stock tuning read from the Echo
+// (LoadRadarTuning): its MBCL replaces the guard and the limiter, and its
+// FIR, ParametricEQ and OutputTrim are the stock curve (Params.StockCurve).
+// With rt nil, or on any other board, there is no stock curve and the guard
+// and limiter are the generic ones. The EQ bands are not board-specific.
+func NewForBoard(sampleRate int, boardID string, rt *RadarTuning) *Chain {
 	fs := float64(sampleRate)
-	var guard bassStage
-	if boardID == "radar" {
-		// Radar's real MBCL.cfg is a 4-band multiband compressor, not a
-		// copy of biscuit's single band — see newRadarMultiband.
-		guard = newRadarMultiband(fs)
-	} else {
-		guard = newBassGuard(fs, boardID)
-	}
-	var lim peakLimiter = newLimiter(fs)
-	if boardID == "radar" {
-		lim = newStockLimiter(fs, radarLimiterThresholdDb, radarLimiterReleaseMs, 0)
-	}
+	radar := boardID == "radar"
 	c := &Chain{
 		fs:          fs,
 		boardID:     boardID,
 		eq:          eq{fs: fs},
-		guard:       guard,
-		lim:         lim,
+		guard:       newBassGuard(fs, boardID),
+		lim:         newLimiter(fs),
 		idle:        true,
-		takesVolume: boardID == "radar",
+		takesVolume: radar,
 		preCur:      1,
 	}
 	c.preTarget.Store(math.Float64bits(1))
-	if boardID == "radar" {
-		c.firBands, c.firBounds = loadRadarEQBands()
-		if c.firBands != nil {
-			c.peq = []biquad{
-				stockLowShelf(radarPEQShelfFc, radarPEQShelfDb, fs),
-				stockPeak(radarPEQPeakFc, radarPEQPeakDb, radarPEQPeakQ, fs),
-			}
-			c.trimGain = dbToGain(radarOutputTrimDb)
+	if radar && rt != nil {
+		if m := rt.MBCL; m != nil {
+			// Radar's real MBCL.cfg is a 4-band multiband compressor, not a
+			// copy of biscuit's single band — see newRadarMultiband. Its
+			// full-band limiter replaces the generic one, at its own
+			// threshold and release whatever a config push carries: there
+			// is no dashboard control for either on any board.
+			c.guard = newRadarMultiband(fs, m)
+			c.lim = newStockLimiter(fs, m.FullBand.LimThresh, m.FullBand.LimRelease, m.FullBand.LimInVol)
+			c.limFixed = true
+			c.limThresholdDb, c.limReleaseMs = m.FullBand.LimThresh, m.FullBand.LimRelease
+		}
+		if len(rt.FIRBands) > 0 {
+			c.firBands, c.firBounds = rt.FIRBands, rt.FIRBounds
+			c.peq = rt.peqBiquads(fs)
+			c.trimGain = dbToGain(rt.TrimDb)
 		}
 	}
 	c.apply(DefaultParams())
 	return c
+}
+
+// Describe is p.String() as this chain runs it. On Radar with its stock
+// tuning the limiter is MBCL's own, whatever p says, and the stock curve and
+// the jack bypass are named; elsewhere it is p.String() exactly.
+func (c *Chain) Describe(p Params) string {
+	if c.limFixed {
+		p.LimiterThresholdDb, p.LimiterReleaseMs = c.limThresholdDb, c.limReleaseMs
+	}
+	s := p.String()
+	if c.firBands != nil {
+		on := "off"
+		if p.StockCurve && !p.Jack {
+			on = "on"
+		}
+		s += " stock_curve=" + on
+	}
+	if p.Jack {
+		s += " jack"
+	}
+	return s
 }
 
 // TakesVolume reports whether this chain applies the volume itself, ahead
@@ -264,15 +277,20 @@ func (c *Chain) apply(p Params) {
 	c.guard.setFloorDb(math.Min(p.GuardDb, 0))
 	c.lim.setEnabled(p.LimiterEnabled)
 	limThresholdDb, limReleaseMs := p.LimiterThresholdDb, p.LimiterReleaseMs
-	if c.boardID == "radar" {
-		limThresholdDb, limReleaseMs = radarLimiterThresholdDb, radarLimiterReleaseMs
+	if c.limFixed {
+		limThresholdDb, limReleaseMs = c.limThresholdDb, c.limReleaseMs
 	}
 	c.lim.setParams(limThresholdDb, limReleaseMs, c.fs)
 	// Actually turning the FIR on/off is deferred to Process, which is the
 	// only place that knows this period's frame count (needed to size it)
 	// — apply only records what is WANTED. No effect at all when firBands
 	// is nil (every board but Radar).
-	c.wantFIR = p.StockCurve && c.firBands != nil
+	c.wantFIR = p.StockCurve && !p.Jack && c.firBands != nil
+	_, multiband := c.guard.(*radarMultiband)
+	if skip := p.Jack && multiband; skip != c.skipGuard {
+		c.guard.reset()
+		c.skipGuard = skip
+	}
 }
 
 // takePending applies a queued SetParams. Returns the params that are now in
@@ -309,14 +327,12 @@ func (c *Chain) Process(buf []byte) (applied *Params) {
 	}
 
 	frames := len(buf) / 4
-	c.sizeFIR(frames)
-
-	// Stereo in, stereo out, but the chain is mono — exact, since the wire
-	// is mono.
+	// The period's mono input, with the volume applied first when this
+	// chain takes it — same arithmetic as em_eq.StreamingEQ._apply_volume.
 	if len(c.inScratch) != frames {
 		c.inScratch = make([]float64, frames)
 	}
-	silentIn := true
+	silentIn, silentOut := true, true
 	for i := 0; i < frames; i++ {
 		off := i * 4
 		l := int16(uint16(buf[off]) | uint16(buf[off+1])<<8)
@@ -326,121 +342,155 @@ func (c *Chain) Process(buf []byte) (applied *Params) {
 		}
 		c.inScratch[i] = (float64(l) + float64(r)) / 2
 	}
+	c.runMono(c.inScratch)
 
-	c.processMono(c.inScratch)
-
-	silentOut := true
-	for i := 0; i < frames; i++ {
-		x := c.inScratch[i]
-		// Backstop, then truncation toward zero — np.clip(...).astype(int16)
-		// in the reference.
-		if x > ceiling {
-			x = ceiling
-		} else if x < -fullScale {
-			x = -fullScale
-		}
-		// A chain that takes the volume (Radar) rounds: at the lowest steps
-		// (-62dB) the whole signal is a few LSB, and truncating toward zero
-		// costs ~6dB of signal-to-error and zeroes anything under 1 LSB.
-		// Round half to even, as em_eq._to_int16's np.rint.
+	for i, x := range c.inScratch {
+		// Truncation toward zero after runMono's backstop —
+		// np.clip(...).astype(int16) in the reference. A chain that takes
+		// the volume (Radar) rounds: at the lowest steps (-62dB) the whole
+		// signal is a few LSB, and truncating toward zero costs ~6dB of
+		// signal-to-error and zeroes anything under 1 LSB. Round half to
+		// even, as em_eq._to_int16's np.rint.
 		if c.takesVolume {
 			x = math.RoundToEven(x)
 		}
-		v := int16(x)
-		if v != 0 {
+		s := int16(x)
+		if s != 0 {
 			silentOut = false
 		}
 		off := i * 4
-		lo, hi := byte(uint16(v)), byte(uint16(v)>>8)
+		lo, hi := byte(uint16(s)), byte(uint16(s)>>8)
 		buf[off], buf[off+1], buf[off+2], buf[off+3] = lo, hi, lo, hi
 	}
-
-	// A silent period that came out silent means every filter tail has
-	// decayed below one LSB. Zero the state and stop processing silence
-	// until audio returns — otherwise the chain runs flat out on an idle
-	// speaker, forever. The reset moves the output by less than one LSB.
-	if silentIn && silentOut {
-		c.reset()
-		c.idle = true
-	} else {
-		c.idle = false
-	}
+	c.settleIdle(silentIn, silentOut)
 	return applied
 }
 
-// scaleAt is the full-scale multiplier for one frame, defaulting to 1 when
-// the caller supplied none for it.
-func scaleAt(fullScales []float64, i int) float64 {
+// ProcessFloat is Process for a wide-precision interleaved stereo period.
+// fullScales contains one full-scale multiplier per frame. Samples are
+// normalised into the chain's ordinary S16 signal domain and returned to the
+// wide domain afterward. Keeping the chain's state normalised makes switching
+// between ordinary and boosted periods seamless, while the caller retains
+// headroom until the later master-volume stage — unless the chain takes the
+// volume (TookVolume), in which case it is already applied.
+func (c *Chain) ProcessFloat(buf []float64, fullScales []float64) (applied *Params) {
+	applied, active := c.beginProcess()
+	if !active {
+		return applied
+	}
+
+	frames := len(buf) / 2
+	if len(c.inScratch) != frames {
+		c.inScratch = make([]float64, frames)
+	}
+	silentIn, silentOut := true, true
+	for i := 0; i < frames; i++ {
+		l, r := buf[i*2], buf[i*2+1]
+		if l != 0 || r != 0 {
+			silentIn = false
+		}
+		c.inScratch[i] = (l + r) / (2 * frameScale(fullScales, i))
+	}
+	c.runMono(c.inScratch)
+	for i, x := range c.inScratch {
+		x *= frameScale(fullScales, i)
+		if math.Abs(x) >= 1 {
+			silentOut = false
+		}
+		buf[i*2], buf[i*2+1] = x, x
+	}
+	c.settleIdle(silentIn, silentOut)
+	return applied
+}
+
+func frameScale(fullScales []float64, i int) float64 {
 	if i < len(fullScales) && fullScales[i] > 0 {
 		return fullScales[i]
 	}
 	return 1
 }
 
-// sizeFIR allocates or drops the stock FIR for this period's frame count.
-//
-// FIR on/off is decided in apply(), but SIZED here — this is the first point
-// the chain knows the period's frame count. In production it never changes
-// between calls, so sizing happens once; a caller that varied it would panic
-// inside eqFIR.process, which is the right failure for that bug rather than
-// a wrong answer.
-func (c *Chain) sizeFIR(frames int) {
+func (c *Chain) beginProcess() (applied *Params, active bool) {
+	if p, changed := c.takePending(); changed {
+		applied = &p
+	}
+	active = c.active.Load()
+	if active != c.running {
+		// Entering or leaving: the chain's state belongs to audio it last
+		// saw, which is not the audio arriving now. Start clean.
+		c.reset()
+		c.running = active
+		// A gain carried from audio the chain last saw would ramp from a
+		// stale value; start at where the volume is now.
+		c.preCur = math.Float64frombits(c.preTarget.Load())
+	}
+	c.tookVolume = active && c.takesVolume
+	return applied, active
+}
+
+// runMono runs the stages over one period of mono samples in the S16
+// signal domain, in place, ending at the backstop clip.
+func (c *Chain) runMono(x []float64) {
+	frames := len(x)
+	// FIR on/off is decided in apply(), but SIZED here — this is the first
+	// point the chain knows the period's frame count. In production this
+	// never changes between calls, so sizing happens once; a device that
+	// somehow called Process with a varying frames count would panic
+	// inside eqFIR.process, which is the right failure for that bug
+	// rather than a wrong answer.
 	if c.wantFIR && c.fir == nil {
 		c.fir = newEQFIRBands(c.firBands, frames)
 		c.fir.startOn(radarEQBand(math.Float64frombits(c.preTarget.Load()), c.firBounds))
-		if c.firScratch == nil || len(c.firScratch) != frames {
-			c.firScratch = make([]float64, frames)
-		}
 	} else if !c.wantFIR && c.fir != nil {
 		c.fir = nil
 	}
-}
-
-// processMono runs every stage over one period of mono samples, in place.
-//
-// ONE implementation, two entry points. Process and ProcessFloat differ only
-// in how samples arrive and how they are written back; the stages are held
-// bit-exact to a Python reference, so a second copy of them is a second
-// thing to keep in step with that reference and with each other.
-//
-// Stage-by-stage over the block rather than sample-by-sample through the
-// stages: for a series of causal per-sample filters the two are identical,
-// since each filter still sees the period in order and each sample still
-// passes the same sequence. The FIR is a block operation and has to be done
-// this way regardless.
-func (c *Chain) processMono(mono []float64) {
-	// The volume first when this chain takes it — same arithmetic as
-	// em_eq.StreamingEQ._apply_volume, and ahead of the compressors because
-	// that is where stock applies it (device/CLAUDE.md, Volume).
 	if c.takesVolume {
-		c.applyVolume(mono)
+		c.applyVolume(x)
 	}
 	if c.fir != nil {
 		// The curve stock plays at this volume, read from the target the
 		// volume is ramping to — once per period, as em_eq reads it once
 		// per call. A change crossfades across this period.
 		c.fir.setBand(radarEQBand(math.Float64frombits(c.preTarget.Load()), c.firBounds))
-		copy(c.firScratch, mono)
-		copy(c.firScratch, c.fir.process(c.firScratch))
-		// Radar's stock curve, layered ahead of the bands below — additive
-		// with them, as controller/em_eq.py's StreamingEQ(stock_curve=True)
-		// is, never a replacement.
-		for i := range mono {
-			x := c.firScratch[i]
-			for j := range c.peq {
-				x = c.peq[j].step(x)
-			}
-			mono[i] = x
-		}
+		copy(x, c.fir.process(x))
 	}
-	for i := range mono {
-		x := c.eq.step(mono[i])
-		x = c.guard.step(x)
-		x = c.lim.step(x)
+	for i, v := range x {
 		if c.fir != nil {
-			x *= c.trimGain // OutputTrim: after MBCL's limiter, as in AFE.cfg
+			// Radar's stock curve, layered ahead of the bands below —
+			// additive with them, same as controller/em_eq.py's
+			// StreamingEQ(stock_curve=True), never a replacement.
+			for j := range c.peq {
+				v = c.peq[j].step(v)
+			}
 		}
-		mono[i] = x
+		v = c.eq.step(v)
+		if !c.skipGuard {
+			v = c.guard.step(v)
+		}
+		v = c.lim.step(v)
+		if c.fir != nil {
+			v *= c.trimGain // OutputTrim: after MBCL's limiter, as in AFE.cfg
+		}
+		// Backstop.
+		if v > ceiling {
+			v = ceiling
+		} else if v < -fullScale {
+			v = -fullScale
+		}
+		x[i] = v
+	}
+}
+
+// settleIdle: a silent period that came out silent means every filter tail
+// has decayed below one LSB. Zero the state and stop processing silence
+// until audio returns — otherwise the chain runs flat out on an idle
+// speaker, forever. The reset moves the output by less than one LSB.
+func (c *Chain) settleIdle(silentIn, silentOut bool) {
+	if silentIn && silentOut {
+		c.reset()
+		c.idle = true
+	} else {
+		c.idle = false
 	}
 }
 
@@ -467,90 +517,6 @@ func (c *Chain) applyVolume(x []float64) {
 	}
 }
 
-// ProcessFloat is Process for a wide-precision interleaved stereo period.
-// fullScales contains one full-scale multiplier per frame. Samples are
-// normalised into the chain's ordinary S16 signal domain and returned to the
-// wide domain afterward. Keeping the chain's state normalised makes switching
-// between ordinary and boosted periods seamless, while the caller retains
-// headroom until the later master-volume stage.
-func (c *Chain) ProcessFloat(buf []float64, fullScales []float64) (applied *Params) {
-	applied, active := c.beginProcess()
-	if !active {
-		return applied
-	}
-
-	frames := len(buf) / 2
-	c.sizeFIR(frames)
-	if len(c.inScratch) != frames {
-		c.inScratch = make([]float64, frames)
-	}
-
-	silentIn := true
-	for i := 0; i < frames; i++ {
-		l, r := buf[i*2], buf[i*2+1]
-		if l != 0 || r != 0 {
-			silentIn = false
-		}
-		c.inScratch[i] = (l + r) / (2 * scaleAt(fullScales, i))
-	}
-
-	// THE SAME STAGES as Process, which is the point of processMono. The
-	// stages are held bit-exact to a Python reference
-	// (testdata/gen_vectors.py) and the vectors drive the S16 path, so a
-	// second copy here would be a second implementation of a bit-exact
-	// chain with nothing checking it. On Radar it would also silently drop
-	// the stock curve, the pre-chain volume and the output trim — stages
-	// this entry point never had.
-	c.processMono(c.inScratch)
-
-	silentOut := true
-	for i := 0; i < frames; i++ {
-		x := c.inScratch[i]
-		if x > ceiling {
-			x = ceiling
-		} else if x < -fullScale {
-			x = -fullScale
-		}
-		// Back to the wide domain, and NOT rounded: the caller keeps the
-		// headroom until its own master-volume stage, which is the whole
-		// reason this entry point exists.
-		x *= scaleAt(fullScales, i)
-		if math.Abs(x) >= 1 {
-			silentOut = false
-		}
-		buf[i*2], buf[i*2+1] = x, x
-	}
-	if silentIn && silentOut {
-		c.reset()
-		c.idle = true
-	} else {
-		c.idle = false
-	}
-	return applied
-}
-
-func (c *Chain) beginProcess() (applied *Params, active bool) {
-	if p, changed := c.takePending(); changed {
-		applied = &p
-	}
-	active = c.active.Load()
-	if active != c.running {
-		// Entering or leaving: the chain's state belongs to audio it last
-		// saw, which is not the audio arriving now. Start clean.
-		c.reset()
-		c.running = active
-		// A gain carried from audio the chain last saw would ramp from a
-		// stale value; start at where the volume is now. Here rather than
-		// in a caller because a caller cannot see that a transition
-		// happened — this is the only thing that knows.
-		c.preCur = math.Float64frombits(c.preTarget.Load())
-	}
-	// Whether THIS period's volume was applied by the chain, which the
-	// speaker asks so it does not apply it a second time.
-	c.tookVolume = active && c.takesVolume
-	return applied, active
-}
-
 func (c *Chain) reset() {
 	c.eq.reset()
 	c.guard.reset()
@@ -573,16 +539,6 @@ type Stats struct {
 	Clipped            uint64 // must stay 0 while limiting
 	ClippedBypassed    uint64
 }
-
-// ClipCount is the chain's running clip totals, which are monotonic.
-//
-// `Clipped` must stay 0 while limiting — a sample past the ceiling after the
-// limiter is a defined fault, and it is heard as a brief crackle. It was
-// only ever reported when a channel-fed stream ENDED, so during Sendspin or
-// Spotify playback, which has no stream completion, a clipping chain was
-// invisible. The chain runs on the MIX, so this is the one fault that
-// affects every source alike.
-func (c *Chain) ClipCount() (uint64, uint64) { return c.lim.clipCount() }
 
 // TakeStats returns and clears the maximum reductions since the last call.
 // ALSA goroutine only.

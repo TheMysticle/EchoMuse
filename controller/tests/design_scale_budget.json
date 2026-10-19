@@ -1,0 +1,16 @@
+{
+  "CircleButton": 1,
+  "Detail": 4,
+  "DeviceConfigForm": 3,
+  "EqCurve": 2,
+  "LinkStrip": 1,
+  "MicroMeter": 2,
+  "ProvisionWizard": 126,
+  "SchedulesTab": 35,
+  "SpotifyDevice": 4,
+  "SpotifyPanel": 43,
+  "SpotifyWeb": 15,
+  "TextField": 9,
+  "Toggle": 2,
+  "VoiceWorkflow": 6
+}

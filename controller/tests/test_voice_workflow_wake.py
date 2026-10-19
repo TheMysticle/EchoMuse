@@ -11,6 +11,7 @@ from websockets.asyncio.server import serve
 
 import em_db as db
 import em_listen
+import em_state
 import em_workflow as W
 from test_voice_workflow import device, until, va_hello
 
@@ -37,7 +38,7 @@ def test_private_wake_gates_real_data_and_preserves_chosen_detector(fresh_db,mon
         d.listen_reported='local'
         d.data_ws=None
         d.data_ready.clear()
-        monkeypatch.setattr(C,'_devices',{d.device_id:d})
+        monkeypatch.setattr(em_state,'devices',{d.device_id:d})
         monkeypatch.setattr(C,'_link_auth_ok',AsyncMock(return_value=True))
         monkeypatch.setattr(C,'_not_from_control',lambda *a:None)
         monkeypatch.setattr(C.em_ble_proxy,'sync_slots',AsyncMock())
@@ -110,7 +111,7 @@ def test_private_wake_gates_real_data_and_preserves_chosen_detector(fresh_db,mon
                     d.listen_wakes.put_nowait(em_listen.parse_wake({'session':43,'score':.95},asyncio.get_running_loop().time()))
                     await until(lambda:len(heard)==len(sent)+1)
                     assert heard[-1]==b'\x04\x00'*1280
-                    assert d.data_ws is socket and C._devices[d.device_id] is d
+                    assert d.data_ws is socket and em_state.devices[d.device_id] is d
                     assert not d.control_ws.close.called
                 finally:
                     if listener:

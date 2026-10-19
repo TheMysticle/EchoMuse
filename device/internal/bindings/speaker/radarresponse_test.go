@@ -8,99 +8,71 @@ import (
 	"github.com/wilbowes/EchoMuse/internal/outchain"
 )
 
-func radarChain(volume float64) *outchain.Chain {
-	c := outchain.NewForBoard(48000, "radar")
-	c.SetVolumeGain(volume)
-	c.SetActive(true)
-	return c
-}
+// responseLevel did nothing on Radar for a while: the boost stood down
+// whenever the chain took the volume, which Radar always does. These drive
+// the same pieces the speaker loop does (the response gains, the float
+// chain entry point, the quantiser) over a volume-taking chain and check the
+// boost reaches the output.
 
-func sinePeriod(frames int, amp float64) []float64 {
-	w := make([]float64, frames*2)
-	for i := 0; i < frames; i++ {
-		x := math.Round(amp * math.Sin(2*math.Pi*1000*float64(i)/48000))
-		w[i*2], w[i*2+1] = x, x
+func radarVoiceRMS(t *testing.T, level int, db float64) float64 {
+	t.Helper()
+	const frames = 2048
+	vol := VolumeGain(level)
+	chain := outchain.NewForBoard(48000, "radar", nil)
+	chain.SetVolumeGain(vol)
+	chain.SetActive(true)
+	if !chain.TakesVolume() {
+		t.Fatal("a Radar chain must take the volume")
 	}
-	return w
-}
+	volume := settledVolume(level)
+	response := settledResponse(db, volume)
 
-func toS16(w []float64) []byte {
-	b := make([]byte, len(w)*2)
-	for i, x := range w {
-		binary.LittleEndian.PutUint16(b[i*2:], uint16(int16(x)))
+	var out []byte
+	for p := 0; p < 12; p++ {
+		voice := make([]byte, frames*4)
+		for i := 0; i < frames; i++ {
+			x := int16(3000 * math.Sin(2*math.Pi*1000*float64(p*frames+i)/48000))
+			binary.LittleEndian.PutUint16(voice[i*4:], uint16(x))
+			binary.LittleEndian.PutUint16(voice[i*4+2:], uint16(x))
+		}
+		period := response.begin(volume, frames, volume.targetGain())
+		gains := make([]float64, frames)
+		period.fillGains(gains)
+		var mixer Mixer
+		mixer.SetGainImmediate(unityGain)
+		wide := mixer.MixResponse(make([]float64, frames*2), voice, nil, unityGain, gains)
+		chain.ProcessFloat(wide, gains)
+		if !chain.TookVolume() {
+			t.Fatal("the chain did not take the volume this period")
+		}
+		out = voice
+		volume.settleFloat(wide, out)
+		period.finish(gains)
 	}
-	return b
-}
-
-func rms(b []byte) float64 {
 	var sum float64
-	n := len(b) / 2
+	n := len(out) / 4
 	for i := 0; i < n; i++ {
-		v := float64(int16(binary.LittleEndian.Uint16(b[i*2:])))
+		v := float64(int16(binary.LittleEndian.Uint16(out[i*4:])))
 		sum += v * v
 	}
 	return math.Sqrt(sum / float64(n))
 }
 
-// With nothing to scale by, the float entry point on a volume-taking chain
-// must land where the S16 path does, so a response at 0dB is unchanged.
-func TestRadarFloatPathMatchesS16Path(t *testing.T) {
-	const frames, vol = 1024, 0.2
-	in := sinePeriod(frames, 6000)
-	a, b := radarChain(vol), radarChain(vol)
-	s16 := toS16(in)
-	a.Process(s16)
-	wide := append([]float64(nil), in...)
-	b.ProcessFloat(wide, nil)
-	got := make([]byte, len(s16))
-	quantizeFloat(wide, got)
-	for i := range s16 {
-		if s16[i] != got[i] {
-			t.Fatalf("byte %d: S16 path %d, float path %d", i, s16[i], got[i])
-		}
-	}
-	if !b.TookVolume() {
-		t.Fatal("chain did not take the volume")
-	}
-}
-
-// The reported bug: on Radar the boost did nothing. A +6dB voice, capped
-// against the volume as the speaker caps it, must come out louder than 0dB.
-func TestRadarResponseBoostIsAudible(t *testing.T) {
-	const frames = 1024
+func TestResponseLevelIsAudibleOnRadar(t *testing.T) {
+	checked := 0
 	for _, level := range []int{20, 40, 60} {
 		vol := VolumeGain(level)
-		low, high := radarChain(vol), radarChain(vol)
-		g := cappedResponseGain(gainFromDB(6), vol)
-		a := sinePeriod(frames, 4000)
-		b := sinePeriod(frames, 4000*g)
-		// Settle the filters and compressors over a few periods.
-		var outA, outB []byte
-		for i := 0; i < 8; i++ {
-			wa := append([]float64(nil), a...)
-			wb := append([]float64(nil), b...)
-			low.ProcessFloat(wa, nil)
-			high.ProcessFloat(wb, nil)
-			outA, outB = make([]byte, frames*4), make([]byte, frames*4)
-			quantizeFloat(wa, outA)
-			quantizeFloat(wb, outB)
-		}
-		if g <= 1 {
+		want := cappedResponseGain(gainFromDB(6), vol)
+		if want <= 1 {
 			continue // capped to unity at this volume: documented behaviour
 		}
-		if rms(outB) <= rms(outA) {
-			t.Errorf("level %d: boosted rms %.1f not above plain %.1f", level, rms(outB), rms(outA))
+		checked++
+		low, med := radarVoiceRMS(t, level, 0), radarVoiceRMS(t, level, 6)
+		if got := med / low; math.Abs(got-want) > 0.05*want {
+			t.Errorf("level %d: Medium is %.3fx Low, want %.3fx", level, got, want)
 		}
 	}
-}
-
-func TestQuantizeFloatClamps(t *testing.T) {
-	out := make([]byte, 8)
-	quantizeFloat([]float64{40000, -40000, 1.4, -1.6}, out)
-	want := []int16{math.MaxInt16, math.MinInt16, 1, -2}
-	for i, w := range want {
-		if got := int16(binary.LittleEndian.Uint16(out[i*2:])); got != w {
-			t.Errorf("sample %d: got %d want %d", i, got, w)
-		}
+	if checked == 0 {
+		t.Fatal("no volume left room for a boost: the test checked nothing")
 	}
 }
