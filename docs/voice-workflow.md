@@ -107,6 +107,22 @@ add-on's `/data/`, or re-enter its provider/MCP settings and the same satellite
 shared secret. Run only one Pipecat add-on on port 7860. The endpoint URL stays
 `ws://<HA-host>:7860/api/assist/esphome` when hosted on the same machine.
 
+### Cerebras Cloud
+
+In the Pipecat add-on, add a **Cerebras Cloud** integration, enter its API key,
+and select it for a composed pipeline's LLM step. The default model is
+`gpt-oss-120b`; the model field remains editable and model discovery reads
+the account's available IDs from `GET https://api.cerebras.ai/v1/models`.
+The default base URL is `https://api.cerebras.ai/v1`, with streaming chat
+requests sent to `/chat/completions`. A custom proxy base URL is optional.
+Standalone deployments can supply `CEREBRAS_API_KEY` for the default integration.
+
+Cerebras uses the existing OpenAI-compatible streaming and tool-call path,
+including HA MCP, and also supports the add-on's HA Assist text-conversation
+route. It supplies the LLM step; select separate STT and TTS integrations.
+Gemini Live remains a separate realtime pipeline.
+Endpoint reference: [Cerebras OpenAI compatibility](https://inference-docs.cerebras.ai/resources/openai).
+
 ### Local commands before the LLM
 
 For composed pipelines, the Echo's own end-of-speech marker closes the uplink

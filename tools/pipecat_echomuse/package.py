@@ -129,6 +129,45 @@ def adapt(text):
     raise RuntimeError(f"LLM provider {integration.kind} is not supported by composed runtime")''',
     )
 
+    replace(
+        '    raise RuntimeError(f"LLM provider {integration.kind} is not supported by composed runtime")',
+        '''    if integration.kind == "cerebras":
+        from pipecat.services.openai.llm import OpenAILLMService
+
+        if not integration.api_key:
+            raise RuntimeError("Cerebras is missing api_key")
+        settings_kwargs = {
+            "model": getattr(step, "model", "") or integration.default_model or "gpt-oss-120b",
+            "system_instruction": _effective_instructions(flow),
+        }
+        if flow.max_output_tokens:
+            settings_kwargs["max_tokens"] = flow.max_output_tokens
+        return OpenAILLMService(
+            api_key=integration.api_key,
+            base_url=integration.base_url or "https://api.cerebras.ai/v1",
+            settings=OpenAILLMService.Settings(**settings_kwargs),
+        )
+
+    raise RuntimeError(f"LLM provider {integration.kind} is not supported by composed runtime")''',
+    )
+    replace(
+        '        if integration.kind in {"openai", "openai_cloud"} and (integration.api_key or config.openai_api_key):',
+        '''        if integration.kind == "cerebras" and capability == "llm" and integration.api_key:
+            headers = {"Authorization": f"Bearer {integration.api_key}"}
+            async with httpx.AsyncClient(timeout=8.0) as client:
+                response = await client.get(
+                    (integration.base_url or "https://api.cerebras.ai/v1").rstrip("/") + "/models",
+                    headers=headers,
+                )
+                response.raise_for_status()
+            models = sorted({item["id"] for item in response.json().get("data", [])
+                             if isinstance(item.get("id"), str) and item["id"]})
+            if models:
+                return {"ok": True, "models": [{"id": item, "label": item} for item in models]}
+
+        if integration.kind in {"openai", "openai_cloud"} and (integration.api_key or config.openai_api_key):''',
+    )
+
     # --- MCP bridge pooling: reconnecting both configured MCP servers from
     # scratch (HA's, the controller's own per-device scheduler endpoint)
     # measured 1-2s; a va_pipecat session is one bounded turn per
@@ -403,15 +442,15 @@ def adapt_config(text):
     )
     replace(
         '    "openai_compatible",\n    "ollama",\n}\nCOMPOSED_TTS_PROVIDER_KINDS = {',
-        '    "openai_compatible",\n    "ollama",\n    "groq",\n}\nCOMPOSED_TTS_PROVIDER_KINDS = {',
+        '    "openai_compatible",\n    "ollama",\n    "groq",\n    "cerebras",\n}\nCOMPOSED_TTS_PROVIDER_KINDS = {',
     )
     replace(
         '        "home_assistant_mcp",\n        "ha_mcp",\n        "mcp_server",\n    ]',
-        '        "home_assistant_mcp",\n        "ha_mcp",\n        "mcp_server",\n        "sherpa_onnx",\n        "piper_wyoming",\n        "groq",\n    ]',
+        '        "home_assistant_mcp",\n        "ha_mcp",\n        "mcp_server",\n        "sherpa_onnx",\n        "piper_wyoming",\n        "groq",\n        "cerebras",\n    ]',
     )
     replace(
         'DEFAULT_SPEECHMATICS_MODEL = "enhanced"',
-        'DEFAULT_SPEECHMATICS_MODEL = "enhanced"\nDEFAULT_GROQ_MODEL = "llama-3.3-70b-versatile"',
+        'DEFAULT_SPEECHMATICS_MODEL = "enhanced"\nDEFAULT_GROQ_MODEL = "llama-3.3-70b-versatile"\nDEFAULT_CEREBRAS_MODEL = "gpt-oss-120b"',
     )
     replace(
         '        IntegrationConfig(\n            id="ollama",\n            name="Ollama",\n            kind="ollama",\n            enabled=False,\n            base_url="http://localhost:11434/v1",\n            default_model="llama3.2",\n        ),',
@@ -430,12 +469,45 @@ def adapt_config(text):
             enabled=False,
             api_key=os.getenv("GROQ_API_KEY", ""),
             default_model=DEFAULT_GROQ_MODEL,
+        ),
+        IntegrationConfig(
+            id="cerebras",
+            name="Cerebras Cloud",
+            kind="cerebras",
+            enabled=False,
+            api_key=os.getenv("CEREBRAS_API_KEY", ""),
+            base_url="https://api.cerebras.ai/v1",
+            default_model=DEFAULT_CEREBRAS_MODEL,
         ),''',
     )
     replace(
         '    mcp_tools_cache_enabled: bool = True\n    mcp_tools_cache_ttl_seconds: int = Field(default=300, ge=0, le=86400)\n    ai_image_provider_id: str = ""',
         '    mcp_tools_cache_enabled: bool = True\n    mcp_tools_cache_ttl_seconds: int = Field(default=300, ge=0, le=86400)\n    fast_path_enabled: bool = True\n    fast_path_custom_sentences_dirs: list[str] = Field(default_factory=list)\n    ai_image_provider_id: str = ""',
     )
+    return text
+
+
+def adapt_text_agent(text):
+    """Cerebras also serves the add-on's HA Assist text conversation route."""
+    replacements = [
+        ('        "openai_compatible",\n        "ollama",',
+         '        "openai_compatible",\n        "cerebras",\n        "ollama",'),
+        ('    if provider_kind in {"gemini", "gemini_cloud"}:\n        api_key =',
+         '    if provider_kind == "cerebras":\n        api_key = integration.api_key if integration else ""\n    elif provider_kind in {"gemini", "gemini_cloud"}:\n        api_key ='),
+        ('            client = AsyncOpenAI(**client_kwargs)',
+         '''            if provider_kind == "cerebras":
+                client_kwargs["base_url"] = integration.base_url or "https://api.cerebras.ai/v1"
+            client = AsyncOpenAI(**client_kwargs)'''),
+        ('    step = flow.model_step()\n    candidates = [',
+         '''    step = flow.model_step()
+    if provider_kind == "cerebras":
+        return (getattr(step, "model", "") if step else "") or (integration.default_model if integration else "") or "gpt-oss-120b"
+    candidates = ['''),
+    ]
+    for old, new in replacements:
+        if text.count(old) != 1:
+            raise ValueError("Upstream text_agent.py anchor changed: " + old[:70])
+        text = text.replace(old, new)
     return text
 
 
@@ -523,8 +595,17 @@ def adapt_ui(text):
         text = text.replace(old, new)
 
     replace(
+        'function providerDefaults(provider) {',
+        '''function providerDefaults(provider) {
+  if (provider === "cerebras") return { model: "", text_model: "gpt-oss-120b", voice: "" };''',
+    )
+    replace(
+        '      base_url: kind === "ollama" ? "http://localhost:11434/v1" : "",',
+        '      base_url: kind === "cerebras" ? "https://api.cerebras.ai/v1" : kind === "ollama" ? "http://localhost:11434/v1" : "",',
+    )
+    replace(
         '  ["ollama", "Ollama", Cpu],\n  ["local_runtime", "Local runtime", Cpu],\n  ["web_search", "Web Search", Search],',
-        '  ["ollama", "Ollama", Cpu],\n  ["groq", "Groq", Cloud],\n  ["local_runtime", "Local runtime", Cpu],\n  ["sherpa_onnx", "sherpa-onnx (local STT)", Cpu],\n  ["piper_wyoming", "Piper/Wyoming (local TTS)", Cpu],\n  ["web_search", "Web Search", Search],',
+        '  ["ollama", "Ollama", Cpu],\n  ["groq", "Groq", Cloud],\n  ["cerebras", "Cerebras Cloud", Cloud],\n  ["local_runtime", "Local runtime", Cpu],\n  ["sherpa_onnx", "sherpa-onnx (local STT)", Cpu],\n  ["piper_wyoming", "Piper/Wyoming (local TTS)", Cpu],\n  ["web_search", "Web Search", Search],',
     )
     replace(
         '  stt: ["soniox", "deepgram", "speechmatics", "gradium", "openai_cloud"],',
@@ -532,7 +613,7 @@ def adapt_ui(text):
     )
     replace(
         '  llm: ["openai_cloud", "gemini_cloud", "aws_bedrock", "openai_compatible", "ollama"],',
-        '  llm: ["openai_cloud", "gemini_cloud", "aws_bedrock", "openai_compatible", "ollama", "groq"],',
+        '  llm: ["openai_cloud", "gemini_cloud", "aws_bedrock", "openai_compatible", "ollama", "groq", "cerebras"],',
     )
     replace(
         '  tts: ["cartesia", "gradium", "google_cloud_tts", "google_streaming_tts", "elevenlabs", "openai_cloud", "soniox"],',
@@ -544,7 +625,7 @@ def adapt_ui(text):
     )
     replace(
         '      "anthropic",\n      "azure_openai",\n      "soniox",\n      "deepgram",\n      "cartesia",\n      "gradium",\n      "speechmatics",\n      "elevenlabs",\n      "google_imagen",\n      "fal_image",\n    ].includes(integration.kind)',
-        '      "anthropic",\n      "azure_openai",\n      "soniox",\n      "deepgram",\n      "cartesia",\n      "gradium",\n      "speechmatics",\n      "elevenlabs",\n      "google_imagen",\n      "fal_image",\n      "groq",\n    ].includes(integration.kind)',
+        '      "anthropic",\n      "azure_openai",\n      "soniox",\n      "deepgram",\n      "cartesia",\n      "gradium",\n      "speechmatics",\n      "elevenlabs",\n      "google_imagen",\n      "fal_image",\n      "groq",\n      "cerebras",\n    ].includes(integration.kind)',
     )
     replace(
         '  if (integration.kind === "azure_openai") {',
@@ -574,6 +655,16 @@ def adapt_ui(text):
           updateIntegration={updateIntegration}
           wide
         />
+      </SettingsSection>
+    );
+  }
+
+  if (integration.kind === "cerebras") {
+    return (
+      <SettingsSection title="Cerebras Cloud" status={secretStatus(integration, "api_key")}>
+        <SecretSetting integration={integration} field="api_key" label="API key" updateIntegration={updateIntegration} />
+        <TextSetting integration={integration} field="base_url" label="Base URL" placeholder="https://api.cerebras.ai/v1" updateIntegration={updateIntegration} wide />
+        <TextSetting integration={integration} field="default_model" label="Model" placeholder="gpt-oss-120b" updateIntegration={updateIntegration} />
       </SettingsSection>
     );
   }
@@ -946,6 +1037,8 @@ def main():
     path.write_text(bridge, encoding='utf-8')
     path = args.out/'app/config.py'
     path.write_text(adapt_config(path.read_text(encoding='utf-8')), encoding='utf-8')
+    path = args.out/'app/text_agent.py'
+    path.write_text(adapt_text_agent(path.read_text(encoding='utf-8')), encoding='utf-8')
     shutil.copyfile(Path(__file__).with_name('echomuse.py'), args.out/'app/echomuse.py')
     for name in ('sherpa_stt.py', 'piper_wyoming_tts.py', 'energy_vad.py', 'fast_path.py', 'local_commands.py',
                  'schedule_language.py', 'schedule_dialogue.py', 'schedule_select.py', 'schedule_mcp.py'):
