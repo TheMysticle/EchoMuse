@@ -58,6 +58,12 @@ def adapt(text):
     tools_schema = _merge_tools_schema(mcp_tools_schema, local_tool_schemas)
     context_for_memory = None''')
     replace('local_turn_detection=bool(_enabled_step(flow, "vad")),', 'local_turn_detection=bool(_enabled_step(flow, "vad") or session_body.get("echomuse", {}).get("barge_in")),')
+    # Pipecat defaults this to True, unlike Deepgram's API. Censoring STT
+    # corrupts literal music titles before HA's local search sees them.
+    replace(
+        'settings=DeepgramSTTService.Settings(model=model or None),',
+        'settings=DeepgramSTTService.Settings(model=model or None, profanity_filter=False),',
+    )
 
     # --- upstream bug: _step_model_for's "stt" branch never falls back to
     # integration.default_model, unlike every other branch beside it (tts

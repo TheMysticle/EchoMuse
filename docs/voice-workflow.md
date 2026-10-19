@@ -125,6 +125,11 @@ Endpoint reference: [Cerebras OpenAI compatibility](https://inference-docs.cereb
 
 ### Local commands before the LLM
 
+Composed Deepgram STT explicitly disables profanity filtering. Pipecat 1.4
+otherwise enables it by default, which can censor literal song titles before
+local HA matching or LLM inference. Gemini Live and HA Assist's separate STT
+HTTP route retain their existing configuration.
+
 For composed pipelines, the Echo's own end-of-speech marker closes the uplink
 and switches the ring to thinking immediately, independently of STT latency.
 The controller still sends the endpoint silence needed to finalize recognition.
