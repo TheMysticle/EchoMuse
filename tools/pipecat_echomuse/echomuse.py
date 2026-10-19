@@ -89,7 +89,58 @@ def vad_analyzer(settings, fallback):
         return fallback()
     from pipecat.audio.vad.silero import SileroVADAnalyzer
     from pipecat.audio.vad.vad_analyzer import VADParams
-    return SileroVADAnalyzer(params=VADParams(**PROFILES[profile], stop_secs=0.3))
+    return _logging_vad(SileroVADAnalyzer)(params=VADParams(**PROFILES[profile], stop_secs=0.3))
+
+
+def _logging_vad(base):
+    """Silero VAD that says what it heard, for a turn that logs no user start.
+
+    Field log 2026-10-19: an alarm wake produced eight seconds of ingress
+    windows and not one `User started speaking`, so nothing could tell a
+    detector that heard no speech from one that heard it under its bar, or one
+    that began the session already "speaking". This logs the state on every
+    change and a one-line summary about once a second of audio: peak
+    confidence, frames at or over the bar, peak volume. It costs two compares
+    per VAD frame in the executor thread that already computes them, and a
+    log call per second and per state change, so the audio path is unchanged.
+    """
+    from loguru import logger
+
+    class LoggingVAD(base):
+        _frames = 0
+        _peak_conf = 0.0
+        _peak_vol = 0.0
+        _over = 0
+        _seen_state = None
+
+        def voice_confidence(self, buffer):
+            confidence = super().voice_confidence(buffer)
+            # Silero returns a numpy array; track a float and hand back the original.
+            seen = float(getattr(confidence, "item", lambda: confidence)())
+            self._frames += 1
+            self._peak_conf = max(self._peak_conf, seen)
+            if seen >= self._params.confidence:
+                self._over += 1
+            return confidence
+
+        def _run_analyzer(self, buffer):
+            before = self._frames
+            state = super()._run_analyzer(buffer)
+            if before != self._frames:
+                self._peak_vol = max(self._peak_vol, self._prev_volume)
+            if state != self._seen_state:
+                logger.debug("VAD state {} -> {} (starting={} stopping={})", getattr(self._seen_state, "name", None), state.name,
+                             self._vad_starting_count, self._vad_stopping_count)
+                self._seen_state = state
+            if self._frames >= 31:
+                logger.debug("VAD window: state={} peak_confidence={:.2f} frames_over_bar={}/{} bar={} peak_volume={:.3f} min_volume={}",
+                             state.name, self._peak_conf, self._over, self._frames, self._params.confidence,
+                             self._peak_vol, self._params.min_volume)
+                self._frames = self._over = 0
+                self._peak_conf = self._peak_vol = 0.0
+            return state
+
+    return LoggingVAD
 
 
 def composed_turn_start_strategies(settings):
