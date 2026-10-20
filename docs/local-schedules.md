@@ -174,7 +174,7 @@ the time and the local date. Several matches require a more specific name or
 time. Replace `custom_components/echomuse_schedule` and restart HA to install
 these fixes; no sentence YAML, controller, or satellite binary changes are needed.
 
-## Reading out and changing reminders (companion 0.1.13)
+## Reading out and changing reminders (companion 0.1.13, card fix in 0.1.14)
 
 **Lists** read the way a person says them, in time order, with no weekday or
 time zone name unless the item is not today: “You have 3 reminders today. At

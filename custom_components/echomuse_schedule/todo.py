@@ -17,6 +17,10 @@ FINISHED = ("completed", "missed", "canceled")
 SAME_TIME_S = 60
 
 
+def describe(item):
+    return item["state"] + ("; recurring" if item.get("rule") else "") + ("; shared" if is_shared(item) else "")
+
+
 def changed_reminder(current, item):
     """The replacement for `current` if the card changed its words or its time, else None.
 
@@ -24,6 +28,12 @@ def changed_reminder(current, item):
     finished one would ring again and a shared copy is overwritten by its
     original on the next change; both are refused rather than half done.
     """
+    # The card sends the description back with every edit, and Home Assistant
+    # refuses the whole edit when the entity does not accept the field at all.
+    # It is the reminder's state, so it is read-only: unchanged is fine, a
+    # different one is refused rather than saved nowhere.
+    if item.description is not None and item.description != describe(current):
+        raise HomeAssistantError("The description shows the reminder's state and cannot be edited")
     summary = (item.summary or "").strip()
     words = current.get("message") or current["label"]
     new = copy.deepcopy(current)
@@ -61,7 +71,8 @@ class Reminders(CoordinatorEntity, TodoListEntity):
     _attr_name = "Reminders"
     _attr_has_entity_name = True
     _attr_supported_features = (TodoListEntityFeature.UPDATE_TODO_ITEM | TodoListEntityFeature.DELETE_TODO_ITEM
-                                | TodoListEntityFeature.SET_DUE_DATETIME_ON_ITEM)
+                                | TodoListEntityFeature.SET_DUE_DATETIME_ON_ITEM
+                                | TodoListEntityFeature.SET_DESCRIPTION_ON_ITEM)
 
     def __init__(self, coordinator):
         super().__init__(coordinator)
@@ -74,7 +85,7 @@ class Reminders(CoordinatorEntity, TodoListEntity):
         return [TodoItem(summary=i.get("message") or i["label"], uid=i["id"],
             status=TodoItemStatus.COMPLETED if i["state"] in ("completed", "missed", "canceled") else TodoItemStatus.NEEDS_ACTION,
             due=datetime.fromtimestamp(i["due"], timezone.utc) if i.get("due") else None,
-            description=i["state"] + ("; recurring" if i.get("rule") else "") + ("; shared" if is_shared(i) else ""))
+            description=describe(i))
             for i in self.coordinator.data["items"] if i["kind"] == "reminder"]
 
     async def async_update_todo_item(self, item):

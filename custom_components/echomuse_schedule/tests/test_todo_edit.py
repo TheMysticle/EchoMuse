@@ -40,6 +40,24 @@ def test_the_card_offers_a_time_picker_with_the_time():
     assert features & TodoListEntityFeature.UPDATE_TODO_ITEM
 
 
+def test_the_card_can_send_the_description_back():
+    # Without SET_DESCRIPTION_ON_ITEM Home Assistant refuses any update that
+    # carries a description ("Entity does not support setting field"), and the
+    # card always sends the one it was shown.
+    assert Reminders.__new__(Reminders).supported_features & TodoListEntityFeature.SET_DESCRIPTION_ON_ITEM
+    new = changed_reminder(reminder(), card(summary="x", description="scheduled"))
+    assert new["message"] == "x"
+    assert changed_reminder(reminder(rule={"days": [1], "hour": 7, "minute": 0}, due=DUE),
+                            card(description="scheduled; recurring")) is None
+
+
+def test_a_description_that_was_changed_is_refused_not_dropped():
+    with pytest.raises(HomeAssistantError, match="cannot be edited"):
+        changed_reminder(reminder(), card(summary="x", description="my notes"))
+    with pytest.raises(HomeAssistantError, match="cannot be edited"):
+        changed_reminder(reminder(), card(description=""))
+
+
 def test_nothing_changed_sends_nothing():
     # The card rounds 12:00:17 to 12:00; that is the same reminder.
     assert changed_reminder(reminder(), card()) is None
@@ -130,3 +148,14 @@ def test_reopening_a_finished_reminder_is_refused_not_ignored():
         with pytest.raises(HomeAssistantError, match="not found"):
             await e.async_update_todo_item(card(uid="nope"))
     asyncio.run(run())
+
+
+def test_home_assistants_own_field_check_accepts_what_the_card_sends():
+    # _validate_supported_features raises "Entity does not support setting field:
+    # description" for any field whose required feature the entity lacks.
+    from homeassistant.components.todo.services import TODO_ITEM_FIELDS
+    features = Reminders.__new__(Reminders).supported_features
+    sent = {"description", "due_datetime"}
+    needed = {d.service_field: d.required_feature for d in TODO_ITEM_FIELDS}
+    assert sent <= set(needed)
+    assert all(features & needed[field] for field in sent)
