@@ -384,3 +384,66 @@ async def call_with_area_fallback(call, arguments):
         if AREA_MISSING not in retry:
             return retry
     return text
+
+
+# Home Assistant namespaces every MCP tool with its LLM API id (`assist__light__HassLightSet`)
+# once its MCP server serves more than one API, and drops the prefix again when it serves one.
+# Which of the two it is changes while the add-on runs (an integration registering its own API
+# after a restart or reload), and a model holding the other spelling is told the tool does not
+# exist, for every tool, not one.
+TOOL_NOT_FOUND = re.compile(r'(?:Tool "?[^"\n]+"? not found|Unknown tool: ?\S+)')
+NAMESPACE_SEP = "__"
+
+
+def tool_not_found(text):
+    """True for an MCP server's answer to a tool name it does not have.
+
+    That answer means nothing ran, so asking again under another name cannot do a thing twice.
+    """
+    return isinstance(text, str) and len(text) < 300 and bool(TOOL_NOT_FOUND.search(text))
+
+
+def renamed_tool(name, current):
+    """The one name in `current` that is `name` with one namespace segment added or removed, else None."""
+    if name in current:
+        return name
+    wider = [n for n in current if n.partition(NAMESPACE_SEP)[2] == name]
+    if len(wider) == 1:
+        return wider[0]
+    narrower = name.partition(NAMESPACE_SEP)[2]
+    return narrower if narrower in current else None
+
+
+def known_rename(bridge, name):
+    return getattr(bridge, "_em_renamed", {}).get(name, name)
+
+
+async def recover_renamed_tool(bridge, requested, tried, text, retry):
+    """After a not-found answer, relist the server's tools and retry once under the current name.
+
+    `requested` is the name the model used, `tried` what was sent. A rename found is remembered
+    on the bridge so later calls go straight to it, and the relist replaces the cached tool list
+    for every other session as well. Anything but a clean rename returns the original answer.
+    """
+    if not tool_not_found(text):
+        return text
+    try:
+        schema = await bridge.tools_schema(refresh=True)
+        current = renamed_tool(requested, {tool.name for tool in schema.standard_tools})
+    except Exception:
+        return text
+    if current is None or current == tried:
+        return text
+    answer = await retry(current)
+    if tool_not_found(answer):
+        return text
+    if not hasattr(bridge, "_em_renamed"):
+        bridge._em_renamed = {}
+    bridge._em_renamed[requested] = current
+    return answer
+
+
+def renamed_route(routes, name):
+    """A pooled bridge's route for a tool the model knows by an older spelling, else None."""
+    current = renamed_tool(name, set(routes))
+    return routes[current] if current is not None else None

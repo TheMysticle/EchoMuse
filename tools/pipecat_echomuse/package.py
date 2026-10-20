@@ -1068,9 +1068,11 @@ def main():
             text_result = "\\n".join(chunks) if chunks else "Tool returned no text content."
 """
     new_call = """            session = self.client._ensure_connected()  # Pipecat exposes no public call_tool yet.
+            requested = name
+            name = echomuse.known_rename(self, requested)
 
-            async def _call(call_arguments):
-                result = await session.call_tool(name, arguments=call_arguments)
+            async def _call_as(tool_name, call_arguments):
+                result = await session.call_tool(tool_name, arguments=call_arguments)
                 chunks: list[str] = []
                 for content in getattr(result, "content", []) or []:
                     text = getattr(content, "text", None)
@@ -1078,12 +1080,28 @@ def main():
                         chunks.append(text)
                 return "\\n".join(chunks) if chunks else "Tool returned no text content."
 
+            async def _call(call_arguments):
+                return await _call_as(name, call_arguments)
+
             text_result = await echomuse.call_with_area_fallback(_call, arguments)
+            text_result = await echomuse.recover_renamed_tool(
+                self, requested, name, text_result,
+                lambda current: echomuse.call_with_area_fallback(lambda call_arguments: _call_as(current, call_arguments), arguments))
 """
     if bridge.count(old_call) != 1:
         raise ValueError("Upstream MCP bridge anchor changed")
     bridge = bridge.replace(old_call, new_call)
     bridge = bridge.replace("from __future__ import annotations\n", "from __future__ import annotations\n\nfrom app import echomuse\n", 1)
+    old_route = """        route = self._tool_routes.get(name)
+        if not route:
+            raise RuntimeError(f"Unknown MCP tool: {name}")
+"""
+    if bridge.count(old_route) != 1:
+        raise ValueError("Upstream MCP bridge route anchor changed")
+    bridge = bridge.replace(old_route, """        route = self._tool_routes.get(name) or echomuse.renamed_route(self._tool_routes, name)
+        if not route:
+            raise RuntimeError(f"Unknown MCP tool: {name}")
+""")
     bridge = adapt_mcp_bridge_pool(bridge)
     path.write_text(bridge, encoding='utf-8')
     path = args.out/'app/config.py'

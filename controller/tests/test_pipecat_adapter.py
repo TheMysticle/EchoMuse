@@ -471,3 +471,101 @@ def test_cartesia_is_renewed_when_idle_and_never_while_in_use():
         for task in service.tasks:
             task.cancel()
     asyncio.run(main())
+
+
+PREFIXED={'assist__llm__GetDateTime','assist__script__get_weather','assist__media_player__HassSetVolume','echomuse-local-schedules__EchoMuseList'}
+PLAIN={'llm__GetDateTime','script__get_weather','media_player__HassSetVolume'}
+
+
+@pytest.mark.parametrize('name,current,expected',[
+    ('llm__GetDateTime',PREFIXED,'assist__llm__GetDateTime'),          # HA gained a second API
+    ('assist__llm__GetDateTime',PLAIN,'llm__GetDateTime'),             # ... and lost it again
+    ('assist__llm__GetDateTime',PREFIXED,'assist__llm__GetDateTime'),  # already current
+    ('EchoMuseList',PREFIXED,'echomuse-local-schedules__EchoMuseList'),
+    ('no_such_tool',PREFIXED,None),
+    ('GetDateTime',PREFIXED,None),                                     # a different tool, not a shorter spelling
+])
+def test_a_tool_is_found_under_the_namespace_home_assistant_now_uses(name,current,expected):
+    assert adapter.renamed_tool(name,current)==expected
+
+
+def test_a_suffix_that_fits_two_tools_is_not_guessed():
+    assert adapter.renamed_tool('x__run',{'a__x__run','b__x__run'}) is None
+
+
+@pytest.mark.parametrize('text,expected',[
+    ('Error calling tool: Tool "llm__GetDateTime" not found',True),
+    ('Unknown tool: llm__GetDateTime',True),
+    ('Error calling tool: The area does not exist (given area \'Garage\')',False),
+    ('Error calling tool: No device named lamp',False),
+    ('{"response_type": "action_done"}',False),
+    ('x'*400+' Tool "a" not found',False),   # a tool's own long answer that merely mentions it
+    (None,False),
+])
+def test_only_the_servers_unknown_tool_answer_counts(text,expected):
+    assert adapter.tool_not_found(text)==expected
+
+
+class _Bridge:
+    def __init__(self,names):
+        self.names=names; self.refreshed=0
+    async def tools_schema(self,refresh=False,**kw):
+        self.refreshed+=refresh
+        from types import SimpleNamespace as N
+        return N(standard_tools=[N(name=n) for n in self.names])
+
+
+def test_a_renamed_tool_is_retried_once_and_remembered():
+    bridge=_Bridge(PREFIXED); sent=[]
+    async def retry(current):
+        sent.append(current); return '{"date": "2026-10-20"}'
+    stale='Error calling tool: Tool "llm__GetDateTime" not found'
+    result=_run(adapter.recover_renamed_tool(bridge,'llm__GetDateTime','llm__GetDateTime',stale,retry))
+    assert result=='{"date": "2026-10-20"}' and sent==['assist__llm__GetDateTime'] and bridge.refreshed==1
+    assert adapter.known_rename(bridge,'llm__GetDateTime')=='assist__llm__GetDateTime'
+    assert adapter.known_rename(bridge,'other')=='other'
+
+
+def test_recovery_leaves_every_other_answer_and_failure_alone():
+    async def retry(current):
+        raise AssertionError('must not retry')
+    for text in ('{"ok": true}','Error calling tool: No device named lamp'):
+        bridge=_Bridge(PREFIXED)
+        assert _run(adapter.recover_renamed_tool(bridge,'llm__GetDateTime','llm__GetDateTime',text,retry))==text
+        assert bridge.refreshed==0                      # no relist for an ordinary answer
+    unknown='Error calling tool: Tool "no_such_tool" not found'
+    assert _run(adapter.recover_renamed_tool(_Bridge(PREFIXED),'no_such_tool','no_such_tool',unknown,retry))==unknown
+    class Down(_Bridge):
+        async def tools_schema(self,**kw): raise RuntimeError('MCP down')
+    stale='Error calling tool: Tool "llm__GetDateTime" not found'
+    assert _run(adapter.recover_renamed_tool(Down(PREFIXED),'llm__GetDateTime','llm__GetDateTime',stale,retry))==stale
+
+
+def test_a_retry_that_is_also_not_found_returns_the_first_answer_and_remembers_nothing():
+    bridge=_Bridge(PREFIXED)
+    async def retry(current): return 'Error calling tool: Tool "assist__llm__GetDateTime" not found'
+    stale='Error calling tool: Tool "llm__GetDateTime" not found'
+    assert _run(adapter.recover_renamed_tool(bridge,'llm__GetDateTime','llm__GetDateTime',stale,retry))==stale
+    assert not hasattr(bridge,'_em_renamed')
+
+
+def test_a_pooled_bridge_routes_an_older_public_name():
+    routes={'assist__llm__GetDateTime':('bridge','llm__GetDateTime'),'EchoMuseList':('ctl','EchoMuseList')}
+    assert adapter.renamed_route(routes,'llm__GetDateTime')==('bridge','llm__GetDateTime')
+    assert adapter.renamed_route(routes,'EchoMuseList')==('ctl','EchoMuseList')
+    assert adapter.renamed_route(routes,'nothing')is None
+
+
+def test_generated_bridge_recovers_renamed_tools_and_keeps_the_area_fallback():
+    root=ROOT/'dist/pipecat-assist-echomuse-dev/app'
+    if not (root/'mcp_bridge.py').exists():
+        pytest.skip('Package pinned Pipecat source for adapter integration tests')
+    bridge=(root/'mcp_bridge.py').read_text(encoding='utf-8')
+    ast.parse(bridge)
+    assert 'echomuse.call_with_area_fallback(_call, arguments)' in bridge
+    assert 'echomuse.recover_renamed_tool(' in bridge and 'echomuse.known_rename(self, requested)' in bridge
+    assert 'echomuse.renamed_route(self._tool_routes, name)' in bridge
+    assert (root/'echomuse.py').read_text(encoding='utf-8')==(ROOT/'tools/pipecat_echomuse/echomuse.py').read_text(encoding='utf-8')
+    # The packager applies the same edits, so the next generated add-on carries them.
+    package=(ROOT/'tools/pipecat_echomuse/package.py').read_text(encoding='utf-8')
+    assert 'echomuse.recover_renamed_tool(' in package and 'echomuse.renamed_route(self._tool_routes, name)' in package
