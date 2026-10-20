@@ -97,6 +97,21 @@ def day_view(items, date, now):
     return out
 
 
+# What a model, and the add-on's fast path, read from the speaker's snapshot. The rest is the
+# speaker's own bookkeeping: `requests` alone is the last ~60 command ids it has de-duplicated
+# against, and it went into the model's context on every list, create and change.
+SNAPSHOT_KEYS = ("items", "active", "time_valid")
+SETTINGS_KEYS = ("snooze",)           # spoken back after "snooze it" when no length was asked for
+ITEM_INTERNAL = ("speech", "speech_version")   # cached reminder audio hash; unreadable to a model
+
+
+def llm_snapshot(snapshot):
+    items = [{k: v for k, v in item.items() if k not in ITEM_INTERNAL} for item in snapshot.get("items", [])]
+    view = {k: snapshot[k] for k in SNAPSHOT_KEYS if k in snapshot and k != "items"}
+    settings = {k: v for k, v in (snapshot.get("settings") or {}).items() if k in SETTINGS_KEYS}
+    return {"items": items, **view, **({"settings": settings} if settings else {})}
+
+
 def command(name, args, now):
     spec = next((tool for tool in TOOLS if tool["name"] == name), None)
     if spec is None or not isinstance(args, dict):
@@ -223,6 +238,7 @@ async def handle(request, devices):
                 if args.get("kind"):
                     items = [item for item in items if item["kind"] == args["kind"]]
                 snapshot = {**snapshot, "items": day_view(items, args.get("date"), now)}
+            snapshot = llm_snapshot(snapshot)
             zones = {item["timezone"] for item in snapshot.get("items", []) if item.get("timezone")}
             content = {"device_acknowledged": True, "now_utc": datetime.fromtimestamp(now, timezone.utc).isoformat(), "timezone": os.environ.get("TZ") or (next(iter(zones)) if len(zones) == 1 else None), "snapshot": snapshot}
             if name == "EchoMuseCreate" and args["kind"] == "reminder":

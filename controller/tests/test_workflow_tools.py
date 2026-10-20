@@ -317,3 +317,22 @@ def test_list_day_view_filters_in_the_items_own_timezone():
     with pytest.raises(ValueError):
         t.day_view(items, "next week", now)
     assert t.command("EchoMuseList", {"kind": "reminder", "date": "today"}, now) == {"action": "list"}
+
+
+def test_llm_snapshot_drops_the_speakers_bookkeeping_and_keeps_what_is_read():
+    import em_workflow_tools as t
+    full = {"version": 1, "owner": "G090QU067393015G", "revision": 99,
+            "items": [{"id": "a", "kind": "reminder", "label": "x", "message": "x", "state": "scheduled",
+                       "due": 1792512000, "timezone": "Europe/Warsaw", "enabled": True,
+                       "speech_version": 1, "speech": "9ec7" * 16, "rule": {"hour": 7, "minute": 0}}],
+            "settings": {"snooze": 540, "ramp": 20, "colors": {"alarm": [255, 152, 0]}, "volume": 0.2},
+            "requests": ["r%d" % i for i in range(60)], "time_valid": True, "active": "a"}
+    view = t.llm_snapshot(full)
+    assert set(view) == {"items", "active", "time_valid", "settings"}
+    assert view["settings"] == {"snooze": 540}
+    assert view["items"][0] == {"id": "a", "kind": "reminder", "label": "x", "message": "x", "state": "scheduled",
+                                "due": 1792512000, "timezone": "Europe/Warsaw", "enabled": True,
+                                "rule": {"hour": 7, "minute": 0}}
+    assert len(json.dumps(view)) < len(json.dumps(full)) / 2
+    assert full["items"][0]["speech"]                       # the speaker's own copy is untouched
+    assert t.llm_snapshot({"items": []}) == {"items": []}   # an older speaker's smaller snapshot
