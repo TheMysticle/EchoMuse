@@ -73,6 +73,22 @@ intents:
         kind: reminder
         action: list
     - sentences:
+      - (list|read)[ aloud][ my| the] reminder[s] (for|on) {em_day:date}
+      - what reminder[s] do I have (for|on) {em_day:date}
+      - what are my reminder[s] (for|on) {em_day:date}
+      - do I have any reminder[s] (for|on) {em_day:date}
+      slots:
+        kind: reminder
+        action: list
+    - sentences:
+      - (list|read)[ aloud][ my| the] reminder[s] (for|on) {em_date:date}
+      - what reminder[s] do I have (for|on) {em_date:date}
+      - what are my reminder[s] (for|on) {em_date:date}
+      - do I have any reminder[s] (for|on) {em_date:date}
+      slots:
+        kind: reminder
+        action: list
+    - sentences:
       - (what|when) is[ my| the] next alarm
       slots:
         kind: alarm
@@ -216,6 +232,81 @@ lists:
     - tomorrow
     - every
     - each
+  em_day:
+    values:
+    - today
+    - tomorrow
+    - monday
+    - tuesday
+    - wednesday
+    - thursday
+    - friday
+    - saturday
+    - sunday
+  em_date:
+    values:
+    - the 1st
+    - the 2nd
+    - the 3rd
+    - the 4th
+    - the 5th
+    - the 6th
+    - the 7th
+    - the 8th
+    - the 9th
+    - the 10th
+    - the 11th
+    - the 12th
+    - the 13th
+    - the 14th
+    - the 15th
+    - the 16th
+    - the 17th
+    - the 18th
+    - the 19th
+    - the 20th
+    - the 21st
+    - the 22nd
+    - the 23rd
+    - the 24th
+    - the 25th
+    - the 26th
+    - the 27th
+    - the 28th
+    - the 29th
+    - the 30th
+    - the 31st
+    - the eighteenth
+    - the eighth
+    - the eleventh
+    - the fifteenth
+    - the fifth
+    - the first
+    - the fourteenth
+    - the fourth
+    - the nineteenth
+    - the ninth
+    - the second
+    - the seventeenth
+    - the seventh
+    - the sixteenth
+    - the sixth
+    - the tenth
+    - the third
+    - the thirteenth
+    - the thirtieth
+    - the thirty first
+    - the twelfth
+    - the twentieth
+    - the twenty eighth
+    - the twenty fifth
+    - the twenty first
+    - the twenty fourth
+    - the twenty ninth
+    - the twenty second
+    - the twenty seventh
+    - the twenty sixth
+    - the twenty third
   em_request:
     wildcard: true
   em_target:

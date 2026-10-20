@@ -15,7 +15,7 @@ class ScheduleAPI(API):
             api_prompt=("Use these tools for persistent timers, alarms and reminders on the originating EchoMuse satellite. "
                         "EchoMuseCreate requires kind timer/alarm/reminder and request containing a duration or explicit time, "
                         "for example 'to take medicine every weekday at 7am'. EchoMuseAction accepts action, kind and target; "
-                        "EchoMuseList accepts kind. Never claim success unless the tool confirms the device save. "
+                        "EchoMuseList accepts kind and, for a question about one day, date (today or tomorrow); never work the day out yourself. Never claim success unless the tool confirms the device save. "
                         "Ambiguous or unavailable schedules require clarification; never substitute a Home Assistant timer."),
             tools=[IntentTool(name, self.handlers[name], integration=DOMAIN) for name in CUSTOM])
 

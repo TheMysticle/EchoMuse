@@ -4,7 +4,7 @@ The bearer identity selects the speaker; model arguments cannot select one.
 Commands use the same acknowledged device transport as dashboard schedules.
 """
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 import os
 import uuid
@@ -19,8 +19,8 @@ def _schema(properties, required=()):
 
 KIND = {"type": "string", "enum": ["timer", "alarm", "reminder"]}
 TOOLS = [
-    {"name": "EchoMuseList", "description": "Read persistent schedules on this originating speaker and the current UTC time. Use before resolving calendar times or selecting an item to change. These are speaker-owned alerts, not HA timers.",
-     "inputSchema": _schema({"kind": KIND})},
+    {"name": "EchoMuseList", "description": "Read persistent schedules on this originating speaker and the current UTC time. Use before resolving calendar times or selecting an item to change. Each item carries `due_local`, its due time in its own timezone. For a question about a particular day (\"reminders for today\"), pass `date` so the speaker filters; do not work the day out from `due`. These are speaker-owned alerts, not HA timers.",
+     "inputSchema": _schema({"kind": KIND, "date": {"type": "string", "description": "Only items due on this local day: `today`, `tomorrow` or YYYY-MM-DD."}})},
     {"name": "EchoMuseCreate", "description": "Save a persistent timer, alarm or reminder on this speaker. Provide duration_seconds OR an explicit RFC3339 when with UTC offset, plus an IANA timezone. Ask the user about ambiguous dates or AM/PM, and about the reminder text only if they have not said it. A reminder REQUIRES `message`, the words to remind the user of (for example 'take out the trash'); `label` is only a short name. Only confirm success if this tool confirms device acknowledgment. Reminder speech may use the configured sound fallback.",
      "inputSchema": _schema({"kind": KIND, "label": {"type": "string"}, "message": {"type": "string"},
         "duration_seconds": {"type": "integer", "minimum": 1, "maximum": 315360000},
@@ -59,6 +59,42 @@ VOLUME_TOOL = {
     ),
     "inputSchema": _schema({"level": {"type": "integer", "minimum": 0, "maximum": 100}}, ("level",)),
 }
+
+
+def _local_due(item):
+    try:
+        return datetime.fromtimestamp(item["due"], ZoneInfo(item.get("timezone") or "UTC"))
+    except (KeyError, TypeError, ValueError, OSError):
+        return None
+
+
+def day_view(items, date, now):
+    """Stamp each item with `due_local` and, given `date`, keep only that day.
+
+    The model was handed raw epoch `due` values and asked to decide which were
+    "today"; it answered "none" with two due today. The day is judged in each
+    item's own timezone, which is the one the user set it in.
+    """
+    if date is not None:
+        date = date.strip().lower()
+        if date not in ("today", "tomorrow"):
+            try:
+                datetime.strptime(date, "%Y-%m-%d")
+            except ValueError:
+                raise ValueError("`date` must be today, tomorrow or YYYY-MM-DD")
+    out = []
+    for item in items:
+        local = _local_due(item) if item.get("due") else None
+        item = {**item, "due_local": local.isoformat() if local else None}
+        if date is not None:
+            if local is None:
+                continue
+            ref = datetime.fromtimestamp(now, local.tzinfo).date()
+            want = ref if date == "today" else ref + timedelta(days=1) if date == "tomorrow" else datetime.strptime(date, "%Y-%m-%d").date()
+            if local.date() != want:
+                continue
+        out.append(item)
+    return out
 
 
 def command(name, args, now):
@@ -182,8 +218,11 @@ async def handle(request, devices):
             now = int(datetime.now(timezone.utc).timestamp())
             cmd = command(name, args, now)
             snapshot = await live.schedule.request(live.send_control, cmd)
-            if name == "EchoMuseList" and args.get("kind"):
-                snapshot = {**snapshot, "items": [item for item in snapshot["items"] if item["kind"] == args["kind"]]}
+            if name == "EchoMuseList":
+                items = snapshot["items"]
+                if args.get("kind"):
+                    items = [item for item in items if item["kind"] == args["kind"]]
+                snapshot = {**snapshot, "items": day_view(items, args.get("date"), now)}
             zones = {item["timezone"] for item in snapshot.get("items", []) if item.get("timezone")}
             content = {"device_acknowledged": True, "now_utc": datetime.fromtimestamp(now, timezone.utc).isoformat(), "timezone": os.environ.get("TZ") or (next(iter(zones)) if len(zones) == 1 else None), "snapshot": snapshot}
             if name == "EchoMuseCreate" and args["kind"] == "reminder":

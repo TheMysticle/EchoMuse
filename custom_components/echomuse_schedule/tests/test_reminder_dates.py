@@ -212,3 +212,54 @@ def test_legacy_cached_speech_is_regenerated_with_reminder_intro(tmp_path):
         assert saved['speech']=='new-audio' and saved['speech_version']==1
         await hass.async_stop(force=True)
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("phrase,spoken,missing", [
+    ("what are my reminders for today", ["today"], ["tomorrow", "tuesday", "later"]),
+    ("what reminders do I have on tomorrow", ["tomorrow"], ["today", "tuesday", "later"]),
+    ("do I have any reminders for tuesday", ["tuesday"], ["today", "tomorrow", "later"]),
+    ("list my reminders on the 24th", ["later"], ["today", "tomorrow", "tuesday"]),
+    ("read aloud my reminders for the twenty fourth", ["later"], ["today", "tomorrow", "tuesday"]),
+    ("what are my reminders", ["today", "tomorrow", "tuesday", "later"], []),
+])
+def test_reminders_for_a_day_through_real_sentence_and_ha_handler(tmp_path, phrase, spoken, missing):
+    async def run():
+        hass = HomeAssistant(str(tmp_path))
+        hass.config.time_zone = "Europe/Warsaw"
+        result = recognize_best(phrase, grammar(), language="en", best_metadata_key="custom_sentence")
+        assert result.intent.name == "EchoMuseList", phrase
+        coordinator = SimpleNamespace(device_id="source", last_update_success=True, last_created={},
+            data={"active": "", "items": [reminder("today"), reminder("tomorrow", 1),
+                                          reminder("tuesday", 4), reminder("later", 8)]},
+            command=AsyncMock())
+        intent.async_register(hass, Handler("EchoMuseList", {"source": coordinator}))
+        with patch("custom_components.echomuse_schedule.intents.datetime") as clock:
+            clock.now.return_value = NOW
+            clock.fromtimestamp.side_effect = datetime.fromtimestamp
+            response = await intent.async_handle(hass, "conversation", "EchoMuseList",
+                {name: {"value": entity.value} for name, entity in result.entities.items()},
+                phrase, device_id="source")
+        text = response.speech["plain"]["speech"]
+        for name in spoken:
+            assert name + ":" in text, (phrase, text)
+        for name in missing:
+            assert name + ":" not in text, (phrase, text)
+        await hass.async_stop(force=True)
+    asyncio.run(run())
+
+
+def test_a_day_with_no_reminders_says_so(tmp_path):
+    async def run():
+        hass = HomeAssistant(str(tmp_path))
+        hass.config.time_zone = "Europe/Warsaw"
+        coordinator = SimpleNamespace(device_id="source", last_update_success=True, last_created={},
+            data={"active": "", "items": [reminder("tomorrow", 1)]}, command=AsyncMock())
+        intent.async_register(hass, Handler("EchoMuseList", {"source": coordinator}))
+        with patch("custom_components.echomuse_schedule.intents.datetime") as clock:
+            clock.now.return_value = NOW
+            clock.fromtimestamp.side_effect = datetime.fromtimestamp
+            response = await intent.async_handle(hass, "conversation", "EchoMuseList",
+                {"kind": {"value": "reminder"}, "date": {"value": "today"}}, "x", device_id="source")
+        assert response.speech["plain"]["speech"] == "You don't have any reminders set for today."
+        await hass.async_stop(force=True)
+    asyncio.run(run())

@@ -81,6 +81,26 @@ def calendar_day(text):
 CLOCK_GAP = "That local time does not exist because the clocks change; please choose another time"
 
 
+def resolve_day(text, now):
+    """Name a spoken day (today, tomorrow, a weekday, "the 24th") as what
+    EchoMuseList's `date` accepts; the next such day counting today."""
+    text = (text or "").strip().lower()
+    if text in ("today", "tomorrow"):
+        return text
+    if text in DAYS:
+        # DAYS is Sunday-first; datetime.weekday() is Monday-first.
+        ahead = (DAYS.index(text) + 6 - now.weekday()) % 7
+        return (now + timedelta(days=ahead)).date().isoformat()
+    day, _ = calendar_day(text)
+    if day is None:
+        return None
+    for ahead in range(62):
+        candidate = now + timedelta(days=ahead)
+        if candidate.day == day:
+            return candidate.date().isoformat()
+    return None
+
+
 def require_local_time(due):
     """Reject a wall-clock time the zone skips (the hour lost when clocks go forward)."""
     if datetime.fromtimestamp(due.timestamp(), due.tzinfo).replace(tzinfo=None) != due.replace(tzinfo=None):

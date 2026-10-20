@@ -13,9 +13,11 @@ import json
 from pathlib import Path
 import sys
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
+
+import time
 
 import pytest
 
@@ -76,6 +78,9 @@ class FakeBridge:
             snapshot = self.scheduler.snapshot()
             if args.get("kind"):
                 snapshot = {**snapshot, "items": [i for i in snapshot["items"] if i["kind"] == args["kind"]]}
+            if args.get("date"):
+                # The step resolves days against the real clock, so the fake must too.
+                snapshot = {**snapshot, "items": em_workflow_tools.day_view(snapshot["items"], args["date"], int(time.time()))}
             return json.dumps({"device_acknowledged": True, "now_utc": self.now.isoformat(),
                                "timezone": TZ, "snapshot": snapshot})
         if name == "EchoMuseCreate":
@@ -259,3 +264,63 @@ def test_cancel_all_has_no_mcp_equivalent_and_falls_through_to_the_llm(harness):
     # Absorbed by neither the local scheduler nor HA's local agent -- passed
     # through unchanged for the LLM's own (equally limited) tool to try.
     assert harness.step.sent == [(frame, harness.direction.DOWNSTREAM)]
+
+
+def _reminders_on_three_days(harness):
+    zone = ZoneInfo(TZ)
+    today = datetime.now(zone).replace(hour=23, minute=0, second=0, microsecond=0)
+    for name, days in (("alpha", 0), ("bravo", 1), ("charlie", 3)):
+        harness.scheduler.items.append({
+            "id": name, "kind": "reminder", "label": name, "message": name, "state": "scheduled",
+            "due": int((today + timedelta(days=days)).timestamp()), "timezone": TZ})
+    return today
+
+
+def test_reminders_for_today_asks_the_speaker_for_today_only(harness):
+    _reminders_on_three_days(harness)
+    reply = asyncio.run(harness.say("what are my reminders for today"))
+    assert harness.bridge.calls == [("EchoMuseList", {"kind": "reminder", "date": "today"})]
+    assert "alpha" in reply and "bravo" not in reply and "charlie" not in reply
+
+
+def test_reminders_for_tomorrow(harness):
+    _reminders_on_three_days(harness)
+    reply = asyncio.run(harness.say("do I have any reminders for tomorrow"))
+    assert harness.bridge.calls == [("EchoMuseList", {"kind": "reminder", "date": "tomorrow"})]
+    assert "bravo" in reply and "alpha" not in reply and "charlie" not in reply
+
+
+def test_reminders_for_a_weekday_are_resolved_to_a_date(harness):
+    today = _reminders_on_three_days(harness)
+    third = today + timedelta(days=3)
+    reply = asyncio.run(harness.say("what reminders do I have on " + third.strftime("%A").lower()))
+    assert harness.bridge.calls == [("EchoMuseList", {"kind": "reminder", "date": third.date().isoformat()})]
+    assert "charlie" in reply and "alpha" not in reply and "bravo" not in reply
+
+
+def test_a_day_with_no_reminders_is_said_to_be_empty(harness):
+    harness.scheduler.items.clear()
+    reply = asyncio.run(harness.say("what are my reminders for tomorrow"))
+    assert reply == "You don't have any reminders set for tomorrow."
+
+
+def test_reminders_without_a_day_still_list_everything(harness):
+    _reminders_on_three_days(harness)
+    reply = asyncio.run(harness.say("what are my reminders"))
+    assert harness.bridge.calls == [("EchoMuseList", {"kind": "reminder"})]
+    assert all(name in reply for name in ("alpha", "bravo", "charlie"))
+
+
+def test_resolve_day():
+    lang = load('schedule_language.py', 'test_schedule_language_resolve')
+    fri = datetime(2026, 10, 16, 8, tzinfo=ZoneInfo(TZ))
+    r = lambda text: lang.resolve_day(text, fri)
+    assert (r("today"), r("tomorrow")) == ("today", "tomorrow")
+    assert r("friday") == "2026-10-16"      # today counts
+    assert r("saturday") == "2026-10-17"
+    assert r("thursday") == "2026-10-22"    # wraps into next week
+    assert r("the 24th") == "2026-10-24"
+    assert r("the twenty fourth") == "2026-10-24"
+    assert r("the 3rd") == "2026-11-03"     # already past this month
+    assert r("the 31st") == "2026-10-31"
+    assert r("someday") is None

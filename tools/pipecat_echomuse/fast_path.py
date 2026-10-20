@@ -729,8 +729,16 @@ class FastPathStep(FrameProcessor):
         return True
 
     async def _run_schedule_list(self, kind: str, slots: dict) -> bool:
+        args = {"kind": kind} if kind else {}
+        if slots.get("date"):
+            # The speaker filters by day; reading out every reminder to a
+            # question about one day is the fault this exists to prevent.
+            day = schedule_language.resolve_day(slots["date"], datetime.now(ZoneInfo(self._timezone)))
+            if day is None:
+                return False
+            args["date"] = day
         try:
-            raw = await self._bridge.call_tool("EchoMuseList", {"kind": kind} if kind else {})
+            raw = await self._bridge.call_tool("EchoMuseList", args)
             content = json.loads(raw)
             if not isinstance(content, dict) or "snapshot" not in content:
                 raise ValueError(content if isinstance(content, str) else "Unexpected scheduler response")
@@ -761,7 +769,8 @@ class FastPathStep(FrameProcessor):
                    if i.get("due") else "")
                 for i in items
             )
-        await self.push_frame(TTSSpeakFrame(text=text or f"You don't have any {kind}s set."), FrameDirection.DOWNSTREAM)
+        none = f"You don't have any {kind}s set" + (f" for {slots['date']}." if slots.get("date") else ".")
+        await self.push_frame(TTSSpeakFrame(text=text or none), FrameDirection.DOWNSTREAM)
         return True
 
     async def _run_schedule_action(self, kind: str, slots: dict) -> bool:

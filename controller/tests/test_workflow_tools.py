@@ -292,3 +292,28 @@ def test_timers_and_alarms_still_need_no_message():
 def test_the_tool_description_says_a_reminder_requires_message():
     spec=next(t for t in tools.TOOLS if t['name']=='EchoMuseCreate')
     assert 'REQUIRES `message`' in spec['description']
+
+
+def test_list_day_view_filters_in_the_items_own_timezone():
+    from datetime import datetime, timezone
+    from zoneinfo import ZoneInfo
+    import em_workflow_tools as t
+    zone = ZoneInfo("Europe/London")
+    now = int(datetime(2026, 10, 20, 8, 0, tzinfo=zone).timestamp())
+
+    def at(day, hour):
+        return int(datetime(2026, 10, day, hour, 0, tzinfo=zone).timestamp())
+    items = [{"id": "a", "due": at(20, 23), "timezone": "Europe/London"},
+             {"id": "b", "due": at(21, 0), "timezone": "Europe/London"},
+             {"id": "c", "due": at(22, 9), "timezone": "Europe/London"},
+             {"id": "d", "due": 0, "timezone": "Europe/London"}]
+    ids = lambda date: [i["id"] for i in t.day_view(items, date, now)]
+    assert ids(None) == ["a", "b", "c", "d"]
+    assert ids("today") == ["a"]
+    assert ids("Tomorrow") == ["b"]
+    assert ids("2026-10-22") == ["c"]
+    assert t.day_view(items, None, now)[0]["due_local"].startswith("2026-10-20T23:00")
+    assert t.day_view(items, None, now)[3]["due_local"] is None
+    with pytest.raises(ValueError):
+        t.day_view(items, "next week", now)
+    assert t.command("EchoMuseList", {"kind": "reminder", "date": "today"}, now) == {"action": "list"}

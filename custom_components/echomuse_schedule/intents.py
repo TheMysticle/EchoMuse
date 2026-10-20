@@ -195,7 +195,7 @@ class Handler(intent.IntentHandler):
             return self.original.slot_schema
         return {vol.Optional("kind"): str, vol.Optional("request"): str,
                 vol.Optional("action"): str, vol.Optional("target"): str, vol.Optional("prefix"): str,
-                vol.Optional("when"): str, vol.Optional("unit"): str}
+                vol.Optional("when"): str, vol.Optional("unit"): str, vol.Optional("date"): str}
 
     async def async_handle(self, obj):
         response = obj.create_response()
@@ -218,6 +218,8 @@ class Handler(intent.IntentHandler):
             data = c.data
             if action == "list":
                 items = [i for i in data["items"] if i["kind"] == kind]
+                if slots.get("date"):
+                    items = [i for i in items if _matches_day(i, slots["date"])]
                 if slots.get("name") or slots.get("target"):
                     items = [select(data, kind, slots.get("target") or slots.get("name"), slots, recent=getattr(c, "last_created", {}))]
                 now = int(datetime.now(timezone.utc).timestamp())
@@ -225,7 +227,7 @@ class Handler(intent.IntentHandler):
                     (f", {max(0, i['due']-now)} seconds remaining" if i["kind"] == "timer" and i["state"] == "scheduled" else "") for i in items)
                 if kind != "timer":
                     text = "; ".join((i.get("message") or i["label"]) + ": " + i["state"] + (", " + datetime.fromtimestamp(i["due"], ZoneInfo(i["timezone"])).strftime("%A %d %B at %H:%M %Z") if i.get("due") else "") for i in items)
-                response.async_set_speech(text or f"You don't have any {kind}s set.")
+                response.async_set_speech(text or (f"You don't have any {kind}s set for {slots['date']}." if slots.get("date") else f"You don't have any {kind}s set."))
                 return response
             command = {"action": action, "kind": kind, "request": uuid.uuid4().hex}
             if action == "create":
