@@ -92,7 +92,7 @@ SCHEDULE_INTENTS = frozenset({"EchoMuseCreate", "EchoMuseList", "EchoMuseAction"
 # "complete" have no MCP equivalent (the device REST API the native HA
 # handler uses supports them, but that endpoint is not reachable from here),
 # so those fall through to the LLM's own, equally limited, tool.
-SCHEDULE_ACTIONS = frozenset({"cancel", "dismiss", "snooze", "pause", "resume", "enable", "disable"})
+SCHEDULE_ACTIONS = frozenset({"cancel", "dismiss", "snooze", "pause", "resume", "enable", "disable", "edit"})
 
 # Action intents only: each has a clean action_done/action_failed result
 # shape from HA's MCP intent tools (data.success / data.failed lists), so a
@@ -755,22 +755,10 @@ class FastPathStep(FrameProcessor):
             except ValueError as err:
                 await self.push_frame(TTSSpeakFrame(text=str(err)), FrameDirection.DOWNSTREAM)
                 return True
-        now = int(time.time())
-        if kind == "timer":
-            text = "; ".join(
-                (i.get("message") or i["label"]) + ": " + i["state"]
-                + (f", {max(0, i['due'] - now)} seconds remaining" if i["state"] == "scheduled" else "")
-                for i in items
-            )
-        else:
-            text = "; ".join(
-                (i.get("message") or i["label"]) + ": " + i["state"]
-                + (", " + datetime.fromtimestamp(i["due"], ZoneInfo(i["timezone"])).strftime("%A %d %B at %H:%M %Z")
-                   if i.get("due") else "")
-                for i in items
-            )
-        none = f"You don't have any {kind}s set" + (f" for {slots['date']}." if slots.get("date") else ".")
-        await self.push_frame(TTSSpeakFrame(text=text or none), FrameDirection.DOWNSTREAM)
+        day = schedule_dialogue.day_phrase(slots["date"]) if slots.get("date") else None
+        nxt = (target or "").strip().lower() in ("next", "next one")
+        text = schedule_dialogue.list_speech(kind, items, int(time.time()), day=day, nxt=nxt)
+        await self.push_frame(TTSSpeakFrame(text=text), FrameDirection.DOWNSTREAM)
         return True
 
     async def _run_schedule_action(self, kind: str, slots: dict) -> bool:
@@ -791,6 +779,8 @@ class FastPathStep(FrameProcessor):
             return False
         data = content["snapshot"]
         target = slots.get("target")
+        if action == "edit" and (target or "").strip().lower() in ("my", "the"):
+            target = None         # "move my reminder to ...": the wildcard caught the article
         if action in ("dismiss", "snooze") and not target:
             current = next((i for i in data["items"] if i["id"] == data.get("active")), None)
             if current:
@@ -812,7 +802,16 @@ class FastPathStep(FrameProcessor):
                 await self.push_frame(TTSSpeakFrame(text="Please give a snooze duration"), FrameDirection.DOWNSTREAM)
                 return True
             args["seconds"] = seconds
+        if action == "edit":
+            try:
+                args["when"] = schedule_language.moved_time(slots.get("request", ""), self._timezone).isoformat()
+            except schedule_language.Clarification:
+                return False          # no AM/PM, or no time at all: the LLM can ask and carry on
+            except ValueError as err:
+                await self.push_frame(TTSSpeakFrame(text=str(err)), FrameDirection.DOWNSTREAM)
+                return True
         # A tool call may have real-world effects from here on.
+        raw = None
         try:
             raw = await self._bridge.call_tool("EchoMuseAction", args)
             content = json.loads(raw)
@@ -820,7 +819,9 @@ class FastPathStep(FrameProcessor):
                 raise ValueError(content if isinstance(content, str) else "Unexpected scheduler response")
         except Exception as err:
             logger.warning("Local schedule: action failed: {}", err)
-            await self.push_frame(TTSSpeakFrame(text="Sorry, that didn't work."), FrameDirection.DOWNSTREAM)
+            # The speaker refuses an edit in a sentence ("that one has already finished"); say it.
+            refusal = raw if action == "edit" and isinstance(raw, str) and not raw.lstrip().startswith(("{", "[")) and len(raw) < 200 else None
+            await self.push_frame(TTSSpeakFrame(text=refusal or "Sorry, that didn't work."), FrameDirection.DOWNSTREAM)
             return True
         text = {
             "cancel": f"{kind.title()} cancelled.", "dismiss": f"{kind.title()} stopped.",
@@ -830,5 +831,8 @@ class FastPathStep(FrameProcessor):
         if action == "snooze":
             text = "Snoozed for " + schedule_dialogue.duration_speech(
                 args.get("seconds") or data.get("settings", {}).get("snooze", 540)) + "."
+        if action == "edit":
+            moved = next((i for i in content["snapshot"]["items"] if i["id"] == item["id"]), item)
+            text = schedule_dialogue.moved_speech(kind, moved, int(time.time()))
         await self.push_frame(TTSSpeakFrame(text=text), FrameDirection.DOWNSTREAM)
         return True

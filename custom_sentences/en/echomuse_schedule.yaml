@@ -215,6 +215,20 @@ intents:
       slots:
         action: snooze
         unit: minutes
+    # Moving only. Rewording ("change my reminder to buy milk") cannot be told
+    # from a time by a template, so it stays with the LLM's edit action.
+    - sentences:
+      - (move|reschedule)[ the| my] {em_target:target} reminder to {em_request:request}
+      - (move|reschedule)[ the| my] reminder to {em_request:request}
+      slots:
+        kind: reminder
+        action: edit
+    - sentences:
+      - (move|reschedule)[ the| my] {em_target:target} alarm to {em_request:request}
+      - (move|reschedule)[ the| my] alarm to {em_request:request}
+      slots:
+        kind: alarm
+        action: edit
     - sentences:
       - I've done that reminder
       - I have done that reminder

@@ -1590,6 +1590,21 @@ function scheduleWallTime(value, zone) {
   return Math.floor(guess/1000);
 }
 
+// The value a datetime-local input shows for an instant, in the item's own zone.
+function scheduleInputValue(seconds, zone) {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-GB', {timeZone:zone, year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', hourCycle:'h23'})
+    .formatToParts(new Date(seconds*1000)).map(x => [x.type, x.value]));
+  return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}`;
+}
+
+// Rewording and moving: the device swaps the whole item out, and keeps its state only
+// when the deadline is unchanged, so a finished item is never offered an edit (a new
+// deadline would ring it again) and a shared copy is changed on its original.
+function scheduleEditable(item) {
+  return (item.kind === 'reminder' || item.kind === 'alarm')
+    && !['completed', 'canceled', 'missed'].includes(item.state) && !SHARED_COPY.test(item.id);
+}
+
 let scheduleIdCounter = 0;
 function scheduleId() {
   const cryptoApi = globalThis.crypto;
@@ -1621,6 +1636,7 @@ function SchedulesTab({ device, isAdmin }) {
   const [showKey, setShowKey] = useState(false);
   const [kind, setKind] = useState('timer');
   const [label, setLabel] = useState('');
+  const [editing, setEditing] = useState(null);
   const [seconds, setSeconds] = useState(300);
   const [when, setWhen] = useState('');
   const [zone, setZone] = useState(() => Intl.DateTimeFormat().resolvedOptions().timeZone);
@@ -1687,6 +1703,43 @@ function SchedulesTab({ device, isAdmin }) {
       if (kind === 'reminder') item.message = label;
       await command({action:'create',item});
       setNotice(kind==='reminder'?'Reminder saved on satellite. Use Assist or HA to create reminders with cached speech.':'Saved on satellite');
+    });
+  };
+  const startEdit = item => setEditing({
+    id: item.id, text: item.message || item.label || '',
+    when: item.rule ? '' : item.due ? scheduleInputValue(item.due, item.timezone || 'UTC') : '',
+    clock: item.rule ? `${String(item.rule.hour).padStart(2,'0')}:${String(item.rule.minute).padStart(2,'0')}` : '',
+  });
+  const saveEdit = async (event, item) => {
+    event.preventDefault();
+    await run(async () => {
+      const next = {...item};
+      const text = editing.text.trim();
+      if (item.kind === 'reminder') {
+        if (!text) throw new Error('A reminder needs words to say');
+        if (text !== (item.message || '')) {
+          if (!item.label || item.label === item.message || item.label === 'reminder') next.label = text;
+          next.message = text;
+          delete next.speech; delete next.speech_version;     // the cached audio says the old words
+        }
+      }
+      if (item.rule) {
+        const clock = editing.clock.match(/^(\d{2}):(\d{2})$/);
+        if (!clock) throw new Error('Choose a time');
+        if (item.rule.interval) throw new Error('A repeating interval cannot be moved; add a new one');
+        const hour = Number(clock[1]), minute = Number(clock[2]);
+        if (hour !== item.rule.hour || minute !== item.rule.minute) { next.rule = {...item.rule, hour, minute}; next.due = 0; }
+      } else {
+        if (!editing.when) throw new Error('Choose a date and time');
+        const due = scheduleWallTime(editing.when, item.timezone || 'UTC');
+        if (due !== item.due) {
+          if (due <= Math.floor(Date.now()/1000)) throw new Error('Choose a time in the future');
+          next.due = due;
+        }
+      }
+      await command({action:'edit', id:item.id, item:next});
+      setEditing(null);
+      setNotice(item.kind === 'reminder' && next.message !== item.message ? 'Reminder changed. Its spoken audio is cached again by Home Assistant; until then the satellite plays its sound.' : 'Saved on satellite');
     });
   };
   const saveSettings = async event => {
@@ -1756,7 +1809,15 @@ function SchedulesTab({ device, isAdmin }) {
           </div>
           {isAdmin && <div style={{display:'flex', gap:6, flexWrap:'wrap', alignItems:'center'}}>
             {(item.state==='ringing'?['dismiss','snooze']:[]).concat(item.kind==='timer'&&item.state==='scheduled'?['pause']:[], item.state==='paused'?['resume']:[], item.rule?[item.enabled?'disable':'enable']:[], ['cancel']).map(action => <Pill key={action} small danger={action==='cancel'} disabled={busy} onClick={()=>run(()=>command({action,id:item.id}))}>{action}</Pill>)}
+            {scheduleEditable(item) && <Pill small disabled={busy} onClick={()=>editing && editing.id===item.id ? setEditing(null) : startEdit(item)}>{editing && editing.id===item.id ? 'close' : 'edit'}</Pill>}
           </div>}
+          {isAdmin && editing && editing.id===item.id && <form onSubmit={e=>saveEdit(e,item)} style={{flexBasis:'100%', display:'flex', gap:'var(--space-6)', flexWrap:'wrap', alignItems:'end'}}>
+            {item.kind==='reminder' && field('Reminder text', <input className="em-inset em-input" value={editing.text} maxLength={160} required onChange={e=>setEditing(old=>({...old,text:e.target.value}))}/>)}
+            {item.rule
+              ? field('Time (repeats '+(item.rule.days.length===7?'every day':'on its days')+')', <input className="em-inset em-input" type="time" required value={editing.clock} onChange={e=>setEditing(old=>({...old,clock:e.target.value}))}/>)
+              : field('Date and time ('+(item.timezone||'UTC')+')', <input className="em-inset em-input" type="datetime-local" required value={editing.when} onChange={e=>setEditing(old=>({...old,when:e.target.value}))}/>)}
+            <Pill small accent disabled={busy}>Save</Pill>
+          </form>}
         </div>)}
       </Panel>
       {isAdmin && <div className="em-grid2" style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:18, alignItems:'start'}}>

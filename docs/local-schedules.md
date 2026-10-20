@@ -174,6 +174,39 @@ the time and the local date. Several matches require a more specific name or
 time. Replace `custom_components/echomuse_schedule` and restart HA to install
 these fixes; no sentence YAML, controller, or satellite binary changes are needed.
 
+## Reading out and changing reminders (companion 0.1.13)
+
+**Lists** read the way a person says them, in time order, with no weekday or
+time zone name unless the item is not today: “You have 3 reminders today. At
+3:30 PM, go to your aunt's house. At 6 PM, take out the recycling. And at 10 PM,
+collect brother from the airport.” Finished reminders (completed or cancelled)
+are left out; they stay on the Echo for the retention period and used to be
+read as if still to do. A list over five items says how many more there are.
+Timers say what is left (“The tea timer has 4 minutes and 5 seconds left”) and
+repeating alarms name their days (“At 7 AM every weekday”). The same text is
+produced by the Assist handler and by the Pipecat fast path.
+
+**Moving** a reminder or alarm by voice: “move my reminder to 5pm tomorrow”,
+“reschedule the dentist reminder to 9am”, “move my next alarm to 8am”. A
+repeating alarm keeps its days and takes the new time. Anything that is not
+one definite time (no AM or PM, a repeat, a time that has passed) is refused or
+handed to the LLM instead of guessed, and a finished reminder or a copy shared
+from another Echo cannot be moved. Changing the words of a reminder is left to
+the LLM (the `edit` action of `EchoMuseAction`, with `message` and/or `when`), as a
+template cannot tell “change my reminder to buy milk” from a time.
+
+**Home Assistant's to-do card** now edits reminders: rename one, or set its
+date and time. The card sends the time back rounded to the minute, which is
+not treated as a move. A repeating reminder can be renamed but not re-timed
+there, and a finished one or a shared copy is refused with the reason.
+
+**The controller's Schedules tab** has an **edit** button on reminders and
+alarms that are still pending: the text and date and time, or the time of day for a
+repeating one.
+
+Replace `custom_components/echomuse_schedule` and the sentence YAML and restart
+HA; rebuild the controller and Pipecat add-ons. No satellite firmware change.
+
 - “Set a timer for five minutes.” “Set a pasta timer for 12 minutes.”
 - “Set an hour and a half timer.” “How long is left on the pasta timer?”
 - “Wake me up at seven tomorrow morning.”

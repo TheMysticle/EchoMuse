@@ -68,6 +68,172 @@ def duration_speech(seconds):
     return " and ".join(parts) or "0 seconds"
 
 
+# --- list_speech: kept identical in dialogue.py and schedule_dialogue.py;
+# tests/test_list_speech_parity.py runs both. -------------------------------
+
+FINISHED = ("completed", "canceled")
+LIST_CAP = 5
+_WEEKDAYS = ("Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday")
+
+
+def clock_speech(moment):
+    """6 PM, 3:30 PM, noon, midnight: how a person says a clock time."""
+    if moment.minute == 0 and moment.hour in (0, 12):
+        return "midnight" if moment.hour == 0 else "noon"
+    text = moment.strftime("%I:%M %p").lstrip("0")
+    return text.replace(":00 ", " ")
+
+
+def day_phrase(raw):
+    """The day a person asked about, as it is spoken back to them."""
+    raw = (raw or "").strip().lower()
+    if raw in ("today", "tomorrow"):
+        return raw
+    if raw in (d.lower() for d in _WEEKDAYS):
+        return "on " + raw.capitalize()
+    return "on " + raw
+
+
+def _recurrence(rule):
+    days = rule.get("days", [])
+    if len(days) == 7:
+        return "every day"
+    if set(days) == {1, 2, 3, 4, 5}:
+        return "every weekday"
+    if set(days) == {0, 6}:
+        return "every weekend"
+    return "every " + " and ".join(_WEEKDAYS[d] for d in days)
+
+
+def _short_duration(seconds):
+    seconds = max(0, int(seconds))
+    parts = []
+    for unit, length in (("day", 86400), ("hour", 3600), ("minute", 60), ("second", 1)):
+        count, seconds = divmod(seconds, length)
+        if count:
+            parts.append(f"{count} {unit}{'s' if count != 1 else ''}")
+    return " and ".join(parts[:2]) or "0 seconds"
+
+
+def _when(item, now, filtered):
+    """'at 6 PM today', 'at 7 AM every weekday', 'every 2 hours'."""
+    rule = item.get("rule")
+    zone = ZoneInfo(item.get("timezone") or "UTC")
+    if rule and rule.get("interval"):
+        return "every " + _short_duration(rule["interval"])
+    if rule and "hour" in rule:
+        return f"at {clock_speech(datetime(2000, 1, 1, rule['hour'], rule.get('minute', 0)))} {_recurrence(rule)}"
+    if not item.get("due"):
+        return ""
+    due = datetime.fromtimestamp(item["due"], zone)
+    clock = "at " + clock_speech(due)
+    if filtered:
+        return clock
+    offset = (due.date() - datetime.fromtimestamp(now, zone).date()).days
+    if offset == 0:
+        return clock + " today"
+    if offset == 1:
+        return clock + " tomorrow"
+    if 1 < offset < 7:
+        return f"{clock} on {due.strftime('%A')}"
+    return f"{clock} on {due.strftime('%A')} {due.day} {due.strftime('%B')}"
+
+
+def _state_note(item):
+    state = item.get("state")
+    if state == "disabled":
+        return "which is turned off"
+    if state == "paused":
+        return "which is paused"
+    if state == "missed":
+        return "which you missed"
+    if state in ("ringing", "queued"):
+        return "which is going off now"
+    return ""
+
+
+def _timer_line(item, now):
+    label = (item.get("label") or "timer").strip()
+    name = "A timer" if label.lower() == "timer" else f"The {label} timer"
+    state = item.get("state")
+    if state == "paused":
+        return f"{name} is paused"
+    if state in ("ringing", "queued"):
+        return f"{name} is ringing"
+    if state == "disabled":
+        return f"{name} is turned off"
+    left = max(0, (item.get("due") or 0) - now)
+    return f"{name} has {_short_duration(left)} left" if left else f"{name} is about to finish"
+
+
+def _enumerate(sentences):
+    """Full stops, an 'And' on the last, and a long list cut short rather than
+    read out for a minute."""
+    extra = len(sentences) - LIST_CAP
+    if extra > 0:
+        sentences = sentences[:LIST_CAP]
+    out = []
+    for n, text in enumerate(sentences):
+        if n == len(sentences) - 1 and n > 0 and extra <= 0:
+            text = "And " + text[:1].lower() + text[1:]
+        out.append(text + ".")
+    if extra > 0:
+        out.append(f"And {extra} more.")
+    return " ".join(out)
+
+
+def list_speech(kind, items, now, *, day=None, nxt=False):
+    """What to say for a list of reminders, alarms or timers.
+
+    No timezone name, no weekday or date unless the item is not today, and
+    nothing finished: a reminder completed ten minutes ago lingers on the Echo
+    for its retention and is not an answer to "what do I have".
+    """
+    shown = [i for i in items if i.get("state") not in FINISHED]
+    shown.sort(key=lambda i: i.get("due") or 1 << 60)
+    if not shown:
+        said = "" if not day else f" for {day}" if day in ("today", "tomorrow") else f" {day}"
+        return f"You don't have any {kind}s set{said}."
+    if kind == "timer":
+        lines = [_timer_line(i, now) for i in shown]
+        if len(lines) == 1:
+            return lines[0] + "."
+        return f"You have {len(lines)} timers. " + _enumerate(lines)
+    filtered = bool(day)
+    lines = []
+    for i in shown:
+        subject = ""
+        if kind == "reminder":
+            subject = (i.get("message") or i.get("label") or "").strip()
+        elif (i.get("label") or "").strip().lower() not in ("", "alarm"):
+            subject = i["label"].strip()
+        lines.append((_when(i, now, filtered), subject, _state_note(i)))
+    if nxt:
+        when, subject, note = lines[0]
+        sentence = f"Your next {kind} is {when}" if when else f"Your next {kind}"
+        return sentence + (f": {subject}" if subject else "") + (f", {note}" if note else "") + "."
+    scope = f" {day}" if day else ""
+    if len(lines) == 1:
+        when, subject, note = lines[0]
+        head = f"You have one {kind}{scope}" + (f", {when}" if when else "")
+        return head + (f": {subject}" if subject else "") + (f", {note}" if note else "") + "."
+    sentences = []
+    for when, subject, note in lines:
+        text = (when[:1].upper() + when[1:]) if when else kind.capitalize()
+        if subject:
+            text += f", {subject}"
+        if note:
+            text += f", {note}"
+        sentences.append(text)
+    return f"You have {len(lines)} {kind}s{scope}. " + _enumerate(sentences)
+
+
+def moved_speech(kind, item, now):
+    """'Okay, your reminder is now at 6 PM tomorrow.'"""
+    when = _when(item, now, False)
+    return f"Okay, your {kind} is now {when}." if when else "Okay, done."
+
+
 def created_speech(kind, item, result):
     created = next((i for i in result["snapshot"]["items"] if i["id"] == item.get("id")), None)
     if created is None:

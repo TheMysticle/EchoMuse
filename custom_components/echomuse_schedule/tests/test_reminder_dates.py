@@ -240,10 +240,13 @@ def test_reminders_for_a_day_through_real_sentence_and_ha_handler(tmp_path, phra
                 {name: {"value": entity.value} for name, entity in result.entities.items()},
                 phrase, device_id="source")
         text = response.speech["plain"]["speech"]
+        # The reminder's words come after a comma ("At 6 PM, today"), and the
+        # day words are also the messages here, so match the sentence it is in.
         for name in spoken:
-            assert name + ":" in text, (phrase, text)
+            assert f", {name}." in text or f", {name}:" in text or f": {name}." in text, (phrase, text)
         for name in missing:
-            assert name + ":" not in text, (phrase, text)
+            assert f", {name}." not in text and f": {name}." not in text, (phrase, text)
+        assert "CEST" not in text and "scheduled" not in text
         await hass.async_stop(force=True)
     asyncio.run(run())
 

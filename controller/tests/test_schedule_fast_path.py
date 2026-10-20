@@ -76,6 +76,8 @@ class FakeBridge:
         now_ts = int(self.now.timestamp())
         if name == "EchoMuseList":
             snapshot = self.scheduler.snapshot()
+            # The speaker's own handler leaves finished items out of a list.
+            snapshot = {**snapshot, "items": [i for i in snapshot["items"] if i["state"] not in ("completed", "canceled")]}
             if args.get("kind"):
                 snapshot = {**snapshot, "items": [i for i in snapshot["items"] if i["kind"] == args["kind"]]}
             if args.get("date"):
@@ -89,8 +91,11 @@ class FakeBridge:
             return json.dumps({"device_acknowledged": True, "now_utc": self.now.isoformat(),
                                "timezone": TZ, "snapshot": self.scheduler.snapshot()})
         if name == "EchoMuseAction":
-            cmd = em_workflow_tools.command(name, args, now_ts)
-            self.scheduler.apply_action(cmd)
+            cmd = em_workflow_tools.command(name, args, now_ts, self.scheduler.items)
+            if cmd["action"] == "edit":
+                self.scheduler.items[:] = [cmd["item"] if i["id"] == cmd["id"] else i for i in self.scheduler.items]
+            else:
+                self.scheduler.apply_action(cmd)
             return json.dumps({"device_acknowledged": True, "now_utc": self.now.isoformat(),
                                "timezone": TZ, "snapshot": self.scheduler.snapshot()})
         raise ValueError(f"Unknown scheduler tool {name}")
@@ -231,7 +236,7 @@ def test_listing_alarms_reads_the_scheduler_with_no_tool_call_to_the_llm(harness
         "due": int(datetime(2026, 10, 19, 7, 0, tzinfo=ZoneInfo(TZ)).timestamp()), "timezone": TZ,
     })
     reply = asyncio.run(harness.say("what alarms do I have"))
-    assert "scheduled" in reply
+    assert "7 AM" in reply and "scheduled" not in reply and "CEST" not in reply
     assert harness.bridge.calls == [("EchoMuseList", {"kind": "alarm"})]
 
 
@@ -324,3 +329,85 @@ def test_resolve_day():
     assert r("the 3rd") == "2026-11-03"     # already past this month
     assert r("the 31st") == "2026-10-31"
     assert r("someday") is None
+
+
+def _add_reminder(harness, name, days=2, hour=23, **over):
+    zone = ZoneInfo(TZ)
+    due = datetime.now(zone).replace(hour=hour, minute=0, second=0, microsecond=0) + timedelta(days=days)
+    harness.scheduler.items.append({"id": name, "kind": "reminder", "label": name, "message": name,
+                                    "state": "scheduled", "timezone": TZ, "due": int(due.timestamp()), **over})
+    return due
+
+
+def _edits(harness):
+    return [c for c in harness.bridge.calls if c[0] == "EchoMuseAction"]
+
+
+@pytest.mark.parametrize("phrase,hour,said", [
+    ("move my reminder to 5pm tomorrow", 17, "Okay, your reminder is now at 5 PM tomorrow."),
+    ("reschedule my reminder to tomorrow at 9am", 9, "Okay, your reminder is now at 9 AM tomorrow."),
+    ("move the dentist reminder to half past six in the evening tomorrow", 18, "Okay, your reminder is now at 6:30 PM tomorrow."),
+])
+def test_moving_a_reminder_by_voice(harness, phrase, hour, said):
+    _add_reminder(harness, "dentist", days=3)
+    reply = asyncio.run(harness.say(phrase))
+    assert reply == said
+    calls = _edits(harness)
+    assert len(calls) == 1 and calls[0][1]["action"] == "edit" and calls[0][1]["id"] == "dentist"
+    moved = datetime.fromisoformat(calls[0][1]["when"]).astimezone(ZoneInfo(TZ))
+    assert moved.hour == hour
+    stored = harness.scheduler.items[0]
+    assert stored["message"] == "dentist" and stored["due"] == int(moved.timestamp())
+
+
+def test_a_named_reminder_among_several_is_the_one_moved(harness):
+    _add_reminder(harness, "dentist", days=3)
+    _add_reminder(harness, "bins", days=4)
+    reply = asyncio.run(harness.say("move the bins reminder to 8am tomorrow"))
+    assert reply == "Okay, your reminder is now at 8 AM tomorrow."
+    assert _edits(harness)[0][1]["id"] == "bins"
+    assert harness.scheduler.items[0]["due"] != harness.scheduler.items[1]["due"]
+
+
+def test_several_reminders_and_no_name_asks_rather_than_guessing(harness):
+    _add_reminder(harness, "dentist", days=3)
+    _add_reminder(harness, "bins", days=4)
+    reply = asyncio.run(harness.say("move my reminder to 5pm tomorrow"))
+    assert "Several items match" in reply and _edits(harness) == []
+
+
+def test_moving_the_next_reminder(harness):
+    _add_reminder(harness, "later", days=5)
+    _add_reminder(harness, "sooner", days=2)
+    asyncio.run(harness.say("move my next reminder to 6pm tomorrow"))
+    assert _edits(harness)[0][1]["id"] == "sooner"
+
+
+def test_a_clock_without_am_or_pm_is_left_to_the_llm(harness):
+    _add_reminder(harness, "dentist")
+    frame = sys.modules['pipecat.frames.frames'].LLMContextFrame(
+        [{'role': 'user', 'content': 'move my reminder to 8'}])
+    asyncio.run(harness.step.process_frame(frame, harness.direction.DOWNSTREAM))
+    assert _edits(harness) == []
+    assert harness.step.sent[-1] == (frame, harness.direction.DOWNSTREAM)
+
+
+def test_a_finished_reminder_cannot_be_moved(harness):
+    _add_reminder(harness, "old", state="completed")
+    reply = asyncio.run(harness.say("move my reminder to 5pm tomorrow"))
+    assert reply == "No matching item" and _edits(harness) == []
+
+
+def test_a_repeating_alarm_keeps_its_days_and_takes_the_new_time(harness):
+    harness.scheduler.items.append({"id": "wake", "kind": "alarm", "label": "alarm", "state": "scheduled", "timezone": TZ,
+                                    "due": int(datetime.now(ZoneInfo(TZ)).timestamp()) + 5000,
+                                    "rule": {"days": [1, 2, 3, 4, 5], "interval": 0, "hour": 7, "minute": 0}})
+    reply = asyncio.run(harness.say("move my alarm to 8am"))
+    assert reply == "Okay, your alarm is now at 8 AM every weekday."
+    assert harness.scheduler.items[0]["rule"] == {"days": [1, 2, 3, 4, 5], "interval": 0, "hour": 8, "minute": 0}
+
+
+def test_a_repeat_is_not_a_place_to_move_to(harness):
+    _add_reminder(harness, "dentist")
+    reply = asyncio.run(harness.say("move my reminder to every weekday at 7am"))
+    assert reply == "I can only move it to one time, not a repeat" and _edits(harness) == []

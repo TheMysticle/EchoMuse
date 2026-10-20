@@ -358,3 +358,23 @@ def parse_item(kind, request, zone, now=None):
         message = " ".join(message.split())
     item["label"] = message or kind
     return item
+
+
+def moved_time(request, zone, now=None):
+    """The single moment a spoken 'move it to ...' names, as an aware datetime.
+
+    Reuses the alarm grammar, which is a time and nothing else. Anything that
+    is not one definite moment raises: a repeat, or a clock with no AM/PM
+    (`Clarification`, so the caller can hand the question back).
+    """
+    now = (now or datetime.now(ZoneInfo(zone))).astimezone(ZoneInfo(zone))
+    raw = " ".join(request.strip().split())
+    raw = re.sub(r"^(?:to|for)\s+", "", raw, flags=re.I)
+    item = parse_item("alarm", raw, zone, now=now)
+    if item.get("rule"):
+        raise ValueError("I can only move it to one time, not a repeat")
+    if item.get("due"):
+        return datetime.fromtimestamp(item["due"], ZoneInfo(zone))
+    if item.get("duration"):
+        return now + timedelta(seconds=item["duration"])
+    raise Clarification("What time? Say, for example, 8am", "time")

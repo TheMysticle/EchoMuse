@@ -7,6 +7,7 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 import json
 import os
+import re
 import uuid
 from zoneinfo import ZoneInfo
 
@@ -28,9 +29,10 @@ TOOLS = [
         "timezone": {"type": "string", "description": "IANA timezone, e.g. Europe/Warsaw"},
         "repeat_days": {"type": "array", "items": {"type": "integer", "minimum": 0, "maximum": 6}, "description": "Weekdays: Monday=1 through Sunday=0"},
         "repeat_seconds": {"type": "integer", "minimum": 1, "maximum": 315360000}}, ("kind", "timezone"))},
-    {"name": "EchoMuseAction", "description": "Change a persistent schedule on this speaker, using the exact item id returned by EchoMuseList. Supports cancel, dismiss, snooze, pause, resume, adjust, enable, disable. Never substitute a different speaker or HA timer.",
-     "inputSchema": _schema({"action": {"type": "string", "enum": ["cancel", "dismiss", "snooze", "pause", "resume", "adjust", "enable", "disable"]},
-         "id": {"type": "string"}, "seconds": {"type": "integer", "minimum": -315360000, "maximum": 315360000}}, ("action", "id"))},
+    {"name": "EchoMuseAction", "description": "Change a persistent schedule on this speaker, using the exact item id returned by EchoMuseList. Supports cancel, dismiss, snooze, pause, resume, adjust, enable, disable and edit. `edit` changes a reminder's `message` and/or moves a reminder or alarm to a new RFC3339 `when` with UTC offset (a repeating one keeps its days and takes only the new clock time); a timer is changed with adjust. Never substitute a different speaker or HA timer.",
+     "inputSchema": _schema({"action": {"type": "string", "enum": ["cancel", "dismiss", "snooze", "pause", "resume", "adjust", "enable", "disable", "edit"]},
+         "id": {"type": "string"}, "seconds": {"type": "integer", "minimum": -315360000, "maximum": 315360000},
+         "message": {"type": "string"}, "when": {"type": "string", "description": "edit only: RFC3339 date/time with explicit offset"}}, ("action", "id"))},
 ]
 STOP_TOOL = {
     "name": "EchoMuseStop",
@@ -112,7 +114,64 @@ def llm_snapshot(snapshot):
     return {"items": items, **view, **({"settings": settings} if settings else {})}
 
 
-def command(name, args, now):
+FINISHED = ("completed", "canceled", "missed")
+_MIRROR_ID = re.compile(r"^sh-[0-9a-f]{8}-[0-9a-f]{24}\Z")
+
+
+def edited_item(items, args, now):
+    """The whole replacement item for `edit`: the device swaps the item out, so
+    the current one is copied and only what was asked for is changed.
+
+    Each refusal is a sentence the model can say. A finished item would come
+    back to life on a new time (the device resets a changed deadline to
+    scheduled), a shared copy is overwritten by its original on the next
+    change, and a timer has `adjust`.
+    """
+    message = args.get("message", "").strip()
+    when = args.get("when")
+    if not message and not when:
+        raise ValueError("Say what to change: `message`, `when` or both")
+    current = next((i for i in items if i.get("id") == args["id"]), None)
+    if current is None:
+        raise ValueError("No item has that id; list the schedule first")
+    if current.get("kind") == "timer":
+        raise ValueError("A timer cannot be edited; use adjust to change its time")
+    if current.get("state") in FINISHED:
+        raise ValueError("That one has already finished; create a new one instead")
+    if _MIRROR_ID.match(current["id"]):
+        raise ValueError("That is a copy shared from another speaker; change the original")
+    item = dict(current)
+    if message:
+        if current["kind"] != "reminder":
+            raise ValueError("Only a reminder has a message; set `when` to move this one")
+        if item.get("label") in ("", None, item["kind"], current.get("message")):
+            item["label"] = message
+        item["message"] = message
+        for key in ITEM_INTERNAL:
+            item.pop(key, None)       # the cached audio says the old words
+    if when:
+        zone = ZoneInfo(item.get("timezone") or "UTC")
+        try:
+            due = datetime.fromisoformat(when.replace("Z", "+00:00"))
+        except ValueError:
+            raise ValueError("`when` must be an RFC3339 date/time with a UTC offset")
+        if due.tzinfo is None:
+            raise ValueError("Date/time requires an explicit UTC offset")
+        local = due.astimezone(zone)
+        rule = item.get("rule")
+        if rule:
+            if rule.get("interval"):
+                raise ValueError("A repeating interval cannot be moved; create a new one")
+            item["rule"] = {**rule, "hour": local.hour, "minute": local.minute}
+            item["due"] = 0           # the device works out the next occurrence
+        else:
+            if int(due.timestamp()) <= now:
+                raise ValueError("Schedule must be in the future")
+            item["due"] = int(due.timestamp())
+    return item
+
+
+def command(name, args, now, items=()):
     spec = next((tool for tool in TOOLS if tool["name"] == name), None)
     if spec is None or not isinstance(args, dict):
         raise ValueError("Unknown scheduler tool or invalid arguments")
@@ -131,6 +190,11 @@ def command(name, args, now):
     if name == "EchoMuseList":
         return {"action": "list"}
     if name == "EchoMuseAction":
+        if args["action"] == "edit":
+            item = edited_item(items, args, now)
+            return {"action": "edit", "id": item["id"], "item": item, "request": uuid.uuid4().hex}
+        if "message" in args or "when" in args:
+            raise ValueError("`message` and `when` are only for the edit action")
         return {**args, "request": uuid.uuid4().hex}
     zone = ZoneInfo(args["timezone"])
     duration = args.get("duration_seconds")
@@ -231,10 +295,15 @@ async def handle(request, devices):
             if "local_schedule" not in (live.capabilities or []) or not schedules_enabled:
                 raise ValueError("Local schedules are disabled or unavailable on this speaker")
             now = int(datetime.now(timezone.utc).timestamp())
-            cmd = command(name, args, now)
+            current = []
+            if name == "EchoMuseAction" and args.get("action") == "edit":
+                current = (await live.schedule.request(live.send_control, {"action": "list"}))["items"]
+            cmd = command(name, args, now, current)
             snapshot = await live.schedule.request(live.send_control, cmd)
             if name == "EchoMuseList":
-                items = snapshot["items"]
+                # A finished reminder lingers on the speaker for its retention; to
+                # the model it read as one still to do.
+                items = [i for i in snapshot["items"] if i.get("state") not in ("completed", "canceled")]
                 if args.get("kind"):
                     items = [item for item in items if item["kind"] == args["kind"]]
                 snapshot = {**snapshot, "items": day_view(items, args.get("date"), now)}

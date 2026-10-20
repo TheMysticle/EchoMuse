@@ -7,8 +7,9 @@ import time
 import probatio as vol
 from homeassistant.helpers import intent, entity_registry as er
 from homeassistant.exceptions import HomeAssistantError
-from .language import Clarification, parse_item, duration, normalize_clock, clock_match, calendar_day, validate_calendar, DAYS
-from .dialogue import created_speech, duration_speech
+from .language import Clarification, moved_time, parse_item, duration, normalize_clock, clock_match, calendar_day, validate_calendar, DAYS
+from .dialogue import created_speech, day_phrase, duration_speech, list_speech, moved_speech
+from .shared import is_shared
 
 TIMERS = {"HassStartTimer": "create", "HassCancelTimer": "cancel",
           "HassCancelAllTimers": "cancel_all", "HassIncreaseTimer": "adjust",
@@ -181,6 +182,24 @@ def _matches_clock(item, target):
     return hour in hours and minute == target_minute
 
 
+def moved_item(item, moment, now):
+    """`item` moved to `moment`, whole, because the device's edit swaps the item out.
+
+    A repeating one keeps its days and takes only the clock time, and its
+    deadline is left for the device to work out; a one-off needs a future time,
+    which the device would refuse anyway, but with a message nobody can say.
+    """
+    if is_shared(item):
+        raise ValueError("That is a copy shared from another Echo; change the original")
+    if item.get("rule"):
+        if item["rule"].get("interval"):
+            raise ValueError("A repeating interval cannot be moved; set a new one")
+        return {**item, "rule": {**item["rule"], "hour": moment.hour, "minute": moment.minute}, "due": 0}
+    if moment.timestamp() <= now:
+        raise ValueError("That time has already passed")
+    return {**item, "due": int(moment.timestamp())}
+
+
 class Handler(intent.IntentHandler):
     def __init__(self, name, coordinators, original=None, dialogues=None):
         self.intent_type = name
@@ -222,12 +241,11 @@ class Handler(intent.IntentHandler):
                     items = [i for i in items if _matches_day(i, slots["date"])]
                 if slots.get("name") or slots.get("target"):
                     items = [select(data, kind, slots.get("target") or slots.get("name"), slots, recent=getattr(c, "last_created", {}))]
-                now = int(datetime.now(timezone.utc).timestamp())
-                text = "; ".join((i.get("message") or i["label"]) + ": " + i["state"] +
-                    (f", {max(0, i['due']-now)} seconds remaining" if i["kind"] == "timer" and i["state"] == "scheduled" else "") for i in items)
-                if kind != "timer":
-                    text = "; ".join((i.get("message") or i["label"]) + ": " + i["state"] + (", " + datetime.fromtimestamp(i["due"], ZoneInfo(i["timezone"])).strftime("%A %d %B at %H:%M %Z") if i.get("due") else "") for i in items)
-                response.async_set_speech(text or (f"You don't have any {kind}s set for {slots['date']}." if slots.get("date") else f"You don't have any {kind}s set."))
+                target = slots.get("target") or slots.get("name")
+                response.async_set_speech(list_speech(
+                    kind, items, int(datetime.now(timezone.utc).timestamp()),
+                    day=day_phrase(slots["date"]) if slots.get("date") else None,
+                    nxt=(target or "").strip().lower() in ("next", "next one")))
                 return response
             command = {"action": action, "kind": kind, "request": uuid.uuid4().hex}
             if action == "create":
@@ -250,6 +268,8 @@ class Handler(intent.IntentHandler):
                 command["item"] = item
             elif action != "cancel_all":
                 target = slots.get("target") or slots.get("name")
+                if action == "edit" and (target or "").strip().lower() in ("my", "the"):
+                    target = None     # "move my reminder to ...": the wildcard caught the article
                 if action in ("dismiss", "snooze") and not target:
                     target = data.get("active")
                     current = next((i for i in data["items"] if i["id"] == target), None)
@@ -259,6 +279,12 @@ class Handler(intent.IntentHandler):
                 if item is None:
                     raise ValueError("No matching item")
                 command["id"] = item["id"]
+                if action == "edit":
+                    try:
+                        moment = moved_time(slots.get("request", ""), obj.hass.config.time_zone)
+                    except Clarification as err:
+                        raise ValueError(f"{err} Say it again with the time, like \"move it to 8pm\".")
+                    command["item"] = moved_item(item, moment, time.time())
                 if action == "adjust":
                     seconds = sum(int(slots.get(u, 0)) * f for u, f in (("hours", 3600), ("minutes", 60), ("seconds", 1)))
                     command["seconds"] = -seconds if self.intent_type == "HassDecreaseTimer" else seconds
@@ -277,6 +303,9 @@ class Handler(intent.IntentHandler):
                 text = "Snoozed for " + duration_speech(command.get("seconds") or data.get("settings", {}).get("snooze", 540)) + "."
             if action == "create":
                 text = created_speech(kind, command["item"], result)
+            elif action == "edit":
+                text = moved_speech(kind, next((i for i in result["snapshot"]["items"] if i["id"] == command["id"]), command["item"]),
+                                    int(time.time()))
             elif result.get("warning"):
                 text += " I'll play a sound if the spoken reminder isn't ready."
             response.async_set_speech(text)
