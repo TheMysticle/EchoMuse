@@ -101,6 +101,10 @@ type AudioSource interface {
 	// Events reports, and forgets, that audio was thrown away (a skip, a
 	// stop, another source taking over) or paused since the last call.
 	Events() (discarded, paused bool)
+	// Paused is whether the engine is paused right now, as opposed to the
+	// edge Events reports once. Audio that still arrives while it is true is
+	// the tail of the pause, not playback starting again.
+	Paused() bool
 }
 
 // LeaderConfig is what the device supplies.
@@ -437,6 +441,15 @@ func (l *Leader) run(src AudioSource, stop, done chan struct{}) {
 			}
 			continue
 		}
+		if !anchored && src.Paused() {
+			// The tail of a pause (the engine's sink flushing what its
+			// resampler held), not playback starting. Starting here would
+			// replay everything the pause kept, which is heard as the
+			// music cutting out and then coming back for two seconds.
+			// It belongs after the kept audio, for the resume.
+			l.keepForResume(buf)
+			continue
+		}
 		if !anchored {
 			nextTs, anchored = nowUs()+LeaderStartLead.Microseconds(), true
 			nextTs = l.emitReplay(nextTs)
@@ -567,6 +580,15 @@ func (l *Leader) resetTimeline(src AudioSource, keep bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := nowUs()
+	// What a stop cuts off is the measure of how far ahead the players were;
+	// logged so a stop that seems late can be told from one that was not.
+	var unplayed int64
+	for _, h := range l.hist {
+		if h.ts > now {
+			unplayed += leaderChunkUs
+		}
+	}
+	log.Printf("[group] stop: %dms of audio had been sent ahead (keep=%v)", unplayed/1000, keep)
 	l.local.clear()
 	for _, m := range l.members {
 		m.clearQueue()
@@ -590,6 +612,13 @@ func (l *Leader) resetTimeline(src AudioSource, keep bool) {
 		l.free = append(l.free, h.b)
 	}
 	l.hist = l.hist[:0]
+}
+
+// keepForResume adds one period to the audio a pause kept.
+func (l *Leader) keepForResume(b []byte) {
+	l.mu.Lock()
+	l.replay = append(l.replay, histChunk{b: append([]byte(nil), b...)})
+	l.mu.Unlock()
 }
 
 // emitReplay plays out what a pause kept, ahead of the live audio, and

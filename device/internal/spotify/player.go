@@ -313,6 +313,14 @@ func (p *Player) Idle() bool { return p.ring.len() < groupChunk && !p.Playing() 
 // stop, another source taking the speaker) or that the engine paused, since
 // it was last called. Audio the leader has already sent ahead is stale after
 // the first and is kept for resuming after the second.
+// Paused is whether the engine is paused now. Audio that still arrives while
+// it is true is the end of the pause, not playback starting.
+func (p *Player) Paused() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.st.State == "paused"
+}
+
 func (p *Player) Events() (discarded, paused bool) {
 	g := p.ring.gen.Load()
 	p.mu.Lock()

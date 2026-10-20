@@ -108,13 +108,20 @@ type fakeSource struct {
 	disc    bool
 	paused  bool
 	reads   int
+	// pausedState is the engine's state being "paused" (Events reports the
+	// edge once; this stays), and trail is how many periods the engine still
+	// hands over after a pause: its sink flushes what the resampler holds.
+	pausedState bool
+	trail       int
 }
 
 func (f *fakeSource) set(playing bool) { f.mu.Lock(); f.playing = playing; f.mu.Unlock() }
 
 func (f *fakeSource) Read(out []byte, wait time.Duration) bool {
 	f.mu.Lock()
-	if !f.playing {
+	if !f.playing && f.trail > 0 {
+		f.trail--
+	} else if !f.playing {
 		f.mu.Unlock()
 		time.Sleep(min(wait, 5*time.Millisecond))
 		return false
@@ -128,6 +135,8 @@ func (f *fakeSource) Read(out []byte, wait time.Duration) bool {
 	f.mu.Unlock()
 	return true
 }
+
+func (f *fakeSource) Paused() bool { f.mu.Lock(); defer f.mu.Unlock(); return f.pausedState }
 
 func (f *fakeSource) Idle() bool { f.mu.Lock(); defer f.mu.Unlock(); return !f.playing }
 
