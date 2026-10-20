@@ -327,6 +327,15 @@ sequence are the two that cannot be sent both ways.
 
 ---
 
+## 6b. Speaker groups — Spotify to several Echoes **[built, not yet run on hardware]**
+
+A group makes one Echo a Sendspin **server** for the others (docs/speaker-groups.md). The leader's Spotify audio is not timestamped, so the leader stamps it: it reads 20 ms periods from the Spotify ring, labels each with its own monotonic clock, starts 500 ms ahead and builds a 2 s lead by sending faster than real time, then plays its own copy through the same pull scheduler. Members are the unchanged Sendspin player of section 6.
+
+- **Ownership.** The leader's Spotify engine keeps the music plane as today; the group only changes where its periods go (`musicMux.Fill` asks the leader when it is engaged). A member that is given other music (`0x04` from Home Assistant, its own Spotify) reports `available: false`, is dropped from the stream and rejoins when free.
+- **Pause, skip, stop.** These reach members at once through `stream/clear`. A pause keeps what was already sent and replays it on resume; a skip, a stop or a different track discards it.
+- **Latency.** A group adds about 0.5 s to starting a song. A skip or seek made on a phone reaches the members about 2 s later, because the audio was already sent.
+- **Fallback.** With no member ready the Echo plays solo, unchanged.
+
 ## 7. Open questions
 
 - **Q1 — should music be allowed to start during a turn, on its own plane?**

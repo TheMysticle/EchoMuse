@@ -113,6 +113,13 @@ type Player struct {
 	done     chan struct{}
 	ctlLn    net.Listener
 	audLn    net.Listener
+
+	// What a speaker group leader needs to know about the audio, which it
+	// reads ahead of the speaker (see Events). Guarded by mu.
+	seenGen    uint64
+	pausedMark bool   // the engine paused since Events was last called
+	staleMark  bool   // queued audio belongs to a track that is no longer next
+	pausedURI  string // the track a pause happened in, until it resumes
 }
 
 func New(cfg Config) *Player {
@@ -285,6 +292,38 @@ func (p *Player) Fill(out []byte, _ time.Time, _ time.Duration) bool {
 	return p.ring.readPeriod(out, primePeriods*len(out))
 }
 
+// ── Group leader ───────────────────────────────────────────────────────────
+//
+// When an Echo leads a speaker group (internal/sendspin Leader) the audio is
+// read here by the leader, which stamps it and plays it on its own schedule,
+// instead of being pulled by the speaker. These three methods are all it
+// needs, and none of them runs unless a leader is reading.
+
+// groupChunk is the leader's period: 20ms of 48kHz stereo S16LE.
+const groupChunk = 960 * 4
+
+// Read fills out with exactly len(out) bytes of audio, waiting up to wait.
+func (p *Player) Read(out []byte, wait time.Duration) bool { return p.ring.readWait(out, wait) }
+
+// Idle reports that nothing is queued and the engine is not playing. A tail
+// shorter than one period (the end of a track) is not audio anybody will hear.
+func (p *Player) Idle() bool { return p.ring.len() < groupChunk && !p.Playing() }
+
+// Events reports, and forgets, that queued audio was thrown away (a skip, a
+// stop, another source taking the speaker) or that the engine paused, since
+// it was last called. Audio the leader has already sent ahead is stale after
+// the first and is kept for resuming after the second.
+func (p *Player) Events() (discarded, paused bool) {
+	g := p.ring.gen.Load()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	discarded = g != p.seenGen || p.staleMark
+	p.seenGen, p.staleMark = g, false
+	paused = p.pausedMark
+	p.pausedMark = false
+	return
+}
+
 // ── Commands ───────────────────────────────────────────────────────────────
 
 var errNoEngine = errors.New("the Spotify engine is not connected")
@@ -378,8 +417,28 @@ func (p *Player) apply(e *event) {
 	s := &p.st
 	switch e.Event {
 	case "state":
+		if s.State == "playing" && e.State == "paused" {
+			p.pausedMark = true
+			p.pausedURI = ""
+			if s.Track != nil {
+				p.pausedURI = s.Track.URI
+			}
+		}
+		// Resumed into a different track: what a pause kept is not next.
+		// The engine announces a track before it plays it, so the track is
+		// already the new one here; the other order is caught below.
+		if e.State == "playing" && p.pausedURI != "" {
+			if s.Track != nil && s.Track.URI != p.pausedURI {
+				p.staleMark = true
+			}
+			p.pausedURI = ""
+		}
 		s.State, s.PositionMs = e.State, e.PositionMs
 	case "track":
+		if p.pausedURI != "" && e.URI != p.pausedURI {
+			p.staleMark = true
+			p.pausedURI = ""
+		}
 		s.Track = &Track{URI: e.URI, Name: e.Name, Artists: e.Artists, Album: e.Album,
 			DurationMs: e.DurationMs, Explicit: e.Explicit, CoverURL: e.CoverURL}
 	case "volume":

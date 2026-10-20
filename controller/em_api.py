@@ -51,6 +51,7 @@ import em_routes_auth
 import em_routes_config
 import em_routes_devices
 import em_routes_events
+import em_routes_groups
 import em_routes_link
 import em_routes_oww
 import em_routes_provision
@@ -114,6 +115,7 @@ async def create_app() -> web.Application:
 
     em_routes_oww.register(app)
     em_routes_spotify.register(app)
+    em_routes_groups.register(app)
     em_routes_schedule.register(app)
     em_routes_workflow.register(app)
     em_routes_shell.register(app)

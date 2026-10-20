@@ -1,6 +1,10 @@
 package spotify
 
-import "sync"
+import (
+	"sync"
+	"sync/atomic"
+	"time"
+)
 
 // ring is the byte buffer between the engine's audio socket and the
 // speaker's period pull. The writer BLOCKS when it is full: that is the
@@ -17,10 +21,19 @@ type ring struct {
 	r, n   int
 	closed bool
 	primed bool // a whole period has been available since the last gap
+
+	// gen counts flushes: a speaker group leader reading from the ring needs
+	// to know that audio was thrown away, because the audio it has already
+	// sent ahead is now stale. Bumped under mu, read anywhere.
+	gen atomic.Uint64
+	// watch is the number of readers that wait for data; write signals them.
+	// Zero (the case on every Echo that does not lead a group) skips it.
+	watch  atomic.Int32
+	notify chan struct{}
 }
 
 func newRing(size int) *ring {
-	g := &ring{buf: make([]byte, size)}
+	g := &ring{buf: make([]byte, size), notify: make(chan struct{}, 1)}
 	g.space = sync.NewCond(&g.mu)
 	return g
 }
@@ -43,7 +56,39 @@ func (g *ring) write(p []byte) bool {
 		g.n += c
 		p = p[c:]
 	}
+	if g.watch.Load() > 0 {
+		select {
+		case g.notify <- struct{}{}:
+		default:
+		}
+	}
 	return true
+}
+
+// readWait is readPeriod with no refill requirement that waits up to wait
+// for a whole period to arrive. For the one reader that paces itself instead
+// of being paced by the DAC.
+func (g *ring) readWait(out []byte, wait time.Duration) bool {
+	g.watch.Add(1)
+	defer g.watch.Add(-1)
+	if g.readPeriod(out, 0) {
+		return true
+	}
+	if wait <= 0 {
+		return false
+	}
+	t := time.NewTimer(wait)
+	defer t.Stop()
+	for {
+		select {
+		case <-g.notify:
+		case <-t.C:
+			return g.readPeriod(out, 0)
+		}
+		if g.readPeriod(out, 0) {
+			return true
+		}
+	}
 }
 
 // readPeriod copies exactly len(out) bytes out, or nothing at all.
@@ -118,6 +163,7 @@ func (g *ring) len() int {
 func (g *ring) flush() {
 	g.mu.Lock()
 	g.r, g.n, g.primed = 0, 0, false
+	g.gen.Add(1)
 	g.space.Broadcast()
 	g.mu.Unlock()
 }

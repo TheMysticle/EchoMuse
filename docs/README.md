@@ -29,6 +29,7 @@ Deeper technical references live elsewhere:
 - [boards.md](boards.md) — how the firmware detects its board and finds each
   part by name, which files describe a board, and what to watch for when
   trying the firmware on new hardware.
+- [speaker-groups.md](speaker-groups.md) — playing Spotify on several Echoes in sync, as mono or left/right.
 - [spotify.md](spotify.md) — making an Echo a Spotify Connect speaker, and
   the optional Home Assistant integration that lets you ask for music by
   name. Includes why the feature is emOS only, and what to check when an Echo

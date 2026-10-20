@@ -130,6 +130,8 @@ below (`capabilities()` in `control.go`):
 | `wake_word_off` | always | Honours `wakeWordEnabled: false` (Home Assistant's "No wake word"): a wake crossing is reported as a shadow cross and opens no session and no turn. The button still works. Without it the controller declines "No wake word" for an Echo in `listen_state` `local` |
 | `pairing` | always | Asks to pair itself when its owner holds the action button 5 s: a `pair_request` every 5 s on a live link, or otherwise registers with `"pairing": true` on every dial for the 2-minute window, falling back to plain (without its token) when wss cannot connect. The window closes early once new credentials land, so the redial they cause does not ask again. Without it the controller offers the admin a **Pair** action instead, since the device cannot ask |
 | `ble_connect` | always | Can hold Bluetooth LE connections for the controller and speak GATT over them (#656): up to three links, requests and results as `0x08` frames on `/data`. Acts only while `bleProxyEnabled` and `bleProxyConnections` are both on, and only against a controller announcing `ble_connect` back |
+| `group_member` | always | Can be a member of a speaker group (docs/speaker-groups.md): with `groupRole` `member` its Sendspin player runs without advertising itself, and it accepts `group_trust`. Needs `sendspin` too |
+| `group_leader` | emOS only | Can lead a speaker group: runs a Sendspin server inside the firmware that sends the Echo's own Spotify audio, stamped for a moment ahead, to the members. Acts only when told `groupRole` `leader` and `groupLead`, and accepts `group_key` |
 
 **`aec_hw_ref` is a capability with a runtime companion, and both are needed.**
 The capability says the firmware knows *how* to use a hardware echo reference.
@@ -195,6 +197,8 @@ absent optional fields take prior/default behaviour.
 | `sendspin_token` | `token`, `clientId`, or `error` | Answer to `sendspin_token_request`. The token (`SP:0…`) carries the device's Sendspin pairing key: the controller hands it to the one waiting request and never logs or stores it |
 | `spotify_status` | `status` | The Spotify Connect engine's state as it changes (emOS only). The `stats` report carries the same object as `spotify`. Firmware that has no engine never sends it |
 | `spotify_reply` | `id`, and the engine's reply fields (`error` on failure) | Answer to `spotify_cmd`, matched by `id`. A device with Spotify off answers `error: "spotify is off"` |
+| `group_status` | `status` (`sendspin.LeaderStatus`), or null when the Echo is not leading | A leader's view of its members as it changes: its Sendspin `serverId`, `engaged`, and per member `id`, `clientId`, `channel`, `state` (`connecting`, `ready`, `needs_key`, `busy`, `unreachable`, `error`) and `detail`. No secrets. Re-sent after every config push |
+| `group_ack` | `id`, `kind` (`trust` or `key`), `ok`, `error?` | Answer to `group_trust` / `group_key`, matched by `id` |
 | `schedule_state` | `snapshot` | The Echo's own timers, alarms and reminders, sent when they change. The schedule lives on the device; the controller only reads and commands it |
 | `schedule_reply` | the scheduler's reply fields | Answer to `schedule_cmd` |
 | `playback_stats` | `periods`, `underruns`, `stats`, `barge?` | One completed speaker stream (a response or announcement), sent once it has drained. `stats` is the delivery margin (`minDepth`, `primeWaitMs`, `recvSpanMs`, `maxGapMs`, `bytesRecv`, from `speaker.StreamStats`); `periods`/`underruns` are also sent flat for controllers that predate `stats`. `barge` is the on-device scorer's `{peak, bar, frames}` over the stream when it scored one |
@@ -225,6 +229,8 @@ absent optional fields take prior/default behaviour.
 | `music_flush` / `speaker_flush` | — | Flush the music / voice buffer (barge-in uses `speaker_flush`) |
 | `sendspin_token_request` | — | Ask for the Sendspin pairing token, for the dashboard to show on an admin's request; answered with `sendspin_token` |
 | `spotify_cmd` | `id`, `cmd`, `fields` | One transport or load command for the Spotify engine, validated by the controller before it is sent; answered with `spotify_reply` carrying the same `id` |
+| `group_trust` | `id`, `peer`, `psk` | To a MEMBER: trust the leader whose Sendspin id is `peer` under this secret (base64url, no padding, 32 bytes). Answered with `group_ack`. The secret is never logged or kept by the controller |
+| `group_key` | `id`, `peer`, `psk` | To a LEADER: hold this secret for the member whose Sendspin client id is `peer`. Answered with `group_ack`. Sent after the member has acknowledged `group_trust`, because a leader that dials first is refused |
 | `schedule_cmd` | the schedule request | One command for the device-owned schedule (add, change, cancel, settings, an audio asset); answered with `schedule_reply` |
 
 **An SSID is 0–32 arbitrary bytes**, so a name alone cannot always address
@@ -404,6 +410,8 @@ buttonSingleTapEvent, buttonMultiTapMs,
 owwOnDevice, saveUtterances, streamReply,
 wakeSound, wakeSoundLevel, volumeButtonSound
 ```
+
+Two further fields are an OVERLAY: sent by the controller when it arranges a speaker group, never stored in a device's config, and not part of the stored set above. `groupRole` (a pointer; `"leader"`, `"member"`, or `""` to leave, which is why it is a pointer) and `groupLead` (`name`, `channel`, `members[]` of `id`, `clientId`, `host`, `port`, `channel`; kept only by a leader). A device holds them in memory only, so a restart without the controller is a plain Echo, and it stops leading when the control link drops.
 
 `wakeWordEnabled` is sent on its own, not with the stored config: it is
 Home Assistant's per-Echo picker state, pushed on connect and on change to

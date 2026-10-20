@@ -124,6 +124,7 @@ import em_ringlight
 import em_timers
 import em_schedule
 import em_schedule_share
+import em_groups
 import em_loglevel
 
 _LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s — %(message)s"
@@ -457,6 +458,11 @@ class Device:
         # Outstanding spotify_cmd requests by id, answered by spotify_reply.
         self.spotify_waiters: dict[str, asyncio.Future] = {}
         self.schedule = em_schedule.Bridge(device_id)
+        # Speaker groups (em_groups): the leader's last group_status, the
+        # overlay last pushed to this device, and outstanding key messages.
+        self.group_status: dict | None = None
+        self.group_pushed: dict | None = None
+        self.group_waiters: dict[str, asyncio.Future] = {}
         # Set from the register message; None on firmware that predates it.
         self.ambient_light_status: dict | None = None
         # Which userspace the device booted, from its register message.
@@ -4843,6 +4849,7 @@ async def _on_sendspin_status(device: Device, msg: dict) -> None:
     # The player's state as it changes (pairing, a stream
     # starting); the stats tick carries it too.
     device.sendspin = msg.get("status")
+    em_groups.poke()
     await em_events.push({
         "type": "device_update", "device_id": device_id,
         "state": {"sendspin": device.sendspin},
@@ -4853,10 +4860,19 @@ async def _on_spotify_status(device: Device, msg: dict) -> None:
     device_id = device.device_id
     # Pushed on change; the stats tick carries it too.
     device.spotify = msg.get("status")
+    em_groups.poke()
     await em_events.push({
         "type": "device_update", "device_id": device_id,
         "state": {"spotify": device.spotify},
     })
+
+
+async def _on_group_status(device: Device, msg: dict) -> None:
+    em_groups.on_status(device, msg.get("status"))
+
+
+async def _on_group_ack(device: Device, msg: dict) -> None:
+    em_groups.on_ack(device, msg)
 
 
 async def _on_schedule_message(device: Device, msg: dict) -> None:
@@ -5240,6 +5256,8 @@ CONTROL_HANDLERS = {
     "stats":            _on_stats,
     "sendspin_status":  _on_sendspin_status,
     "spotify_status":   _on_spotify_status,
+    "group_status":     _on_group_status,
+    "group_ack":        _on_group_ack,
     "schedule_reply":   _on_schedule_message,
     "schedule_state":   _on_schedule_message,
     "spotify_reply":    _on_spotify_reply,
@@ -5409,6 +5427,7 @@ async def handle_control(ws: WebSocketServerProtocol, secure: bool = False):
         except Exception as e:
             log.warning(f"[{device_id}] Turn history hydration failed: {e}")
         em_state.devices[device_id] = device
+        em_groups.poke()
 
         log.info(
             f"[control] Device connected: {device_id} v={version} "
@@ -5860,6 +5879,7 @@ async def handle_control(ws: WebSocketServerProtocol, secure: bool = False):
                 # an offline device rather than up to one stats report stale.
                 em_dbwriter.submit(db.touch_device_seen, device.device_id)
                 em_state.devices.pop(device.device_id, None)
+                em_groups.poke()
                 # #315: the services stay up for a grace window instead of
                 # being torn down immediately — a four-second link blip used
                 # to deregister the HA entities, drop the BLE proxy and kill
@@ -6349,6 +6369,8 @@ async def main():
     log.info(f"EchoMuse Controller {CONTROLLER_VERSION}")
     db.init(DB_PATH)
     await em_schedule_share.load(DB_PATH)
+    await em_groups.load(DB_PATH)
+    em_groups.start()
     auth.maybe_generate_bootstrap_token()
     em_player.init(
         get_device=em_state.devices.get,

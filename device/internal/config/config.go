@@ -211,6 +211,14 @@ type Device struct {
 	// know. Empty falls back to one built from the serial.
 	SendspinName string
 
+	// Speaker group (internal/sendspin leader.go). GroupRole is "leader" on
+	// the Echo that plays Spotify for the group, "member" on the Echoes it
+	// leads, and empty otherwise; a group is never persisted on the device,
+	// so a restart with no controller is a plain Echo. GroupLead is only
+	// meaningful on the leader.
+	GroupRole string
+	GroupLead *GroupLead
+
 	// Spotify Connect engine (internal/spotify, emOS only). Default off: it
 	// opens a listening port and an mDNS record. SpotifyName is what the
 	// Spotify app lists the Echo as; empty falls back to the Sendspin name.
@@ -442,6 +450,15 @@ func (d *Device) Apply(msg ConfigMessage) {
 	if msg.SendspinName != "" {
 		d.SendspinName = msg.SendspinName
 	}
+	if msg.GroupRole != nil {
+		d.GroupRole = normaliseGroupRole(*msg.GroupRole)
+		if d.GroupRole != RoleLeader {
+			d.GroupLead = nil
+		}
+	}
+	if msg.GroupLead != nil && d.GroupRole == RoleLeader {
+		d.GroupLead = msg.GroupLead.clone()
+	}
 	if msg.SpotifyEnabled != nil {
 		d.SpotifyEnabled = msg.SpotifyEnabled
 	}
@@ -605,6 +622,7 @@ func (d *Device) Snapshot() ConfigMessage {
 	sendspinEnabled := d.SendspinEnabled != nil && *d.SendspinEnabled
 	sendspinUnpaired := d.SendspinUnpaired != nil && *d.SendspinUnpaired
 	spotifyEnabled := d.SpotifyEnabled != nil && *d.SpotifyEnabled
+	groupRole := d.GroupRole
 	// Absent reads as ON, matching the controller's default: this only ever
 	// lights the ring on a change somebody made, so the harmless answer is
 	// to show it.
@@ -645,6 +663,8 @@ func (d *Device) Snapshot() ConfigMessage {
 		SendspinEnabled:     &sendspinEnabled,
 		SendspinUnpaired:    &sendspinUnpaired,
 		SendspinName:        d.SendspinName,
+		GroupRole:           &groupRole,
+		GroupLead:           d.GroupLead.clone(),
 		SpotifyEnabled:      &spotifyEnabled,
 		SpotifyVolumeRing:   &spotifyVolumeRing,
 		SpotifyStandalone:   &spotifyStandalone,
@@ -652,6 +672,49 @@ func (d *Device) Snapshot() ConfigMessage {
 		RemoteVolumeArc:     &remoteVolumeArc,
 		ListeningAnim:       d.ListeningAnim,
 	}
+}
+
+// Roles in a speaker group.
+const (
+	RoleLeader = "leader"
+	RoleMember = "member"
+)
+
+func normaliseGroupRole(r string) string {
+	switch r {
+	case RoleLeader, RoleMember:
+		return r
+	}
+	return ""
+}
+
+// GroupLead is what the leader is told about its group: a name, which
+// channel it plays itself, and the Echoes it leads, by address. The members'
+// addresses come from the controller's live connections, so a DHCP change
+// reaches the leader with the next push.
+type GroupLead struct {
+	Name    string        `json:"name,omitempty"`
+	Channel string        `json:"channel,omitempty"`
+	Members []GroupMember `json:"members,omitempty"`
+}
+
+// GroupMember is one led Echo. ClientID is its Sendspin identity, which the
+// leader pins: an address that answers as someone else is not that Echo.
+type GroupMember struct {
+	ID       string `json:"id"`
+	ClientID string `json:"clientId"`
+	Host     string `json:"host"`
+	Port     int    `json:"port,omitempty"`
+	Channel  string `json:"channel,omitempty"`
+}
+
+func (g *GroupLead) clone() *GroupLead {
+	if g == nil {
+		return nil
+	}
+	c := *g
+	c.Members = append([]GroupMember(nil), g.Members...)
+	return &c
 }
 
 // ConfigMessage mirrors the JSON shape of the config control message
@@ -723,10 +786,15 @@ type ConfigMessage struct {
 	SendspinEnabled     *bool    `json:"sendspinEnabled,omitempty"`
 	SendspinUnpaired    *bool    `json:"sendspinUnpaired,omitempty"`
 	SendspinName        string   `json:"sendspinName,omitempty"`
-	SpotifyEnabled      *bool    `json:"spotifyEnabled,omitempty"`
-	SpotifyVolumeRing   *bool    `json:"spotifyVolumeRing,omitempty"`
-	SpotifyStandalone   *bool    `json:"spotifyStandalone,omitempty"`
-	SpotifyName         string   `json:"spotifyName,omitempty"`
+	// GroupRole is a pointer so the empty string (leave the group) is
+	// distinguishable from absent. No key rides here: a group's keys have
+	// their own message type, because config pushes are recorded.
+	GroupRole         *string    `json:"groupRole,omitempty"`
+	GroupLead         *GroupLead `json:"groupLead,omitempty"`
+	SpotifyEnabled    *bool      `json:"spotifyEnabled,omitempty"`
+	SpotifyVolumeRing *bool      `json:"spotifyVolumeRing,omitempty"`
+	SpotifyStandalone *bool      `json:"spotifyStandalone,omitempty"`
+	SpotifyName       string     `json:"spotifyName,omitempty"`
 	// WakeSound: a pointer so "off" is distinguishable from absent.
 	WakeSound      *bool  `json:"wakeSound,omitempty"`
 	WakeSoundLevel string `json:"wakeSoundLevel,omitempty"`

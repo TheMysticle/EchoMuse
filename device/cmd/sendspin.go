@@ -104,7 +104,14 @@ func sendspinLinkDown(spk *speaker.PcmSpeaker) {
 // push, so only with the controller link up.
 func applySendspinConfig(spk *speaker.PcmSpeaker, cc *client.ControlClient, vol deviceVolume, deviceID string) {
 	snap := config.Get().Snapshot()
-	on := snap.SendspinEnabled != nil && *snap.SendspinEnabled
+	enabled := snap.SendspinEnabled != nil && *snap.SendspinEnabled
+	// A member of a speaker group is led by the group's leader, which dials it
+	// by address: it needs the player listening and nothing else. It runs
+	// without advertising unless the user switched Sendspin on themselves, so a
+	// group does not turn every member into a Music Assistant player.
+	member := snap.GroupRole != nil && *snap.GroupRole == config.RoleMember
+	on := enabled || member
+	quiet := !enabled
 	unpaired := snap.SendspinUnpaired != nil && *snap.SendspinUnpaired
 	name := snap.SendspinName
 	if name == "" {
@@ -113,7 +120,7 @@ func applySendspinConfig(spk *speaker.PcmSpeaker, cc *client.ControlClient, vol 
 
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
-	if ss.c != nil && (!on || name != ss.name) {
+	if ss.c != nil && (!on || name != ss.name || quiet != ss.c.Quiet()) {
 		reason := "user_request"
 		if on {
 			reason = "restart"
@@ -138,6 +145,7 @@ func applySendspinConfig(spk *speaker.PcmSpeaker, cc *client.ControlClient, vol 
 			Product:   "EchoMuse " + board.IDOf(board.Current()),
 			Version:   client.Version,
 			Unpaired:  unpaired,
+			Quiet:     quiet,
 		})
 		if err == nil {
 			// Before Start: a server can connect and command the volume at once.

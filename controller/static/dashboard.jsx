@@ -11393,6 +11393,245 @@ function SpotifyWeb() {
   );
 }
 
+// ── Speaker groups ─────────────────────────────────────────────────────────
+//
+// Several Echoes playing the same Spotify together (docs/speaker-groups.md).
+// The controller picks which Echo leads and says so; the user's part is the
+// group, its Echoes and each one's channel. Every change is saved at once and
+// the answer replaces what is on screen, so there is no draft to forget: the
+// panel always shows what the controller holds.
+
+const GROUP_STATUS = {
+  ready:     { color: 'var(--ok)',    text: 'Ready' },
+  partial:   { color: 'var(--warn)',  text: 'Partly ready' },
+  starting:  { color: 'var(--warn)',  text: 'Starting' },
+  problem:   { color: 'var(--error)', text: 'Needs attention' },
+  no_leader: { color: 'var(--error)', text: 'No leader' },
+  incomplete:{ color: 'var(--muted)', text: 'Needs another Echo' },
+};
+
+const MEMBER_STATE = {
+  leader:      { color: 'var(--accent)', text: 'Leader' },
+  ready:       { color: 'var(--ok)',     text: 'In sync' },
+  starting:    { color: 'var(--warn)',   text: 'Connecting' },
+  busy:        { color: 'var(--warn)',   text: 'Busy' },
+  problem:     { color: 'var(--error)',  text: 'Problem' },
+  offline:     { color: 'var(--muted)',  text: 'Offline' },
+  unsupported: { color: 'var(--error)',  text: 'Needs update' },
+  idle:        { color: 'var(--muted)',  text: 'Waiting' },
+};
+
+const CHANNEL_LABEL = { mono: 'Mono', left: 'Left', right: 'Right' };
+
+function StatusDot({ color }) {
+  return <span aria-hidden="true" style={{ display: 'inline-block', width: 8, height: 8,
+    borderRadius: 'var(--radius-card)', background: color, flex: '0 0 auto' }}/>;
+}
+
+function ChannelPicker({ value, onChange, label }) {
+  return (
+    <div role="group" aria-label={label} style={{ display: 'inline-flex', gap: 'var(--space-1)' }}>
+      {Object.keys(CHANNEL_LABEL).map(c => (
+        <button key={c} aria-pressed={c === value} onClick={() => c !== value && onChange(c)}
+          className={c === value ? 'em-pill em-pill--small em-pill--accent' : 'em-pill em-pill--small'}>
+          {CHANNEL_LABEL[c]}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function GroupMemberRow({ cfg, live, pinned, onChannel, onPin, onRemove, canEdit }) {
+  const st = MEMBER_STATE[live ? live.state : 'idle'] || MEMBER_STATE.idle;
+  const name = live ? live.label : cfg.label;
+  const isLeader = live && live.role === 'leader';
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-5)', flexWrap: 'wrap',
+      padding: 'var(--space-4) var(--space-5)', borderRadius: 'var(--radius-md)',
+      background: isLeader ? 'var(--raised)' : 'transparent',
+      border: isLeader ? '1px solid var(--accent)' : '1px solid transparent' }}>
+      <StatusDot color={st.color}/>
+      <div style={{ flex: '1 1 160px', minWidth: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)', flexWrap: 'wrap' }}>
+          <span style={{ fontFamily: 'var(--font-sans)', fontSize: 'var(--fs-lg)', color: 'var(--text)', fontWeight: 600 }}>{name}</span>
+          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-sm)', color: st.color }}>{st.text}</span>
+          {pinned && <span title="Preferred leader" style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-sm)', color: 'var(--text2)' }}>★ preferred</span>}
+        </div>
+        {live && live.message && (
+          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-sm)', color: 'var(--muted)', marginTop: 'var(--space-1)' }}>{live.message}</div>
+        )}
+      </div>
+      <ChannelPicker value={cfg.channel} label={`Channel for ${name}`} onChange={onChannel}/>
+      {canEdit && (
+        <>
+          <button className="em-pill em-pill--small" aria-pressed={pinned} onClick={onPin}
+            title={pinned ? 'Stop preferring this Echo as leader' : 'Prefer this Echo as leader when it is able'}>
+            {pinned ? '★ Preferred' : '☆ Prefer'}
+          </button>
+          <button className="em-pill em-pill--small" aria-label={`Remove ${name} from the group`} onClick={onRemove}>Remove</button>
+        </>
+      )}
+    </div>
+  );
+}
+
+function GroupCard({ group, live, devices, busy, onChange, onDelete }) {
+  const [name, setName] = useState(group.name);
+  useEffect(() => { setName(group.name); }, [group.name]);
+  const st = GROUP_STATUS[live ? live.status : 'starting'] || GROUP_STATUS.starting;
+  const liveMembers = {};
+  ((live && live.members) || []).forEach(m => { liveMembers[m.device_id] = m; });
+  const labelOf = id => (devices.find(d => d.device_id === id) || {}).label || `Echo ${id.slice(-4)}`;
+  const taken = new Set(group.members.map(m => m.device_id));
+  const free = devices.filter(d => !taken.has(d.device_id) && !d.group);
+  const full = group.members.length >= 8;
+  const setMembers = (members, extra) => onChange({ ...group, members, ...extra });
+  const commitName = () => {
+    const n = name.trim();
+    if (n && n !== group.name) onChange({ ...group, name: n });
+    else setName(group.name);
+  };
+
+  return (
+    <Panel style={{ marginBottom: 'var(--space-8)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-5)', flexWrap: 'wrap', marginBottom: 'var(--space-5)' }}>
+        <input className="em-inset em-input" aria-label="Group name" value={name} maxLength={32}
+          style={{ flex: '1 1 160px', fontFamily: 'var(--font-sans)', fontSize: 'var(--fs-lg)', fontWeight: 600 }}
+          onChange={e => setName(e.target.value)} onBlur={commitName}
+          onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }}/>
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 'var(--space-3)',
+          fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-md)', color: st.color }}>
+          <StatusDot color={st.color}/>{st.text}
+        </span>
+        <button className="em-pill em-pill--small em-pill--danger" disabled={busy}
+          onClick={() => { if (confirm(`Delete the group “${group.name}”? The Echoes go back to playing alone.`)) onDelete(); }}>
+          Delete group
+        </button>
+      </div>
+
+      {live && live.instruction && (
+        <div role="status" style={{ padding: 'var(--space-5) var(--space-6)', marginBottom: 'var(--space-5)',
+          borderRadius: 'var(--radius-lg)', border: '1px solid var(--accent)', background: 'var(--sunken)' }}>
+          <div style={{ fontFamily: 'var(--font-sans)', fontSize: 'var(--fs-lg)', color: 'var(--text)', fontWeight: 600 }}>
+            {live.instruction}
+          </div>
+          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-sm)', color: 'var(--text2)', marginTop: 'var(--space-2)' }}>
+            {live.message}
+          </div>
+        </div>
+      )}
+      {live && !live.instruction && live.message && (
+        <div role="status" style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-md)', color: st.color,
+          marginBottom: 'var(--space-5)', lineHeight: 1.6 }}>{live.message}</div>
+      )}
+
+      <SectionLabel>Echoes in this group</SectionLabel>
+      <div style={{ display: 'grid', gap: 'var(--space-2)', marginBottom: 'var(--space-5)' }}>
+        {group.members.map(m => (
+          <GroupMemberRow key={m.device_id} canEdit={!busy}
+            cfg={{ ...m, label: labelOf(m.device_id) }} live={liveMembers[m.device_id]}
+            pinned={group.prefer === m.device_id}
+            onChannel={channel => setMembers(group.members.map(x => x.device_id === m.device_id ? { ...x, channel } : x))}
+            onPin={() => onChange({ ...group, prefer: group.prefer === m.device_id ? null : m.device_id })}
+            onRemove={() => setMembers(group.members.filter(x => x.device_id !== m.device_id),
+              group.prefer === m.device_id ? { prefer: null } : {})}/>
+        ))}
+        {group.members.length === 0 && (
+          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-md)', color: 'var(--muted)' }}>No Echoes yet.</div>
+        )}
+      </div>
+
+      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-4)', flexWrap: 'wrap' }}>
+        <select className="em-inset em-input" aria-label={`Add an Echo to ${group.name}`} value="" disabled={busy || full}
+          onChange={e => { if (e.target.value) setMembers([...group.members, { device_id: e.target.value, channel: 'mono' }]); }}>
+          <option value="">{full ? 'Group is full' : 'Add an Echo…'}</option>
+          {free.map(d => (
+            <option key={d.device_id} value={d.device_id} disabled={!!d.reason}>
+              {d.label}{d.reason ? ` — ${d.reason}` : (d.connected ? '' : ' — offline')}
+            </option>
+          ))}
+        </select>
+        {free.length === 0 && !full && (
+          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-sm)', color: 'var(--muted)' }}>
+            Every Echo is already in a group.
+          </span>
+        )}
+      </div>
+    </Panel>
+  );
+}
+
+function SpeakerGroupsPanel() {
+  const [view, setView] = useState(null);
+  const [msg, setMsg]   = useState(null);
+  const [busy, setBusy] = useState(false);
+  const saving = useRef(false);
+
+  const load = useCallback(async () => {
+    if (saving.current) return;
+    try { setView(await API.get('/api/speaker-groups')); }
+    catch (e) { if (e.status !== 401) setMsg({ ok: false, text: e.error || 'Could not read the speaker groups' }); }
+  }, []);
+  useEffect(() => { load(); const t = setInterval(load, 3000); return () => clearInterval(t); }, [load]);
+
+  async function save(groups) {
+    saving.current = true; setBusy(true); setMsg(null);
+    try { setView(await API.put('/api/speaker-groups', { groups })); }
+    catch (e) { setMsg({ ok: false, text: e.error || 'Could not save' }); }
+    finally { saving.current = false; setBusy(false); }
+  }
+  const configured = (view && view.configured) || [];
+  const replace = g => save(configured.map(x => x.id === g.id ? g : x));
+  const remove = id => save(configured.filter(x => x.id !== id));
+  const create = () => {
+    const taken = new Set(configured.map(g => g.name.toLowerCase()));
+    let n = configured.length + 1;
+    while (taken.has(`speaker group ${n}`)) n++;
+    save([...configured, { id: `g-${Date.now().toString(36)}`, name: `Speaker group ${n}`, members: [], prefer: null }]);
+  };
+
+  if (!view) return <div className="help">{msg ? msg.text : 'Loading…'}</div>;
+  const live = {};
+  (view.groups || []).forEach(g => { live[g.id] = g; });
+  const full = configured.length >= view.limits.groups;
+
+  return (
+    <div style={{ maxWidth: 640 }}>
+      <div style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-sm)', color: 'var(--muted)', marginBottom: 'var(--space-8)', lineHeight: 1.6 }}>
+        Play the same Spotify on several Echoes at once, in sync. Put them in a group, pick Mono, Left or Right
+        for each, then choose the Echo named below in Spotify. The controller picks which Echo leads.
+      </div>
+
+      {configured.length === 0 && (
+        <Panel style={{ marginBottom: 'var(--space-8)' }}>
+          <div style={{ fontFamily: 'var(--font-sans)', fontSize: 'var(--fs-lg)', color: 'var(--text)', fontWeight: 600, marginBottom: 'var(--space-3)' }}>
+            No speaker groups yet
+          </div>
+          <ol style={{ margin: 0, paddingLeft: 'var(--space-9)', fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-md)', color: 'var(--text2)', lineHeight: 1.8 }}>
+            <li>Create a group and add two or more Echoes.</li>
+            <li>Set each Echo to Mono, Left or Right.</li>
+            <li>Choose the leader’s name in Spotify. Everything plays together.</li>
+          </ol>
+        </Panel>
+      )}
+
+      {configured.map(g => (
+        <GroupCard key={g.id} group={g} live={live[g.id]} devices={view.devices} busy={busy}
+          onChange={replace} onDelete={() => remove(g.id)}/>
+      ))}
+
+      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-5)' }}>
+        <Pill accent disabled={busy || full} onClick={create}>New speaker group</Pill>
+        {full && <span className="help">Most groups allowed: {view.limits.groups}.</span>}
+      </div>
+      {msg && (
+        <div role="alert" style={{ marginTop: 'var(--space-6)', fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-md)',
+          color: msg.ok ? 'var(--ok)' : 'var(--error)' }}>{msg.text}</div>
+      )}
+    </div>
+  );
+}
+
 function SpotifyPanel() {
   const [engine, setEngine]   = useState(null);   // {artefacts, expected, device_dir}
   const [devices, setDevices] = useState([]);
@@ -11829,8 +12068,8 @@ function SettingsPanel({ globalConfig, onGlobalConfigChange, onClose, username, 
   // upload stores a binary the device will execute, and the install and the
   // probe both run over the root shell. A tab a non-admin can only be
   // refused by is worse than no tab.
-  const TABS = isAdmin ? ['fleet', 'integrations', 'system', 'users', 'account', 'support'] : ['fleet', 'account'];
-  const TAB_LABELS = { fleet: 'Config', integrations: 'Integrations', system: 'System', users: 'Users', account: 'Account', support: 'Support' };
+  const TABS = isAdmin ? ['fleet', 'integrations', 'groups', 'system', 'users', 'account', 'support'] : ['fleet', 'account'];
+  const TAB_LABELS = { fleet: 'Config', integrations: 'Integrations', groups: 'Speaker groups', system: 'System', users: 'Users', account: 'Account', support: 'Support' };
 
   return (
     <div style={{ position:'fixed', inset:0, background:'rgba(180,176,168,0.5)', display:'flex', alignItems:'center', justifyContent:'center', zIndex:200, backdropFilter:'blur(8px)' }}
@@ -11874,6 +12113,8 @@ function SettingsPanel({ globalConfig, onGlobalConfigChange, onClose, username, 
           )}
 
           {tab === 'integrations' && <SpotifyPanel/>}
+
+          {tab === 'groups' && <SpeakerGroupsPanel/>}
 
           {tab === 'system' && (
             <div style={{ maxWidth: 560 }}>

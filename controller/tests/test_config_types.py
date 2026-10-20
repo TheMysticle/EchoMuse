@@ -36,7 +36,10 @@ UNLISTED = {
 # from device config.
 NOT_CONFIG = {"type", "hasBeamforming", "listeningAnim",
               "consolePassword", "consoleTimeoutMin", "sendspinName",
-              "spotifyName", "wakeWordEnabled"}
+              "spotifyName", "wakeWordEnabled",
+              # Speaker groups: the controller's overlay on a push, never
+              # stored (em_groups).
+              "groupRole", "groupLead"}
 
 GO_KIND = {"int": T.INT, "float64": T.FLOAT, "bool": T.BOOL,
            "string": T.STR, "[]float64": T.FLOAT_LIST}

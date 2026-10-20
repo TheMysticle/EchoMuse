@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
@@ -125,6 +126,7 @@ type ControlClient struct {
 	configAppliedCallback ConfigAppliedCallback
 	playCueCallback       func(string)
 	sendspinTokenCallback func() map[string]any
+	groupKeyCallback      func(kind, peer string, psk []byte) error
 	schedulerCallback     func(json.RawMessage) map[string]any
 	spotifyCmdCallback    func(cmd string, fields map[string]any) map[string]any
 	volumeSetCallback     VolumeSetCallback
@@ -210,6 +212,22 @@ func (c *ControlClient) OnWifiScan(cb StateCallback)              { c.wifiScanCa
 // the stats report, which lands in support bundles. The callback returns nil
 // when the player is off.
 func (c *ControlClient) OnSendspinToken(cb func() map[string]any) { c.sendspinTokenCallback = cb }
+
+// OnGroupKey installs a speaker group key the controller minted, delivered as
+// its own message type so the secret never rides the config push (which is
+// recorded). kind is "trust" for a member, which learns its leader's server
+// id, and "key" for the leader, which learns a member's client id; peer is
+// that id and psk the 32-byte key. The callback's error goes back to the
+// controller, which keeps nothing and tries again later.
+func (c *ControlClient) OnGroupKey(cb func(kind, peer string, psk []byte) error) {
+	c.groupKeyCallback = cb
+}
+
+// SendGroupStatus reports the speaker group leader's state as it changes. It
+// carries no secrets. Older controllers ignore the type.
+func (c *ControlClient) SendGroupStatus(status any) error {
+	return c.writeJSON(map[string]any{"type": "group_status", "status": status})
+}
 
 // SendSendspinStatus reports the Sendspin player's state as it changes. The
 // stats tick carries it too; this is what makes the dashboard follow a
@@ -1053,6 +1071,36 @@ func (c *ControlClient) connect(ctx context.Context, server *discovery.ServerInf
 			reply["type"] = "sendspin_token"
 			c.writeJSON(reply)
 
+		case "group_trust", "group_key":
+			// Never logged and never echoed: the message carries a key.
+			var m struct {
+				ID   string `json:"id"`
+				Peer string `json:"peer"`
+				PSK  string `json:"psk"`
+			}
+			if err := json.Unmarshal(raw, &m); err != nil {
+				break
+			}
+			reply := map[string]any{"type": "group_ack", "id": m.ID, "kind": peek.Type}
+			psk, err := base64.RawURLEncoding.DecodeString(m.PSK)
+			switch {
+			case c.groupKeyCallback == nil:
+				reply["error"] = "speaker groups are not running on this Echo"
+			case err != nil:
+				reply["error"] = "malformed key"
+			default:
+				kind := "trust"
+				if peek.Type == "group_key" {
+					kind = "key"
+				}
+				if err := c.groupKeyCallback(kind, m.Peer, psk); err != nil {
+					reply["error"] = err.Error()
+				} else {
+					reply["ok"] = true
+				}
+			}
+			c.writeJSON(reply)
+
 		case "speaker_flush":
 			// Barge-in: controller detected the wake word during TTS
 			// playback and wants the buffered audio cut immediately.
@@ -1388,7 +1436,16 @@ func capabilities() []string {
 	// the engine binary is musl-static and installed by the controller.
 	if platform.Base() == platform.EmOS {
 		caps = append(caps, "spotify")
+		// "group_leader": this firmware can lead a speaker group
+		// (sendspin.Leader), which plays the Echo's own Spotify in step with
+		// the Echoes it leads. It needs the Spotify engine's audio, so it is
+		// emOS only for the reason "spotify" is.
+		caps = append(caps, "group_leader")
 	}
+	// "group_member": this firmware can be led (the Sendspin player), take a
+	// key from the controller in place of pairing, and run without
+	// advertising itself. Every board that has "sendspin" has it.
+	caps = append(caps, "group_member")
 	return caps
 }
 

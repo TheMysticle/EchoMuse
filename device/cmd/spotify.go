@@ -66,6 +66,9 @@ const (
 func (m *musicMux) Active() bool {
 	ss := sendspinPlayer()
 	spl := spotifyPlayer()
+	// While this Echo leads a group its audio is held in the leader, ahead of
+	// the speaker, after the engine has stopped looking busy.
+	spActive := func() bool { return spl != nil && (spl.Active() || groupActive()) }
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	switch m.owner {
@@ -74,7 +77,7 @@ func (m *musicMux) Active() bool {
 			return true
 		}
 	case ownSpotify:
-		if spl != nil && spl.Active() {
+		if spActive() {
 			return true
 		}
 	}
@@ -83,7 +86,7 @@ func (m *musicMux) Active() bool {
 		m.owner = ownSendspin
 		return true
 	}
-	if spl != nil && spl.Active() {
+	if spActive() {
 		m.owner = ownSpotify
 		return true
 	}
@@ -97,6 +100,12 @@ func (m *musicMux) Fill(out []byte, playAt time.Time, uncertain time.Duration) b
 			return c.Fill(out, playAt, uncertain)
 		}
 	case ownSpotify:
+		// A group leader places its audio in time, so it needs the measured
+		// playAt that this mux passes through. Do not give the mux a
+		// NeedsClock that says no.
+		if g := groupLeader(); g != nil && g.Engaged() {
+			return g.Fill(out, playAt, uncertain)
+		}
 		if p := spotifyPlayer(); p != nil {
 			return p.Fill(out, playAt, uncertain)
 		}
@@ -156,6 +165,12 @@ func spotifyLinkDown(spk *speaker.PcmSpeaker) {
 	firewall.Close(spotify.DefaultZeroconfPort)
 	firewall.CloseUDP(spotify.MDNSPort)
 	log.Printf("[spotify] engine stopped: controller link down")
+}
+
+// groupActive reports whether the leader has audio queued to play here.
+func groupActive() bool {
+	g := groupLeader()
+	return g != nil && g.Active()
 }
 
 func spotifyClockSane() bool { return time.Now().Year() >= 2024 }
@@ -314,6 +329,9 @@ func spotifyPoll(spk *speaker.PcmSpeaker, cc *client.ControlClient, vol deviceVo
 }
 
 func spotifyMusic() (active bool, lead time.Duration) {
+	if g := groupLeader(); g != nil && g.Engaged() && g.Active() {
+		return true, g.Buffered()
+	}
 	if p := spotifyPlayer(); p != nil && p.Active() {
 		return true, p.Buffered()
 	}

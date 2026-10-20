@@ -2,6 +2,7 @@ package sendspin
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -36,6 +37,10 @@ type Config struct {
 	// approved the device. Off by default: anyone on the LAN can claim to
 	// be a server, and pairing is one paste of the device's token.
 	Unpaired bool
+	// Quiet listens without advertising over mDNS. An Echo that only takes
+	// part in a speaker group is found by its leader by address, and must
+	// not show up in Music Assistant as a player nobody asked for.
+	Quiet bool
 }
 
 // Client is the device's Sendspin player. Servers connect to it (the spec's
@@ -87,6 +92,26 @@ func New(cfg Config) (*Client, error) {
 	c.player.setGain(set.Volume, set.Muted) // until OnVolume hands it to the device
 	c.player.setDelay(set.StaticDelayMs)
 	return c, nil
+}
+
+// Quiet reports whether the player runs without advertising itself.
+func (c *Client) Quiet() bool { return c.cfg.Quiet }
+
+// TrustServer records a long-term PSK for one server, as if a pairing had
+// produced it. The controller does this for the leader of a speaker group,
+// over the authenticated control link, instead of the pairing exchange.
+func (c *Client) TrustServer(serverID string, psk []byte) error {
+	if _, err := peerKey(serverID); err != nil {
+		return err
+	}
+	if len(psk) != pskSize {
+		return errors.New("sendspin: group key is not 32 bytes")
+	}
+	if err := c.store.addRecord(serverID, psk, c.inUse); err != nil {
+		return err
+	}
+	c.changed()
+	return nil
 }
 
 // ClientID is the device's Sendspin identity (its public key). Not secret.
@@ -149,6 +174,10 @@ func (c *Client) Start() error {
 	c.srv = &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	go c.srv.Serve(ln)
 
+	if c.cfg.Quiet {
+		log.Printf("[sendspin] player %q listening on :%d%s (not advertised)", c.cfg.Name, c.cfg.Port, Path)
+		return nil
+	}
 	c.mdns, err = zeroconf.Register(c.cfg.Instance, serviceType, "local.", c.cfg.Port,
 		[]string{"path=" + Path, "name=" + c.cfg.Name}, nil)
 	if err != nil {

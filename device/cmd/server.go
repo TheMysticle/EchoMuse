@@ -369,6 +369,7 @@ func main() {
 				max(pcmSpeaker.MusicLead(), ssLead, spLead))
 			sendspinPoll(pcmSpeaker)
 			spotifyPoll(pcmSpeaker, controlClient, s, deviceID)
+			groupPoll(controlClient, s)
 			bleScanner.Yield(music ||
 				dataClient.TurnStreamActive() ||
 				dataClient.ListenOpen() ||
@@ -519,6 +520,7 @@ func main() {
 			s.SetLinkDown(true)
 			sendspinLinkDown(pcmSpeaker)
 			spotifyLinkDown(pcmSpeaker)
+			groupLinkDown()
 			if s.IsMuted() {
 				s.RestoreMuteRing()
 			} else {
@@ -547,6 +549,7 @@ func main() {
 		s.SetLinkDown(true)
 		sendspinLinkDown(pcmSpeaker)
 		spotifyLinkDown(pcmSpeaker)
+		groupLinkDown()
 		go pulseOrange(pulseCtx, s)
 	})
 
@@ -568,6 +571,7 @@ func main() {
 		s.SetLinkDown(true)
 		sendspinLinkDown(pcmSpeaker)
 		spotifyLinkDown(pcmSpeaker)
+		groupLinkDown()
 		go pulseWhite(pulseCtx, s)
 	})
 
@@ -590,6 +594,7 @@ func main() {
 		s.SetLinkDown(true)
 		sendspinLinkDown(pcmSpeaker)
 		spotifyLinkDown(pcmSpeaker)
+		groupLinkDown()
 		go pulseRefused(pulseCtx, s)
 	})
 
@@ -691,6 +696,7 @@ func main() {
 		applyBleConfig(bleScanner, bleBridge)
 		applySendspinConfig(pcmSpeaker, controlClient, s, deviceID)
 		applySpotifyConfig(pcmSpeaker, controlClient, s, deviceID)
+		applyGroupConfig(controlClient, s)
 		applyShadowConfig(dataClient, controlClient, pcmSpeaker, s)
 		syncListenState(dataClient, controlClient, false)
 	})
@@ -708,6 +714,7 @@ func main() {
 
 	controlClient.OnSendspinToken(sendspinToken)
 	controlClient.OnSpotifyCmd(spotifyCmd)
+	controlClient.OnGroupKey(groupKey)
 
 	// Restart a controllerless Spotify engine before any controller is
 	// reached, so a reboot with the link still down does not leave the
@@ -853,6 +860,7 @@ func main() {
 		controlClient.SendVolumeState(level)
 		sendspinVolumeChanged(level)
 		spotifyVolumeChanged(level)
+		groupVolumeChanged(level)
 	})
 
 	// Volume set from controller (HA MediaPlayerCommandRequest forwarded down).
