@@ -1,8 +1,8 @@
 import copy
 from datetime import datetime, timezone
-from zoneinfo import ZoneInfo
 from homeassistant.components.todo import TodoListEntity, TodoItem, TodoItemStatus, TodoListEntityFeature
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.util import dt as dt_util
 from homeassistant.exceptions import HomeAssistantError
 from .api import DOMAIN
 from .shared import is_shared
@@ -47,14 +47,21 @@ def changed_reminder(current, item):
         changed = True
     due = item.due
     if isinstance(due, datetime):
-        zone = ZoneInfo(current.get("timezone") or "UTC")
+        home = dt_util.get_default_time_zone()
+        # A time without an offset is the wall clock the card showed, which is
+        # Home Assistant's zone, not the zone the reminder happened to be saved
+        # in (a model creating one passes "UTC"): read in that, a 10 PM edit
+        # lands at midnight.
         if due.tzinfo is None:
-            due = due.replace(tzinfo=zone)
-        stamp = int(due.timestamp())
+            due = due.replace(tzinfo=home)
+        # The picker has no seconds; whatever it sends beyond the minute is noise.
+        stamp = int(due.replace(second=0, microsecond=0).timestamp())
         if current.get("due") and abs(stamp - current["due"]) >= SAME_TIME_S or not current.get("due") and not current.get("rule"):
             if current.get("rule"):
                 raise HomeAssistantError("A repeating reminder keeps its days; delete it and add a new one to change them")
             new["due"] = stamp
+            if current.get("timezone") in (None, "", "UTC"):
+                new["timezone"] = str(home)      # shown, and shared, in the zone it was set in
             changed = True
     elif due is None and current.get("due") and not current.get("rule"):
         raise HomeAssistantError("A reminder needs a time")

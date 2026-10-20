@@ -1253,3 +1253,71 @@ def test_one_edit_is_one_commit_on_each_target_and_mutual_sharing_does_not_echo(
         assert after["A"][1] == before["A"][1], "the original is never rewritten by its own copies"
         assert after["A"][0] - before["A"][0] == 1     # only the owner's own edit
     _run(world, go)
+
+
+def test_a_reminder_moved_on_the_original_moves_on_its_copies(world):
+    async def go(world):
+        a, b = Sat("A", [reminder("r", due=NOW + HOUR)]), Sat("B")
+        connect(world, a, b)
+        share_config(A={"reminder": ["B"]})
+        await settle()
+        mid = next(iter(copies(b)))
+        a.find("r")["due"] = int(NOW + 3 * HOUR)
+        a.report()
+        await settle()
+        assert b.find(mid)["due"] == int(NOW + 3 * HOUR) and b.find(mid)["state"] == "scheduled"
+        # And it settles: one edit, not one per pass.
+        n = len(b.commands)
+        await settle()
+        assert len(b.commands) == n
+    _run(world, go)
+
+
+def test_a_reminder_moved_after_it_rang_comes_back_on_its_copies(world):
+    async def go(world):
+        a, b = Sat("A", [reminder("r", due=NOW + HOUR)]), Sat("B")
+        connect(world, a, b)
+        share_config(A={"reminder": ["B"]})
+        await settle()
+        mid = next(iter(copies(b)))
+        # It rang and was dismissed on the copy; the original is then moved.
+        b.find(mid).update(state="completed")
+        b.report()
+        a.find("r").update(due=int(NOW + 5 * HOUR))
+        a.report()
+        await settle()
+        assert b.find(mid)["state"] == "scheduled" and b.find(mid)["due"] == int(NOW + 5 * HOUR)
+    _run(world, go)
+
+
+def test_a_finished_copy_of_a_finished_original_is_left_alone(world):
+    async def go(world):
+        a, b = Sat("A", [reminder("r", due=NOW + HOUR)]), Sat("B")
+        connect(world, a, b)
+        share_config(A={"reminder": ["B"]})
+        await settle()
+        mid = next(iter(copies(b)))
+        b.find(mid).update(state="completed")
+        a.find("r").update(state="completed")
+        a.report(); b.report()
+        n = len(b.commands)
+        await settle()
+        assert len(b.commands) == n and b.find(mid)["state"] == "completed"
+    _run(world, go)
+
+
+def test_a_copy_cancelled_on_its_own_satellite_is_not_brought_back_by_a_move(world):
+    async def go(world):
+        a, b = Sat("A", [reminder("r", due=NOW + HOUR)]), Sat("B")
+        connect(world, a, b)
+        share_config(A={"reminder": ["B"]})
+        await settle()
+        mid = next(iter(copies(b)))
+        b.find(mid).update(state="canceled")
+        b.report()
+        await settle()
+        a.find("r").update(due=int(NOW + 5 * HOUR))
+        a.report()
+        await settle()
+        assert b.find(mid)["state"] == "canceled"
+    _run(world, go)

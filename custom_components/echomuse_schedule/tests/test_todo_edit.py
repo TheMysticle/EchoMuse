@@ -79,11 +79,34 @@ def test_moving_sets_the_deadline_and_keeps_the_words_and_speech():
     assert new["due"] == DUE + 7200 and new["speech"] == "a"
 
 
-def test_a_naive_time_means_the_reminders_own_timezone():
-    # 09:30 on the wall in Warsaw (UTC+1 in January).
-    wall = datetime(2030, 1, 15, 9, 30)
-    new = changed_reminder(reminder(), card(due=wall))
-    assert datetime.fromtimestamp(new["due"], timezone.utc) == datetime(2030, 1, 15, 8, 30, tzinfo=timezone.utc)
+@pytest.fixture
+def warsaw():
+    from zoneinfo import ZoneInfo
+    from homeassistant.util import dt as dt_util
+    old = dt_util.get_default_time_zone()
+    dt_util.set_default_time_zone(ZoneInfo("Europe/Warsaw"))
+    yield
+    dt_util.set_default_time_zone(old)
+
+
+def test_a_naive_time_is_the_wall_clock_of_home_assistant_not_the_reminders_zone(warsaw):
+    # 22:00 on the card, in January (UTC+1). A reminder saved in "UTC" (a model
+    # passes that) used to read it as 22:00 UTC, which is midnight.
+    wall = datetime(2030, 1, 15, 22, 0)
+    for zone in ("Europe/Warsaw", "UTC", "America/New_York"):
+        new = changed_reminder(reminder(timezone=zone), card(due=wall))
+        assert datetime.fromtimestamp(new["due"], timezone.utc) == datetime(2030, 1, 15, 21, 0, tzinfo=timezone.utc), zone
+
+
+def test_seconds_the_picker_does_not_have_are_dropped(warsaw):
+    new = changed_reminder(reminder(), card(due=datetime(2030, 1, 15, 22, 2, 51)))
+    assert new["due"] % 60 == 0
+
+
+def test_a_reminder_saved_in_utc_is_moved_into_the_zone_it_is_set_in(warsaw):
+    assert changed_reminder(reminder(timezone="UTC"), card(due=datetime(2030, 1, 15, 22, 0)))["timezone"] == "Europe/Warsaw"
+    assert changed_reminder(reminder(timezone="UTC"), card(summary="x"))["timezone"] == "UTC"     # a rename is not a move
+    assert changed_reminder(reminder(timezone="America/New_York"), card(due=datetime(2030, 1, 15, 22, 0)))["timezone"] == "America/New_York"
 
 
 def test_the_original_is_not_modified():

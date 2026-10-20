@@ -203,8 +203,14 @@ def _edit_item(want: _Want, copy: dict, mid: str) -> dict:
     item = {**want.spec, "id": mid}
     if want.spec["kind"] == "timer":
         item["due"], item["duration"] = copy.get("due", 0), copy.get("duration", 0)
+    elif "rule" not in want.spec:
+        # A one-off is the original's own moment: a metadata-only edit sends the
+        # copy's number back unchanged, and a moved original sends the new one.
+        # It used to send the copy's number either way, so a reminder moved on
+        # the original never moved on its copies (and was re-sent every pass).
+        item["due"] = want.spec.get("due", copy.get("due", 0))
     elif want.spec.get("rule") == copy.get("rule") and want.spec["timezone"] == copy.get("timezone"):
-        item["due"] = copy.get("due", 0)
+        item["due"] = copy.get("due", 0)      # a repeating copy keeps its own next occurrence
     else:
         item["due"] = 0
     return item
@@ -272,6 +278,12 @@ def plan(config: dict, snaps: dict[str, dict], now: float, assets=frozenset(),
                               speech=want.speech, source=source))
                 if want.paused:
                     ops.append(Op(target, "pause", mid, source=source))
+            elif (copy.get("state") in ("completed", "missed") and wall and "rule" not in want.spec
+                  and clock_ok and want.spec.get("due") and copy.get("due") != want.spec["due"]):
+                # The original was moved after the copy had already rung: the
+                # Echo resets an edited deadline to scheduled, so this brings it back.
+                ops.append(Op(target, "edit", mid, _edit_item(want, copy, mid),
+                              speech=want.speech, source=source))
             elif copy.get("state") in LIVE_COPY:
                 if want.spec["kind"] == "timer":
                     if _differs(want, copy):
