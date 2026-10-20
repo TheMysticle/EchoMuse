@@ -408,6 +408,15 @@ in the kitchen.
   edited. Global alert sounds, volumes and colours are not shared.
 - **Limits are per satellite.** Copies count towards the 64-item limit; a full
   satellite is reported under the panel and the others still get theirs.
+- **Flash wear.** A speech clip is written to a satellite once: the Echo skips
+  a clip it already holds, so a reconnect costs WiFi and no flash. Each alert
+  change is one store commit per target (the state file and its `.previous`,
+  both synced), the same as on the original, and a settled pair writes nothing
+  (tests count the commits). The Echo keeps at most 32 clips (64 MiB) and
+  nothing empties them on its own, so copies fill a target's cache faster. When
+  it is full the copy is not made, the panel says so, and the controller stops
+  retrying; use **Remove unused cached sounds** on that satellite's Schedules
+  tab. Watch the eMMC wear reading on the Status tab if you share a lot.
 - **Home Assistant companion 0.1.11** leaves copies out of the reminder
   to-do list, the timer/alarm sensors and speech caching, so a shared reminder
   appears once, under the satellite it was set on. Replace

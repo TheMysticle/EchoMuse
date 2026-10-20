@@ -51,6 +51,7 @@ class Sat:
     def __init__(self, device_id, items=(), valid=True, capabilities=("local_schedule",)):
         self.device_id, self.items, self.revision, self.valid = device_id, [copy.deepcopy(i) for i in items], 1, valid
         self.assets, self.commands = set(), []
+        self.cache_full = False
         self.capabilities = list(capabilities)
         self.schedule = Bridge(device_id)
         self.schedule.update(self.snapshot())
@@ -69,6 +70,9 @@ class Sat:
 
     async def send_control(self, msg):
         if "asset" in msg:
+            if self.cache_full and msg["asset"] not in self.assets:
+                self.schedule.receive({"id": msg["id"], "error": "asset cache full; remove unused assets"})
+                return
             self.assets.add(msg["asset"])
             self.schedule.receive({"id": msg["id"]})
             return
@@ -630,6 +634,40 @@ def test_reminder_speech_is_sent_to_the_target_with_the_copy(world):
     _run(world, go)
 
 
+def test_a_full_sound_cache_is_reported_once_and_never_edits_the_target_in_a_loop(world, monkeypatch):
+    """The Echo's clip cache holds 32 files and nothing empties it. A refusal is final until the
+    owner clears it: no retry timer, no copy without its clip (which planning would edit on every
+    pass, each edit being a store write on the Echo), and a message that says what to do."""
+    async def go(world):
+        pcm = b"\x01\x02" * 400
+        asset = hashlib.sha256(pcm).hexdigest()
+        await share.cache_asset(asset, pcm)
+        a = Sat("A", [reminder("r", speech=asset, speech_version=1)])
+        a.assets.add(asset)
+        b, c = Sat("B"), Sat("C")
+        b.cache_full = True
+        connect(world, a, b, c)
+        delays = []
+        loop = asyncio.get_running_loop()
+        monkeypatch.setattr(loop, "call_later", lambda delay, fn: delays.append(delay) or SimpleNamespace(cancel=lambda: None))
+        share_config(A={"reminder": ["B", "C"]})
+        await settle()
+        assert not copies(b) and len(copies(c)) == 1       # the other target is unaffected
+        assert "cache full" in share.errors()["B"] and "Remove unused cached sounds" in share.errors()["B"]
+        assert delays == []                                  # no retry timer
+        sent = len(b.commands)
+        for _ in range(3):                                   # later passes may re-offer the clip, which is refused before any write
+            a.report()
+            await settle()
+        assert len(b.commands) == sent and not copies(b)   # no store writes on the target
+        # The owner clears the cache; the next change on either side shares it.
+        b.cache_full = False
+        a.report()
+        await settle()
+        assert len(copies(b)) == 1 and b.find(share.mirror_id("A", "r"))["speech"] == asset
+    _run(world, go)
+
+
 def test_speech_that_is_not_cached_still_shares_the_reminder(world):
     async def go(world):
         asset = "a" * 64
@@ -1174,3 +1212,44 @@ def test_the_devices_list_says_who_can_hold_a_copy_and_the_panel_reads_that(data
     panel = panel[:panel.index("Stop together")]
     assert "d.scheduleCapable" in panel and "d.capabilities" not in panel
     assert "d.connected" in panel
+
+
+# --- what sharing costs the Echo's flash ---------------------------------------
+# Every revision an Echo bumps is a store commit: the whole state is written twice
+# (the file and its .previous), fsynced. These count them.
+
+def test_an_unchanged_report_and_a_settled_pair_write_nothing_to_the_target(world):
+    async def go(world):
+        a = Sat("A", [reminder("r"), timer("t"), alarm("w")])
+        b = Sat("B")
+        connect(world, a, b)
+        share_config(A={"reminder": ["B"], "timer": ["B"], "alarm": ["B"]})
+        await settle()
+        assert len(copies(b)) == 3
+        revision, sent = b.revision, len(b.commands)
+        for _ in range(50):                     # the device repeats its report every two seconds
+            a.schedule.update(a.snapshot())
+            b.schedule.update(b.snapshot())
+        await settle()
+        await asyncio.sleep(0.05)
+        assert (b.revision, len(b.commands)) == (revision, sent)
+    _run(world, go)
+
+
+def test_one_edit_is_one_commit_on_each_target_and_mutual_sharing_does_not_echo(world):
+    async def go(world):
+        a, b, c = Sat("A", [reminder("r")]), Sat("B"), Sat("C")
+        connect(world, a, b, c)
+        share_config(A={"reminder": ["B", "C"]}, B={"reminder": ["A"]})
+        await settle()
+        before = {s.device_id: (s.revision, len(s.commands)) for s in (a, b, c)}
+        a.find("r")["label"] = "Bins out"
+        a.find("r")["message"] = "Bins out"
+        a.report()
+        await settle()
+        after = {s.device_id: (s.revision, len(s.commands)) for s in (a, b, c)}
+        assert after["B"][1] - before["B"][1] == 1 and after["B"][0] - before["B"][0] == 1
+        assert after["C"][1] - before["C"][1] == 1 and after["C"][0] - before["C"][0] == 1
+        assert after["A"][1] == before["A"][1], "the original is never rewritten by its own copies"
+        assert after["A"][0] - before["A"][0] == 1     # only the owner's own edit
+    _run(world, go)

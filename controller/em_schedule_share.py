@@ -647,13 +647,19 @@ async def _apply(dev, ops: list[Op]) -> bool:
             message = str(err) or "the satellite did not acknowledge"
             if "not ringing" in message or "not found" in message:
                 continue    # already stopped or removed there: the goal is met
+            if "cache full" in message:
+                message += " (use Remove unused cached sounds on this satellite's Schedules tab)"
             _errors[target] = message
             log.warning("sharing %s on %s failed: %s", op.action, target, message)
             if isinstance(err, asyncio.TimeoutError):
                 return False
-            if "limit" not in message and "exists" not in message:
+            if not any(word in message for word in ("limit", "exists", "cache full")):
                 return False
-            refused = True   # a full store or a clash: waiting will not fix it, so no retry
+            # A full store, a full sound cache or a clash: waiting will not fix it, so no retry.
+            # The copy is not made without its clip either. Planning keeps wanting the clip on a
+            # copy that lacks it, so a copy made without would be edited on every pass, and every
+            # edit is a store write on the Echo.
+            refused = True
     if not refused:
         _errors.pop(target, None)
     return True
