@@ -1,4 +1,4 @@
-"""Copies made by the controller's schedule sharing stay out of the HA entities."""
+"""Copies made by the controller's schedule sharing: listed as reminders, left out of the sensors."""
 import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -30,17 +30,22 @@ def test_missing_or_odd_ids_are_not_shared():
     assert is_shared({"id": 5}) is False
 
 
-def test_reminder_list_leaves_copies_to_the_original_satellite():
+def test_reminder_list_shows_copies_marked_shared():
     from custom_components.echomuse_schedule.todo import Reminders
     entry = SimpleNamespace(data={"satellite": "A"})
     coordinator = SimpleNamespace(entry=entry, data={"items": [
         {"id": "own", "kind": "reminder", "state": "scheduled", "label": "own", "due": 1999999999},
-        {"id": COPY, "kind": "reminder", "state": "scheduled", "label": "copy", "due": 1999999999},
+        {"id": COPY, "kind": "reminder", "state": "scheduled", "label": "copy", "due": 1999999999,
+         "message": "collect brother from the airport", "rule": {"hour": 7, "minute": 0}},
         {"id": "t", "kind": "timer", "state": "scheduled", "label": "tea"},
     ]})
     entity = Reminders.__new__(Reminders)
     entity.coordinator = coordinator
-    assert [i.uid for i in entity.todo_items] == ["own"]
+    items = entity.todo_items
+    assert [i.uid for i in items] == ["own", COPY]
+    assert items[0].description == "scheduled"
+    assert items[1].summary == "collect brother from the airport"
+    assert items[1].description == "scheduled; recurring; shared"
 
 
 def test_sensors_skip_copies_but_keep_everything_else(tmp_path):

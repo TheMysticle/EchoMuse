@@ -1,7 +1,7 @@
 {
   "domain": "echomuse_schedule",
   "name": "EchoMuse Scheduler",
-  "version": "0.1.11",
+  "version": "0.1.12",
   "config_flow": true,
   "dependencies": [
     "intent",

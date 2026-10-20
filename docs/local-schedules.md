@@ -417,11 +417,13 @@ in the kitchen.
   it is full the copy is not made, the panel says so, and the controller stops
   retrying; use **Remove unused cached sounds** on that satellite's Schedules
   tab. Watch the eMMC wear reading on the Status tab if you share a lot.
-- **Home Assistant companion 0.1.11** leaves copies out of the reminder
-  to-do list, the timer/alarm sensors and speech caching, so a shared reminder
-  appears once, under the satellite it was set on. Replace
-  `custom_components/echomuse_schedule` and restart Home Assistant; older
-  versions still work but list a copy on both satellites.
+- **Home Assistant companion 0.1.12** shows a shared reminder in the to-do list
+  of every satellite that holds a copy, marked "shared", because that is the
+  satellite that will ring it. The timer/alarm sensors and speech caching still
+  skip copies, so a shared timer has one sensor, under the satellite it was set
+  on. Completing or deleting a copy affects that satellite only. Replace
+  `custom_components/echomuse_schedule` and restart Home Assistant; 0.1.11 and
+  older list a reminder only under the satellite it was set on.
 
 Sharing needs no firmware change. It is stored in the controller database and
 the API is `GET`/`PUT /api/schedule-sharing` (admin to change).

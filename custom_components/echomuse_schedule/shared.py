@@ -5,10 +5,11 @@ shared item on each receiving satellite under an id of this shape. The Echo
 keeps no origin field, so the id is the marker, and this pattern must stay in
 step with the controller's (a controller test checks both).
 
-Copies still ring and still answer "stop" on the satellite holding them; they
-are left out of the entities and of speech caching because the original
-already has both, and a second to-do row or sensor for the same alert is a
-duplicate.
+Copies still ring and still answer "stop" on the satellite holding them, so
+the reminder list shows them there, marked "shared". They are left out of the
+timer/alarm sensors and of speech caching: the original already has both, and a
+second sensor for the same alert is a duplicate, while a reminder on the
+satellite that will ring it is exactly what its list should show.
 """
 import re
 

@@ -26,8 +26,8 @@ class Reminders(CoordinatorEntity, TodoListEntity):
         return [TodoItem(summary=i.get("message") or i["label"], uid=i["id"],
             status=TodoItemStatus.COMPLETED if i["state"] in ("completed", "missed", "canceled") else TodoItemStatus.NEEDS_ACTION,
             due=datetime.fromtimestamp(i["due"], timezone.utc) if i.get("due") else None,
-            description=i["state"] + ("; recurring" if i.get("rule") else ""))
-            for i in self.coordinator.data["items"] if i["kind"] == "reminder" and not is_shared(i)]
+            description=i["state"] + ("; recurring" if i.get("rule") else "") + ("; shared" if is_shared(i) else ""))
+            for i in self.coordinator.data["items"] if i["kind"] == "reminder"]
 
     async def async_update_todo_item(self, item):
         current = next((i for i in self.coordinator.data["items"] if i["id"] == item.uid and i["kind"] == "reminder"), None)
