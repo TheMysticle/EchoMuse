@@ -268,8 +268,9 @@ class Handler(intent.IntentHandler):
                 command["item"] = item
             elif action != "cancel_all":
                 target = slots.get("target") or slots.get("name")
-                if action == "edit" and (target or "").strip().lower() in ("my", "the"):
-                    target = None     # "move my reminder to ...": the wildcard caught the article
+                if (target or "").strip().lower() in ("my", "the") and action in ("edit", "cancel", "enable", "disable", "pause", "resume") \
+                        and not any(i["id"] == data.get("active") and i["kind"] == kind for i in data["items"]):
+                    target = None     # "move/cancel my reminder": the wildcard caught the article
                 if action in ("dismiss", "snooze") and not target:
                     target = data.get("active")
                     current = next((i for i in data["items"] if i["id"] == target), None)

@@ -126,3 +126,13 @@ def test_sentences_that_are_not_a_move_are_not_claimed_as_one(tmp_path, phrase):
     result = recognize_best(phrase, grammar(), language="en", best_metadata_key="custom_sentence")
     assert result is None or not (result.intent.name == "EchoMuseAction" and result.entities.get("action")
                                   and result.entities["action"].value == "edit")
+
+
+def test_cancel_my_reminder_names_nobody_unless_one_is_ringing(tmp_path):
+    items = [reminder("dentist")]
+    speech, sent, _ = say(tmp_path, "cancel my reminder", items)
+    assert speech == "Reminder cancelled." and sent["id"] == "dentist"
+    speech, sent, _ = say(tmp_path, "cancel my reminder", [reminder("a"), reminder("b")])
+    assert sent is None and "Several items match" in speech
+    speech, sent, _ = say(tmp_path, "cancel the bins reminder", [reminder("a"), reminder("bins", days=3)])
+    assert sent["id"] == "bins"

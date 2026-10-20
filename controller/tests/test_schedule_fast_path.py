@@ -411,3 +411,32 @@ def test_a_repeat_is_not_a_place_to_move_to(harness):
     _add_reminder(harness, "dentist")
     reply = asyncio.run(harness.say("move my reminder to every weekday at 7am"))
     assert reply == "I can only move it to one time, not a repeat" and _edits(harness) == []
+
+
+@pytest.mark.parametrize("phrase", ["cancel my reminder", "cancel the reminder", "delete my reminder"])
+def test_cancelling_the_only_reminder_without_naming_it(harness, phrase):
+    _add_reminder(harness, "dentist")
+    assert asyncio.run(harness.say(phrase)) == "Reminder cancelled."
+    assert harness.scheduler.items[0]["state"] == "canceled"
+
+
+def test_cancelling_with_several_reminders_still_asks_which(harness):
+    _add_reminder(harness, "dentist")
+    _add_reminder(harness, "bins", days=3)
+    assert "Several items match" in asyncio.run(harness.say("cancel my reminder"))
+    assert [i["state"] for i in harness.scheduler.items] == ["scheduled", "scheduled"]
+
+
+def test_cancel_my_reminder_still_means_the_one_that_is_ringing(harness):
+    _add_reminder(harness, "dentist")
+    _add_reminder(harness, "bins", days=3, state="ringing")
+    harness.scheduler.active = "bins"
+    assert asyncio.run(harness.say("cancel my reminder")) == "Reminder cancelled."
+    assert [i["state"] for i in harness.scheduler.items] == ["scheduled", "canceled"]
+
+
+def test_a_named_cancel_is_unchanged(harness):
+    _add_reminder(harness, "dentist")
+    _add_reminder(harness, "bins", days=3)
+    assert asyncio.run(harness.say("cancel the bins reminder")) == "Reminder cancelled."
+    assert [i["state"] for i in harness.scheduler.items] == ["scheduled", "canceled"]

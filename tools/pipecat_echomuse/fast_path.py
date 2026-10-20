@@ -92,6 +92,7 @@ SCHEDULE_INTENTS = frozenset({"EchoMuseCreate", "EchoMuseList", "EchoMuseAction"
 # "complete" have no MCP equivalent (the device REST API the native HA
 # handler uses supports them, but that endpoint is not reachable from here),
 # so those fall through to the LLM's own, equally limited, tool.
+_ARTICLE_ACTIONS = frozenset({"cancel", "enable", "disable", "pause", "resume"})
 SCHEDULE_ACTIONS = frozenset({"cancel", "dismiss", "snooze", "pause", "resume", "enable", "disable", "edit"})
 
 # Action intents only: each has a clean action_done/action_failed result
@@ -779,8 +780,11 @@ class FastPathStep(FrameProcessor):
             return False
         data = content["snapshot"]
         target = slots.get("target")
-        if action == "edit" and (target or "").strip().lower() in ("my", "the"):
-            target = None         # "move my reminder to ...": the wildcard caught the article
+        if (target or "").strip().lower() in ("my", "the") and (action == "edit" or action in _ARTICLE_ACTIONS) \
+                and not any(i["id"] == data.get("active") and i["kind"] == kind for i in data["items"]):
+            # "move/cancel my reminder": the wildcard caught the article. Something
+            # ringing keeps its old meaning (that one); otherwise name nobody.
+            target = None
         if action in ("dismiss", "snooze") and not target:
             current = next((i for i in data["items"] if i["id"] == data.get("active")), None)
             if current:
