@@ -186,3 +186,43 @@ def test_over_mcp_list_hides_finished_and_edit_round_trips(database):
                 assert error and 'future' in text
                 assert [c['action'] for c in sent].count('edit') == 1                  # nothing refused reached the device
     asyncio.run(main())
+
+
+# The household's zone wins over the one a model names.
+
+def create(args, now=NOW):
+    return tools.command("EchoMuseCreate", {"kind": "reminder", "message": "x", **args}, now)["item"]
+
+
+def test_a_model_that_says_utc_still_saves_in_the_households_zone(monkeypatch):
+    monkeypatch.setenv("TZ", "Europe/Warsaw")
+    item = create({"timezone": "UTC", "when": "2026-10-21T20:00:00+00:00"})
+    assert item["timezone"] == "Europe/Warsaw"
+    assert item["due"] == int(datetime(2026, 10, 21, 20, tzinfo=timezone.utc).timestamp())    # the instant is untouched
+
+
+def test_a_repeat_is_read_on_the_households_clock(monkeypatch):
+    monkeypatch.setenv("TZ", "Europe/Warsaw")
+    item = create({"kind": "alarm", "timezone": "UTC", "when": "2026-10-21T06:00:00+00:00", "repeat_days": [1]})
+    assert item["rule"]["hour"] == 8 and item["timezone"] == "Europe/Warsaw"     # 06:00 UTC is 08:00 there
+
+
+def test_without_a_known_zone_the_models_is_used_and_checked_as_before(monkeypatch):
+    monkeypatch.delenv("TZ", raising=False)
+    assert create({"timezone": "Europe/Warsaw", "when": "2026-10-21T09:00:00+02:00"})["timezone"] == "Europe/Warsaw"
+    with pytest.raises(ValueError, match="offset"):
+        create({"timezone": "Europe/Warsaw", "when": "2026-10-21T09:00:00+00:00"})
+
+
+def test_an_unusable_tz_is_ignored(monkeypatch):
+    monkeypatch.setenv("TZ", "Not/AZone")
+    assert tools.local_zone() is None
+    monkeypatch.setenv("TZ", "")
+    assert tools.local_zone() is None
+
+
+def test_moving_an_item_saved_in_utc_brings_it_into_the_households_zone(monkeypatch):
+    monkeypatch.setenv("TZ", "Europe/Warsaw")
+    item = edit([reminder(timezone="UTC")], when=TOMORROW_9)["item"]
+    assert item["timezone"] == "Europe/Warsaw"
+    assert edit([reminder(timezone="UTC")], message="y")["item"]["timezone"] == "UTC"      # a reword is not a move

@@ -114,6 +114,23 @@ def llm_snapshot(snapshot):
     return {"items": items, **view, **({"settings": settings} if settings else {})}
 
 
+def local_zone():
+    """The controller's own zone (Home Assistant's, under the add-on), or None.
+
+    A model is asked for an IANA zone and answers with whatever it believes the
+    home is in; one saved a reminder in "UTC". Every alert is the household's,
+    in the household's zone, so when this is known it wins over the argument.
+    """
+    name = (os.environ.get("TZ") or "").strip()
+    if not name:
+        return None
+    try:
+        ZoneInfo(name)
+    except (KeyError, ValueError, OSError):
+        return None
+    return name
+
+
 FINISHED = ("completed", "canceled", "missed")
 _MIRROR_ID = re.compile(r"^sh-[0-9a-f]{8}-[0-9a-f]{24}\Z")
 
@@ -150,6 +167,8 @@ def edited_item(items, args, now):
         for key in ITEM_INTERNAL:
             item.pop(key, None)       # the cached audio says the old words
     if when:
+        if local_zone():
+            item["timezone"] = local_zone()      # moved into the household's zone, wherever it was saved
         zone = ZoneInfo(item.get("timezone") or "UTC")
         try:
             due = datetime.fromisoformat(when.replace("Z", "+00:00"))
@@ -196,7 +215,8 @@ def command(name, args, now, items=()):
         if "message" in args or "when" in args:
             raise ValueError("`message` and `when` are only for the edit action")
         return {**args, "request": uuid.uuid4().hex}
-    zone = ZoneInfo(args["timezone"])
+    forced = local_zone()
+    zone = ZoneInfo(forced or args["timezone"])
     duration = args.get("duration_seconds")
     when = args.get("when")
     if bool(duration) == bool(when):
@@ -219,14 +239,16 @@ def command(name, args, now, items=()):
         if due.tzinfo is None:
             raise ValueError("Date/time requires an explicit UTC offset")
         # Reject inconsistent offsets and nonexistent local times.
-        if due.utcoffset() != due.astimezone(zone).utcoffset():
+        # An offset is a definite instant. It only has to agree with a zone the
+        # model chose itself; the household's zone is applied to it, not asserted.
+        if not forced and due.utcoffset() != due.astimezone(zone).utcoffset():
             raise ValueError("Date/time offset does not match timezone")
         due = int(due.timestamp())
     if due <= now:
         raise ValueError("Schedule must be in the future")
     item = {"id": uuid.uuid4().hex, "kind": args["kind"], "label": args.get("label") or args["kind"],
             "message": message, "due": due, "duration": duration or 0,
-            "timezone": args["timezone"], "enabled": True}
+            "timezone": str(forced or args["timezone"]), "enabled": True}
     days = args.get("repeat_days")
     interval = args.get("repeat_seconds")
     if days is not None:
