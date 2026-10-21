@@ -592,6 +592,7 @@ class Device:
         # TTS_END (em_earlytts). Read per turn by em_esphome. Config key:
         # streamReply. Off by default.
         self.stream_reply:  bool  = False
+        self.voice_prebuffer_ms = 1024
         # This turn's captured mic audio, handed from _stream_mic_audio to
         # _persist_turn (which owns the write — it has the rowid the
         # filename is keyed on) and consumed there.
@@ -2722,13 +2723,14 @@ async def _ring_timer_alarm(device: Device) -> None:
         await leds_off(device)
 
 
-async def _meter_at_playback_start(pcm_chunks, on_start):
+async def _meter_at_playback_start(pcm_chunks, on_start, prime_seconds=SPEAKER_PRIME_SECONDS):
     """
     Pass PCM through untouched, firing `on_start` when the device will have
     begun playing it.
 
-    The device holds audio until roughly SPEAKER_PRIME_SECONDS is queued, or
-    until EOS for a response shorter than that (primePeriods, pcm_speaker.go).
+    The device holds audio until the configured voice buffer is queued, or
+    until EOS for a response shorter than that. Old firmware retains
+    SPEAKER_PRIME_SECONDS; capable firmware uses the selected period-rounded gate.
     Counting bytes handed to the streamer tracks that closely enough — the
     socket write completes near-instantly however slow the link is, which is
     the same property that makes send_ms useless as a delivery measure.
@@ -2738,7 +2740,7 @@ async def _meter_at_playback_start(pcm_chunks, on_start):
     simply stays up until the turn's ring cleanup — the failure direction
     that looks like "still working" rather than "dead".
     """
-    prime_bytes = int(SPEAKER_PRIME_SECONDS * SPEAKER_RATE * 2)
+    prime_bytes = int(prime_seconds * SPEAKER_RATE * 2)
     sent = 0
     fired = False
     async for chunk in pcm_chunks:
@@ -2772,7 +2774,12 @@ async def _voice_metered_chunks(device: Device, pcm_chunks):
                 await device.send_led_anim(meter)
         refresh = asyncio.create_task(keep_alive())
     try:
-        yield _meter_at_playback_start(pcm_chunks, start)
+        prime_seconds = SPEAKER_PRIME_SECONDS
+        if "voice_prebuffer" in getattr(device, "capabilities", ()):
+            ms = getattr(device, "voice_prebuffer_ms", 1024)
+            if 128 <= ms <= 1024:
+                prime_seconds = ((ms * 48 + 2047) // 2048) * SPEAKER_PERIOD_SECONDS
+        yield _meter_at_playback_start(pcm_chunks, start, prime_seconds)
     finally:
         if refresh:
             refresh.cancel()
@@ -5498,6 +5505,7 @@ async def handle_control(ws: WebSocketServerProtocol, secure: bool = False):
         device.wake_clip_capture = bool(config.get("wakeClipCapture", False))
         device.wake_clip_min_score = float(config.get("wakeClipMinScore", 0.20))
         device.stream_reply = bool(config.get("streamReply", False))
+        device.voice_prebuffer_ms = int(config.get("voicePrebufferMs", 1024))
         device.barge_in_enabled = bool(config.get("bargeInEnabled", False))
         device.barge_threshold  = float(config.get("bargeInThreshold", 0.6))
         device.button_single_tap_event = bool(

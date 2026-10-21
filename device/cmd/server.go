@@ -679,6 +679,7 @@ func main() {
 		applyHardwareConfig(msg)
 		s.SetRemoteVolumeArc(config.Get().RemoteVolumeArcEnabled())
 		pcmSpeaker.SetResponseGainDB(config.Get().ResponseGainDB())
+		pcmSpeaker.SetVoicePrebufferMs(config.Get().VoicePrebufferMs)
 		// The merged config, not the partial message, for the reason given
 		// above. Active is re-read from the ack on every push: a reconnect
 		// can land on a controller that does not hand the chain over.

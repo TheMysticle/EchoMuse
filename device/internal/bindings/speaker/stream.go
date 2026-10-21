@@ -321,3 +321,12 @@ func (s *audioStream) drained() *StreamStats {
 	s.minDepth, s.firstPumpNs = -1, 0
 	return st
 }
+
+// Voice periods contain 2048 mono samples at 48 kHz. Round up so the
+// configured jitter margin is never shortened; invalid settings keep the legacy gate.
+func voicePrimePeriods(ms int) int {
+	if ms < 128 || ms > 1024 {
+		return 24
+	}
+	return (ms*48 + 2047) / 2048
+}

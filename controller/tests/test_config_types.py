@@ -189,3 +189,15 @@ def test_registration_filters_before_it_pushes():
              and getattr(n.func, "attr", None) == "drop_invalid"]
     assert drops, "handle_control no longer calls em_config_types.drop_invalid"
     assert drops[0].lineno < pushes[0].lineno, "drop_invalid must run before the push"
+
+
+@pytest.mark.parametrize("value", [0, 127, 1025, True, "256", 256.0, None])
+def test_voice_prebuffer_rejects_invalid_values(value):
+    assert T.problems({"voicePrebufferMs": value}, {})
+    clean, bad = T.drop_invalid({"voicePrebufferMs": value})
+    assert clean == {} and bad == ["voicePrebufferMs"]
+
+
+@pytest.mark.parametrize("value", [128, 256, 300, 512, 1024])
+def test_voice_prebuffer_accepts_supported_margins(value):
+    assert not T.problems({"voicePrebufferMs": value}, {})

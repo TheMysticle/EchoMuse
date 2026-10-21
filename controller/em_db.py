@@ -188,6 +188,7 @@ DEFAULT_DEVICE_CONFIG = {
     # low / medium / high to 0 / +6 / +12dB before mixing with music, then
     # tapers the boost near maximum so combined gain never exceeds unity.
     "responseLevel":   "low",
+    "voicePrebufferMs": 1024,  # Preserve Wi-Fi stall protection until explicitly tuned.
     # streamReply: start speaking when Home Assistant says the reply's first
     # text has arrived (its tts_start_streaming signal) instead of when the whole
     # reply is done. Default OFF: it is faster when the model and the TTS engine

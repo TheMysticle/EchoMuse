@@ -2953,6 +2953,7 @@ function Detail({ device, token, onClose, onApprove, isAdmin, globalConfig, onDe
                   : null}
                 remoteVolumeArcCapable={!device.connected || !!device.remoteVolumeArcCapable}
                 responseLevelCapable={!device.connected || !!device.responseLevelCapable}
+                voicePrebufferCapable={!device.connected || !!device.voicePrebufferCapable}
                 wakeMicCapable={!device.connected || !!device.wakeMicCapable}
                 wakeBeamCapable={!device.connected || !!device.wakeBeamCapable}
                 wakeBeamAraCapable={!device.connected || !!device.wakeBeamAraCapable}
@@ -10041,7 +10042,7 @@ const STAGE_MONO = "var(--font-mono)";
 // control sitting under a toggle that does not govern it would look fine and
 // be silently wrong.
 const CONFIG_SECTIONS = {
-  "playback": ["eqBands", "eqLoudness", "eqStockCurve", "duckDb", "responseLevel", "limiterEnabled", "limiterThreshold", "limiterRelease", "bassGuardEnabled", "bassGuardDb", "streamReply", "volumeButtonSound"],
+  "playback": ["eqBands", "eqLoudness", "eqStockCurve", "duckDb", "responseLevel", "voicePrebufferMs", "limiterEnabled", "limiterThreshold", "limiterRelease", "bassGuardEnabled", "bassGuardDb", "streamReply", "volumeButtonSound"],
   "wakeword": ["owwModel", "owwThreshold", "owwSpeexNs", "bargeInEnabled", "bargeInThreshold", "wakeArbitrationMs", "owwOnDevice", "wakeSound", "wakeSoundLevel", "wakeClipCapture", "wakeClipMinScore"],
   "microphones": ["adcMicpga", "adcDigitalGain", "micGainDb", "beamformingEnabled", "beamAngle", "wakeMic", "wakeBeam", "wakeBeamAra", "wakeBeamTurns", "wakeBeamStock", "wakeEndpoint", "aecEnabled", "aecDelayMs", "aecTailMs", "aecRefSource", "nsAsr", "saveUtterances"],
   "ring": ["ledScene", "ledListenColor", "ledThinkColor", "remoteVolumeArc", "meterAttack", "meterDecay", "meterFloor", "meterGamma", "meterRef", "meterCurve"],
@@ -10210,6 +10211,7 @@ function DeviceConfigForm({ config, onChange, disabled, sections, onScopeChange,
                             volumeCueCapable = true,
                             remoteVolumeArcCapable = true,
                             responseLevelCapable = true,
+                            voicePrebufferCapable = true,
                             wakeMicCapable = true,
                             wakeBeamCapable = true,
                             wakeBeamAraCapable = true,
@@ -10482,6 +10484,18 @@ function DeviceConfigForm({ config, onChange, disabled, sections, onScopeChange,
                   { value: 'high', label: 'High (+12 dB)' },
                 ]}
                 onChange={v => set('responseLevel', v)}/>
+            </div>
+            <div style={{ marginTop: 'var(--space-4)', ...inputStyle }}>
+              <Select label="Voice playback buffer"
+                sub={voicePrebufferCapable ? "shorter starts sooner; increase if voice audio stutters" : "needs newer firmware on this Echo"}
+                disabled={!voicePrebufferCapable}
+                value={String(config.voicePrebufferMs ?? 1024)}
+                options={[
+                  { value: '256', label: '256 ms — fast' },
+                  { value: '512', label: '512 ms — balanced' },
+                  { value: '1024', label: '1024 ms — maximum protection (default)' },
+                ]}
+                onChange={v => set('voicePrebufferMs', Number(v))}/>
             </div>
             {/* Speaker protection: ONE toggle for the bass guard, and the
                 limiter is not offered at all.

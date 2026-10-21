@@ -58,6 +58,8 @@ type Device struct {
 	// medium (+6dB), or high (+12dB). The speaker caps it against the device
 	// volume so their combined gain never exceeds unity.
 	ResponseLevel string
+	// VoicePrebufferMs is queued voice audio before playback; music keeps its own buffer.
+	VoicePrebufferMs int
 
 	// WakeSound plays a short rising two-tone when the wake word is
 	// recognised (#120). Off by default: it interrupts "<wakeword>, do this".
@@ -285,6 +287,7 @@ func (d *Device) loadDefaults() {
 	d.WakeWordEnabled = true
 	d.DuckDb = envFloat("DUCK_DB", -18)
 	d.ResponseLevel = normaliseResponseLevel(envStr("RESPONSE_LEVEL", ResponseLevelLow))
+	d.VoicePrebufferMs = 1024
 	d.WakeSound = envBool("WAKE_SOUND", false)
 	d.WakeSoundLevel = envStr("WAKE_SOUND_LEVEL", "medium")
 	d.RemoteVolumeArc = envBool("REMOTE_VOLUME_ARC", false)
@@ -368,6 +371,9 @@ func (d *Device) Apply(msg ConfigMessage) {
 	// be distinguishable from an absent field, hence the pointer.
 	if msg.DuckDb != nil {
 		d.DuckDb = *msg.DuckDb
+	}
+	if msg.VoicePrebufferMs != nil && *msg.VoicePrebufferMs >= 128 && *msg.VoicePrebufferMs <= 1024 {
+		d.VoicePrebufferMs = *msg.VoicePrebufferMs
 	}
 	if msg.ResponseLevel != "" {
 		d.ResponseLevel = normaliseResponseLevel(msg.ResponseLevel)
@@ -629,6 +635,7 @@ func (d *Device) Snapshot() ConfigMessage {
 	spotifyVolumeRing := d.SpotifyVolumeRing == nil || *d.SpotifyVolumeRing
 	spotifyStandalone := d.SpotifyStandalone != nil && *d.SpotifyStandalone
 	remoteVolumeArc := d.RemoteVolumeArc
+	voicePrebufferMs := d.VoicePrebufferMs
 	return ConfigMessage{
 		VadThreshold:        d.VadThreshold,
 		VadSpeechMs:         d.VadSpeechMs,
@@ -639,6 +646,7 @@ func (d *Device) Snapshot() ConfigMessage {
 		BargeInEnabled:      &bargeInEnabled,
 		BargeInThreshold:    d.BargeInThreshold,
 		ResponseLevel:       d.ResponseLevel,
+		VoicePrebufferMs:    &voicePrebufferMs,
 		WakeWordEnabled:     &wakeWordEnabled,
 		StartupVolume:       d.StartupVolume,
 		VolumeButtonSound:   &volumeButtonSound,
@@ -767,6 +775,7 @@ type ConfigMessage struct {
 	BargeInThreshold    float64  `json:"bargeInThreshold,omitempty"`
 	DuckDb              *float64 `json:"duckDb,omitempty"`
 	ResponseLevel       string   `json:"responseLevel,omitempty"`
+	VoicePrebufferMs    *int     `json:"voicePrebufferMs,omitempty"`
 	BeamAngle           *float64 `json:"beamAngle,omitempty"`
 	BeamformingEnabled  *bool    `json:"beamformingEnabled,omitempty"`
 	HasBeamforming      bool     `json:"hasBeamforming,omitempty"`

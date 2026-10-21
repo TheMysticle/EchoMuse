@@ -58,7 +58,8 @@ const monoPeriodBytes = periodSize * 2 // 4096
 // within the first half of playback.
 const audioChanDepth = 128
 
-// primePeriods — playback holds on silence until this many periods are
+// primePeriods — the music gate and legacy/default voice gate. Voice can
+// opt into a shorter gate with voicePrebufferMs. Playback holds until periods are
 // queued (or the stream's EOS has arrived, for clips shorter than the
 // prime). Protects the opening seconds of playback, when the sender's
 // lead is still ~zero and a single WiFi stall used to stutter. 24 periods
@@ -112,8 +113,9 @@ type PcmSpeaker struct {
 	// underrun accounting, delivery instrumentation — lives in audioStream,
 	// so both planes get the behaviour that was worked out on the single
 	// one rather than a simplified copy.
-	voice *audioStream
-	music *audioStream
+	voice      *audioStream
+	voicePrime atomic.Int32
+	music      *audioStream
 
 	// duckTarget is the gain applied to MUSIC while it plays under a voice
 	// turn, Q15. Written from the control plane (SetDuck) and read by the
@@ -326,6 +328,7 @@ func NewPcmSpeaker(echoTap func([]byte), levelTap func(rms float64)) (*PcmSpeake
 		responseMix:   make([]float64, periodSize*2),
 		responseGains: make([]float64, periodSize),
 	}
+	s.voicePrime.Store(primePeriods)
 	s.voice = newAudioStream(audioChanDepth, s.deadCh)
 	s.music = newAudioStream(audioChanDepth, s.deadCh)
 	s.duckTarget.Store(unityGain)
@@ -607,7 +610,7 @@ func (p *PcmSpeaker) silenceLoop() {
 		}
 
 		var voice, music []byte
-		if p.voice.ready(primePeriods) {
+		if p.voice.ready(int(p.voicePrime.Load())) {
 			voice = p.voice.take()
 		} else if p.voice.playing {
 			p.report(p.voice.drained(), "voice")
@@ -1003,3 +1006,6 @@ func (p *PcmSpeaker) SetLocalReminder(sound, speech []byte, volume float64, repe
 func (p *PcmSpeaker) StopLocalAlert() { p.alert.Stop() }
 
 func (p *PcmSpeaker) LocalAlertActive() bool { return p.alert.Active() }
+
+// SetVoicePrebufferMs changes the startup gate only; queued capacity and music are unchanged.
+func (p *PcmSpeaker) SetVoicePrebufferMs(ms int) { p.voicePrime.Store(int32(voicePrimePeriods(ms))) }

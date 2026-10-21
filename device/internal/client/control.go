@@ -1417,7 +1417,7 @@ func capabilities() []string {
 	// switched by sendspinEnabled. Whether it is running, and paired, is the
 	// sendspin status, for the aec_hw_ref reason.
 	caps := []string{"local_schedule", "local_schedule_sounds", "mic", "speaker", "leds", "led_anim", "buttons",
-		"oww_shadow", "oww_trigger", "button_hold", "audio_mix",
+		"oww_shadow", "oww_trigger", "button_hold", "audio_mix", "voice_prebuffer",
 		"aec_hw_ref", "oww_local_only", "output_chain", "wake_cue", "volume_cue", "remote_volume_arc",
 		"response_level", "wake_mic", "wake_beam", "wake_beam_ara", "wake_beam_turns", "wake_beam_stock", "wake_endpoint", "pairing",
 		"wake_word_off", "sendspin", "ble_connect"}

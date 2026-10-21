@@ -1,19 +1,19 @@
 {
  "files": {
-  "em_controller.py": 6475,
-  "em_db.py": 3441,
+  "em_controller.py": 6483,
+  "em_db.py": 3442,
   "em_esphome.py": 3786
  },
  "functions": {
-  "em_controller.Device.__init__": 405,
+  "em_controller.Device.__init__": 406,
   "em_controller._barge_watcher": 289,
   "em_controller._run_post_turn_playback": 172,
   "em_controller._run_voice_locked": 380,
   "em_controller._stream_listen": 659,
-  "em_controller.handle_control": 609,
+  "em_controller.handle_control": 610,
   "em_controller.handle_data": 208,
   "em_db.record_device_stats": 206,
-  "em_device_view.merge_device": 190,
+  "em_device_view.merge_device": 191,
   "em_esphome.EchoMuseSatellite._handle_voice_event": 223,
   "em_esphome.EchoMuseSatellite._stream_mic_audio": 377,
   "em_esphome.EchoMuseSatellite.handle_message": 386,

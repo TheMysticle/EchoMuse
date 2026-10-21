@@ -428,7 +428,7 @@ def test_meter_ring_is_raised_when_audio_starts_not_at_playback_setup():
         "native playback must use the shared, audio-gated meter"
     shared = src[src.index("async def _voice_metered_chunks"):]
     shared = shared[:shared.index("\nasync def ", 1)]
-    assert "yield _meter_at_playback_start(pcm_chunks, start)" in shared, \
+    assert "yield _meter_at_playback_start(pcm_chunks, start, prime_seconds)" in shared, \
         "the shared meter must be gated on the first audio reaching the device"
 
     # A meter send is legitimate inside the nested helpers (_meter_on, and the

@@ -52,6 +52,7 @@ KINDS: dict[str, str] = {
     "bargeInThreshold": FLOAT,
     "duckDb": FLOAT,
     "responseLevel": STR,
+    "voicePrebufferMs": INT,
     "beamAngle": FLOAT,
     "wakeMic": INT,
     "wakeBeam": BOOL,
@@ -121,7 +122,8 @@ def fits(kind: str, value) -> bool:
 def invalid_keys(config: dict) -> list[str]:
     """Listed keys in `config` whose values do not fit, sorted."""
     return sorted(k for k, kind in KINDS.items()
-                  if k in config and not fits(kind, config[k]))
+                  if k in config and (not fits(kind, config[k])
+                  or (k == "voicePrebufferMs" and not 128 <= config[k] <= 1024)))
 
 
 def problems(body: dict, stored: dict) -> list[str]:
@@ -136,7 +138,8 @@ def problems(body: dict, stored: dict) -> list[str]:
     for key in invalid_keys(body):
         if key in stored and stored[key] == body[key] and type(stored[key]) is type(body[key]):
             continue
-        out.append(f"{key} must be {KINDS[key]}, got {body[key]!r}")
+        expected = "an integer from 128 to 1024 ms" if key == "voicePrebufferMs" else KINDS[key]
+        out.append(f"{key} must be {expected}, got {body[key]!r}")
     return out
 
 

@@ -67,6 +67,8 @@ async def apply_live_config(device_id: str, live, effective: dict) -> None:
             live.wake_clip_min_score = max(0.05, min(0.95, float(effective["wakeClipMinScore"])))
         except (TypeError, ValueError):
             live.wake_clip_min_score = 0.20
+    if "voicePrebufferMs" in effective:
+        live.voice_prebuffer_ms = int(effective["voicePrebufferMs"])
     if "streamReply" in effective:
         live.stream_reply = bool(effective["streamReply"])
     if "bargeInEnabled" in effective:
