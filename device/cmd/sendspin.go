@@ -179,7 +179,12 @@ func applySendspinConfig(spk *speaker.PcmSpeaker, cc *client.ControlClient, vol 
 // player reports itself taken, and the server moves it out of its group.
 func sendspinPoll(spk *speaker.PcmSpeaker) {
 	if c := sendspinPlayer(); c != nil {
-		c.SetExternal(spk.MusicPlaneBusy() || mux.ownerNow() == ownSpotify)
+		plane, spot := spk.MusicPlaneBusy(), mux.ownerNow() == ownSpotify
+		c.SetExternal(plane || spot)
+		if reason := externalReason(plane, spot); reason != sendspinExternalWas {
+			sendspinExternalWas = reason
+			log.Printf("[sendspin] reports %s", reason)
+		}
 		if c.Active() && time.Since(sendspinLoggedAt) >= time.Minute {
 			sendspinLoggedAt = time.Now()
 			logSendspinStats(c.Status())
@@ -187,6 +192,24 @@ func sendspinPoll(spk *speaker.PcmSpeaker) {
 		}
 	}
 }
+
+// externalReason names what is making the player report itself taken, so a
+// group member showing "playing something else" can be explained from its
+// log: the 0x04 plane (Home Assistant's music) or this Echo's own Spotify
+// holding the slot. Only sendspinPoll's ticker goroutine touches the last one.
+func externalReason(plane, spotify bool) string {
+	switch {
+	case plane && spotify:
+		return "busy: the music plane and this Echo's Spotify"
+	case plane:
+		return "busy: the music plane has audio (Home Assistant's player)"
+	case spotify:
+		return "busy: this Echo's own Spotify holds the music slot"
+	}
+	return "available"
+}
+
+var sendspinExternalWas = "available"
 
 // sendspinLoggedAt paces the playing-stats log line. Only sendspinPoll's
 // ticker goroutine touches it.
