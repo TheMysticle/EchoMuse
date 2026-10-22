@@ -329,6 +329,33 @@ def continuation_schema(protocol):
     )
 
 
+def mark_context_results_sent(service):
+    """Stop Pipecat re-sending every old tool result after a reconnect.
+
+    Field log 2026-10-22: Gemini ends the session every ~2.5 minutes and
+    Pipecat's `_disconnect` empties `_completed_tool_calls`, but the context
+    still holds every tool result of the conversation, and a new session is
+    restored or seeded with them as history. After "Stop", the next result
+    re-sent 13 historical results as live tool responses alongside the stop
+    result. This was followed by 68 unrequested calls (including timer
+    creation and vacuum scripts) in the supplied log. Historical results
+    must not trigger fresh inference. Mark them sent before the connection
+    starts receiving messages; leave IN_PROGRESS calls eligible to deliver
+    their result when they actually complete.
+    """
+    completed = getattr(service, "_completed_tool_calls", None)
+    context = getattr(service, "_context", None)
+    if not isinstance(completed, set) or context is None:
+        return
+    for message in context.get_messages():
+        if not isinstance(message, dict) or message.get("role") != "tool":
+            continue
+        if message.get("content") == "IN_PROGRESS":
+            continue
+        if message.get("tool_call_id"):
+            completed.add(message["tool_call_id"])
+
+
 async def keep_connection(service, run, config):
     """Run Pipecat's Gemini Live connection task, and start over if it dies at connect.
 
@@ -347,6 +374,7 @@ async def keep_connection(service, run, config):
     own limit pushes the fatal error, which the controller answers by
     rebuilding the connection.
     """
+    mark_context_results_sent(service)
     try:
         await run(config)
     except asyncio.CancelledError:

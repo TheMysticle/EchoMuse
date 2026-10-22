@@ -569,3 +569,25 @@ def test_generated_bridge_recovers_renamed_tools_and_keeps_the_area_fallback():
     # The packager applies the same edits, so the next generated add-on carries them.
     package=(ROOT/'tools/pipecat_echomuse/package.py').read_text(encoding='utf-8')
     assert 'echomuse.recover_renamed_tool(' in package and 'echomuse.renamed_route(self._tool_routes, name)' in package
+
+
+def test_a_reconnect_does_not_resend_old_tool_results_as_live_responses():
+    # 2026-10-22: Pipecat empties _completed_tool_calls on every reconnect while
+    # the context keeps all results, so the next result re-sent 13 stale ones
+    # and Gemini answered with a runaway chain of invented tool calls (timers,
+    # vacuum scripts) after a plain "Stop.".
+    import asyncio
+    class _Context:
+        def get_messages(self):
+            return [
+                {'role': 'user', 'content': 'hi'},
+                {'role': 'tool', 'tool_call_id': 'fc_old', 'content': '{}'},
+                {'role': 'tool', 'tool_call_id': 'fc_busy', 'content': 'IN_PROGRESS'},
+            ]
+    service=_GeminiLive()
+    service._context=_Context()
+    ran=[]
+    async def run(config):
+        ran.append(set(service._completed_tool_calls))
+    asyncio.run(adapter.keep_connection(service, run, object()))
+    assert ran==[{'fc_old'}]
