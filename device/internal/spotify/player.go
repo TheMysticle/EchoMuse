@@ -120,6 +120,10 @@ type Player struct {
 	pausedMark bool   // the engine paused since Events was last called
 	staleMark  bool   // queued audio belongs to a track that is no longer next
 	pausedURI  string // the track a pause happened in, until it resumes
+
+	// Fill's alone (one goroutine, the speaker's write loop): when it began
+	// declining a tail the engine will not top up, and when it last ran.
+	strandedAt, lastFill time.Time
 }
 
 func New(cfg Config) *Player {
@@ -289,7 +293,42 @@ func (p *Player) Fill(out []byte, _ time.Time, _ time.Duration) bool {
 	// primePeriods of refill after a gap, so jitter around a period boundary
 	// costs one gap rather than a run of them. Expressed in periods rather
 	// than bytes so it follows whatever period the speaker asks for.
-	return p.ring.readPeriod(out, primePeriods*len(out))
+	if p.ring.readPeriod(out, primePeriods*len(out)) {
+		p.strandedAt = time.Time{}
+		return true
+	}
+	p.dropStrandedTail()
+	return false
+}
+
+// strandedAfter is how long a tail that cannot be read, with the engine not
+// playing, is kept before it is thrown away.
+var strandedAfter = 2 * time.Second
+
+// dropStrandedTail discards audio that can never play. A declined read leaves
+// what is queued where it is, and reading resumes only once the ring refills
+// to the prime. When the engine has stopped (another device took over, or the
+// track ended) nothing refills it, yet Active reports any queued byte as
+// audio: the speaker kept this source as the music owner for good, and a
+// group member reported "playing something else" until the engine played
+// something again (2026-10-22: Spotify played on a member, then on its group).
+// Not at once: audio can arrive a moment before the engine's state event.
+func (p *Player) dropStrandedTail() {
+	now := time.Now()
+	idle := now.Sub(p.lastFill) > time.Second
+	p.lastFill = now
+	if p.Playing() || p.ring.len() == 0 || idle {
+		p.strandedAt = time.Time{}
+		return
+	}
+	if p.strandedAt.IsZero() {
+		p.strandedAt = now
+		return
+	}
+	if now.Sub(p.strandedAt) >= strandedAfter {
+		p.ring.flush()
+		p.strandedAt = time.Time{}
+	}
 }
 
 // ── Group leader ───────────────────────────────────────────────────────────

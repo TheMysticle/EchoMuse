@@ -303,3 +303,26 @@ func TestBinaryChangedOnlyOnEvidence(t *testing.T) {
 		}
 	}
 }
+
+func TestATailThatCannotPlayIsDroppedSoTheSourceGoesIdle(t *testing.T) {
+	// After the engine stopped with less than the prime left in the ring, Fill
+	// declined for ever while Active stayed true, so the speaker kept this
+	// source as the music owner and a group member reported itself busy.
+	p, dir := startPlayer(t)
+	_, aud := fakeDaemon(t, dir)
+	old := strandedAfter
+	strandedAfter = 20 * time.Millisecond
+	defer func() { strandedAfter = old }()
+	const period = 8
+
+	aud.Write(make([]byte, period*2))
+	waitFor(t, "tail", func() bool { return p.ring.len() == period*2 })
+	out := make([]byte, period)
+	for i := 0; i < 100 && p.Active(); i++ {
+		p.Fill(out, time.Time{}, 0)
+		time.Sleep(time.Millisecond)
+	}
+	if p.Active() {
+		t.Fatal("a tail below the prime kept the source active for good")
+	}
+}
