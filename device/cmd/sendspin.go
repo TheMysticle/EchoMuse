@@ -149,7 +149,13 @@ func applySendspinConfig(spk *speaker.PcmSpeaker, cc *client.ControlClient, vol 
 		})
 		if err == nil {
 			// Before Start: a server can connect and command the volume at once.
-			c.OnVolume(func(pct int) { vol.SetVolumeFrom(pctToLevel(pct), "sendspin", false) })
+			// Somebody changed the volume on purpose, at a group's leader or in
+			// Music Assistant, so the arc shows like a phone's slider does.
+			// Never for silence (a mute) or a level the Echo already has.
+			c.OnVolume(func(pct int) {
+				level := pctToLevel(pct)
+				vol.SetVolumeFrom(level, "sendspin", level != 0 && level != vol.VolumeLevel())
+			})
 			c.SetVolume(levelToPct(vol.VolumeLevel()))
 			// Open before Start advertises: Music Assistant dials when the
 			// record appears and may not retry a timeout. Logged, not
