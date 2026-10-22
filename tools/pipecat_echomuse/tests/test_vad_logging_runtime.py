@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import pytest
 from loguru import logger
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.audio.vad.vad_analyzer import VADParams
@@ -48,3 +49,22 @@ def test_logging_vad_decides_exactly_as_the_stock_analyzer_and_logs():
     assert any(line.startswith("VAD window: state=") for line in lines)
     assert sum(line.startswith("VAD state ") for line in lines) == sum(
         1 for a, b in zip([None] + stock, stock) if a != b)
+
+
+@pytest.mark.parametrize('confidence,frames,expected', [
+    (0.59, 8, True),   # sustained speech below the old 0.7 gate
+    (0.69, 8, True),
+    (0.49, 8, False),  # background below the new gate
+    (0.69, 1, False),  # an isolated peak must not start speech
+])
+def test_responsive_profile_handles_weak_speech_without_accepting_spikes(monkeypatch, confidence, frames, expected):
+    # Exercise Pipecat's actual duration/volume state machine, substituting
+    # controlled classifier output. The field log contains window peaks,
+    # not a recording or per-frame scores; this is not an incident replay.
+    scores = iter([0.0] * 12 + [confidence] * frames + [0.0] * 24)
+    monkeypatch.setattr(SileroVADAnalyzer, 'voice_confidence', lambda self, buffer: next(scores))
+    vad = echomuse.vad_analyzer({'barge_in': 'responsive'}, None)
+    pcm = np.full(512 * (12 + frames + 24 + 1), 2000, dtype=np.int16).tobytes()
+    states = _run(vad, pcm)
+    assert ('SPEAKING' in states) is expected
+    assert states[-1] == 'QUIET'

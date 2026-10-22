@@ -4,7 +4,11 @@ import re
 from urllib.parse import urlsplit
 
 PROFILES = {
-    "responsive": {"confidence": 0.7, "start_secs": 0.12, "min_volume": 0.02},
+    # Alarm-stop failure 2026-10-22: every frame stayed below 0.7 (peaks
+    # 0.59/0.69), so the live service never received a user-speech start.
+    # Use Silero's default confidence for the sensitive profile; retain the
+    # duration and volume gates so an isolated peak is still not speech.
+    "responsive": {"confidence": 0.5, "start_secs": 0.12, "min_volume": 0.02},
     "balanced": {"confidence": 0.8, "start_secs": 0.30, "min_volume": 0.04},
     "low": {"confidence": 0.85, "start_secs": 0.45, "min_volume": 0.06},
 }
@@ -114,6 +118,8 @@ def _logging_vad(base):
         _peak_conf = 0.0
         _peak_vol = 0.0
         _over = 0
+        _run_over = 0
+        _longest_run = 0
         _seen_state = None
 
         def voice_confidence(self, buffer):
@@ -124,6 +130,10 @@ def _logging_vad(base):
             self._peak_conf = max(self._peak_conf, seen)
             if seen >= self._params.confidence:
                 self._over += 1
+                self._run_over += 1
+                self._longest_run = max(self._longest_run, self._run_over)
+            else:
+                self._run_over = 0
             return confidence
 
         def _run_analyzer(self, buffer):
@@ -136,11 +146,14 @@ def _logging_vad(base):
                              self._vad_starting_count, self._vad_stopping_count)
                 self._seen_state = state
             if self._frames >= 31:
-                logger.debug("VAD window: state={} peak_confidence={:.2f} frames_over_bar={}/{} bar={} peak_volume={:.3f} min_volume={}",
+                logger.debug("VAD window: state={} peak_confidence={:.2f} frames_over_bar={}/{} bar={} peak_volume={:.3f} min_volume={} longest_confidence_run_ms={:.0f} start_ms={:.0f}",
                              state.name, self._peak_conf, self._over, self._frames, self._params.confidence,
-                             self._peak_vol, self._params.min_volume)
+                             self._peak_vol, self._params.min_volume,
+                             self._longest_run * self.num_frames_required() / self.sample_rate * 1000,
+                             self._params.start_secs * 1000)
                 self._frames = self._over = 0
                 self._peak_conf = self._peak_vol = 0.0
+                self._longest_run = self._run_over
             return state
 
     return LoggingVAD
