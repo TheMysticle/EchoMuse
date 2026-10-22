@@ -326,3 +326,19 @@ func TestATailThatCannotPlayIsDroppedSoTheSourceGoesIdle(t *testing.T) {
 		t.Fatal("a tail below the prime kept the source active for good")
 	}
 }
+
+func TestThePauseIsRepeatedWhileTheEngineKeepsPlayingUnderAnotherSource(t *testing.T) {
+	t0 := time.Unix(1000, 0)
+	if !PauseDue(true, true, time.Time{}, t0) {
+		t.Fatal("no pause for an engine playing under a taken plane")
+	}
+	if PauseDue(true, true, t0, t0.Add(pauseRetry/2)) {
+		t.Fatal("pause resent before the retry interval")
+	}
+	if !PauseDue(true, true, t0, t0.Add(pauseRetry)) {
+		t.Fatal("a pause the engine ignored was not repeated")
+	}
+	if PauseDue(true, false, t0, t0.Add(10*time.Second)) || PauseDue(false, true, time.Time{}, t0) {
+		t.Fatal("paused an engine that was not playing, or when nothing had the plane")
+	}
+}

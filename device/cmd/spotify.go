@@ -32,13 +32,13 @@ const (
 var ssPresent, spPresent atomic.Bool
 
 var sp struct {
-	mu      sync.Mutex
-	p       *spotify.Player
-	failed  *spotify.Player // start refused (engine missing); only its status is kept
-	name    string
-	stamp   string // the engine binary the running process was started from
-	waiting bool   // enabled, but not started yet (wall clock not set)
-	paused  bool   // arbitration pause already sent for the current takeover
+	mu       sync.Mutex
+	p        *spotify.Player
+	failed   *spotify.Player // start refused (engine missing); only its status is kept
+	name     string
+	stamp    string    // the engine binary the running process was started from
+	waiting  bool      // enabled, but not started yet (wall clock not set)
+	pausedAt time.Time // when the arbitration pause was last sent in the current takeover
 }
 
 func spotifyPlayer() *spotify.Player {
@@ -314,17 +314,21 @@ func spotifyPoll(spk *speaker.PcmSpeaker, cc *client.ControlClient, vol deviceVo
 	}
 	taken := spk.MusicPlaneBusy() || mux.ownerNow() == ownSendspin
 	sp.mu.Lock()
-	pause := taken && p.Playing() && !sp.paused
+	now := time.Now()
+	pause := spotify.PauseDue(taken, p.Playing(), sp.pausedAt, now)
+	first := pause && sp.pausedAt.IsZero()
 	if pause {
-		sp.paused = true
+		sp.pausedAt = now
 	} else if !taken {
-		sp.paused = false
+		sp.pausedAt = time.Time{}
 	}
 	sp.mu.Unlock()
 	if pause {
 		p.Send("pause", nil)
 		p.Discard()
-		log.Printf("[spotify] paused: the music plane is taken")
+		if first {
+			log.Printf("[spotify] paused: the music plane is taken")
+		}
 	}
 }
 

@@ -682,3 +682,18 @@ func (p *Player) runOnce(ctx context.Context) (premium bool) {
 	}
 	return premium
 }
+
+// pauseRetry is how often the arbitration pause is sent again while the
+// engine still plays under a taken music plane.
+const pauseRetry = time.Second
+
+// PauseDue says whether the engine should be sent the arbitration pause: it
+// is playing while another source holds the music plane, and no pause went
+// out in the last pauseRetry. One pause is not enough. A Spotify client
+// choosing this Echo makes the engine load and play, but librespot ignores a
+// pause until the Echo is the active device, so a pause sent at the first
+// moment is lost and the engine decodes under the other source and starts
+// playing by itself when that ends (2026-10-22, a group member).
+func PauseDue(taken, playing bool, sentAt, now time.Time) bool {
+	return taken && playing && (sentAt.IsZero() || now.Sub(sentAt) >= pauseRetry)
+}
