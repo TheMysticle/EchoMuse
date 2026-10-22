@@ -1292,22 +1292,16 @@ async fn handle_player_event(
         PlayerEvent::RepeatChanged { context, track } => {
             shared.emit(Event::Repeat { context, track }).await
         }
-        PlayerEvent::SessionDisconnected { .. } => {
-            shared
-                .emit(Event::Session {
-                    connected: false,
-                    user: None,
-                })
-                .await
-        }
-        PlayerEvent::SessionConnected { user_name, .. } => {
+        // librespot names these for the Connect device becoming ACTIVE (a
+        // Spotify client chose this Echo) and INACTIVE (another device took
+        // over). They say nothing about the Spotify session, which is ours
+        // to report from the login and its loss. Reporting them as the
+        // session made a working, linked Echo read "Account linked,
+        // connecting to Spotify" on the dashboard as soon as anything else
+        // had played, until it was chosen again.
+        PlayerEvent::SessionDisconnected { .. } => {}
+        PlayerEvent::SessionConnected { .. } => {
             *activation_volume_pending = true;
-            shared
-                .emit(Event::Session {
-                    connected: true,
-                    user: Some(user_name),
-                })
-                .await;
         }
         // Preload, play-request ids, end-of-track and the rest are
         // librespot's own bookkeeping. Forwarding them would give the
@@ -1608,13 +1602,8 @@ mod tests {
                 )
                 .await;
                 assert_eq!(sync, None);
-                assert!(matches!(
-                    events.try_recv(),
-                    Ok(Event::Session {
-                        connected: true,
-                        ..
-                    })
-                ));
+                // Activation is not a session event: the session is the login.
+                assert!(events.try_recv().is_err());
                 handle_player_event(
                     PlayerEvent::SessionClientChanged {
                         client_id: "test".into(),
