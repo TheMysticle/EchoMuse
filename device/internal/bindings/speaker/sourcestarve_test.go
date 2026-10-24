@@ -135,3 +135,20 @@ func TestAHealthyBufferIsNeverReported(t *testing.T) {
 		t.Errorf("thin %d, want 0", m.Thin())
 	}
 }
+
+func TestAShallowRingIsJudgedAgainstItsOwnFloor(t *testing.T) {
+	// A low-latency stream holds the ring at 48ms, under a whole period, so
+	// the period floor called every healthy write thin. Against half the
+	// shallow ring only a real near miss is reported.
+	var m AlsaMargin
+	now := time.Unix(1000, 0)
+	m.NoteFloor(now, shallowRingFrames, ShallowMarginFloorFrames) // primed
+	for i := 0; i < 100; i++ {
+		if _, log := m.NoteFloor(now, shallowRingFrames-600, ShallowMarginFloorFrames); log {
+			t.Fatal("an ordinary shallow-ring depth was reported as thin")
+		}
+	}
+	if _, log := m.NoteFloor(now, 400, ShallowMarginFloorFrames); !log {
+		t.Error("a near miss on the shallow ring was not reported")
+	}
+}

@@ -148,6 +148,7 @@ type playerStats struct {
 	Waits         int   `json:"waits"`
 	WaitRecovered int   `json:"waitRecovered"`
 	WaitTimeouts  int   `json:"waitTimeouts"`
+	WaitPastTight int   `json:"waitPastTight"`
 	WaitMaxUs     int64 `json:"waitMaxUs"`
 }
 

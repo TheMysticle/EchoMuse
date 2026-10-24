@@ -297,3 +297,139 @@ Known noise: the `[speaker] ALSA buffer thin` warning compares against the whole
 during healthy low-latency playback. It should be silenced for low-latency
 streams in a follow-up; not changed here because that code is not in the
 tested binary.
+
+
+## Where the remaining arrival jitter comes from (evening, `20261024-2011-dev`)
+
+The arrival minimum at 65 ms lead swings between about 25 and 45 ms against a
+61 ms median, and each underrun since the fill wait has been an arrival
+outlier rather than anything on the write side. Pinging the Echo from the
+streamer PC at 100 Hz (wired PC, Echo on 5 GHz at -43 to -50 dBm) split it
+into three parts:
+
+- **The network path is clean most of the time**: p50 1.5 ms, no loss.
+- **CPU hotplug on the Echo.** HPS parked and restarted CPU3 every 1-2 s at
+  this load (145 `CPU3: shutdown` lines in the kernel ring), and a hotplug
+  stops every CPU while it runs. Two-minute A/B with the floor at 2 and then 4
+  (`/proc/hps/num_base_perf_serv`): replies over 20 ms 129 → 44, over 10 ms
+  198 → 101, p99 20.9 → 7.6 ms. With the floor at 4 the longest fill wait in
+  the following minutes fell from the whole 32 ms budget to 21 ms. The
+  firmware now holds every core online while a low-latency Sendspin stream
+  plays (`cmd/sendspin.go`, `sendspinCores`), dropping back to the usual 2
+  thirty seconds after the stream ends.
+- **The access point.** The remaining 10-60 ms stalls land on a 5 s grid at
+  the same phase (…4.93, …9.93) and hit every wireless client at once: the
+  Echo and two other Amazon devices stalled in the same 10 ms, while the wired
+  gateway and the AdGuard host, pinged from the same PC in the same minute,
+  did not. The AP is a Netgear RAX70 on SWRT (Broadcom); the Echo is on
+  `eth6`, channel 52/80 (DFS), the radio `acsd2` manages, with Smart Connect
+  (`bsd`), `roamast` and `conn_diag` running. `acsd2`'s in-service scan timer
+  reads 20 s at runtime, so it does not match the 5 s grid on its own. Which
+  daemon it is was not established: pausing them one at a time is the next
+  test, and it changes the user's router, so it is theirs to run. A 50 ms
+  stall at 20:10:04 (arrival minimum 11 ms) caused one underrun at 65 ms lead.
+
+Not the cause, each checked: Wi-Fi power save (forced off by the driver),
+Nagle (aiohttp sets `TCP_NODELAY`; aiosendspin's writer sends a chunk as soon
+as it is queued), the PC's Wi-Fi interface answering for the wired address
+(the Echo's ARP entry is the wired MAC), multicast load on the BSS (67 packets
+in 10 s), DNS (nothing on the stream path resolves a name).
+
+**Streamer: a cutout that was not the Echo.** At 20:03 the Echo's mDNS record
+lapsed, the streamer deleted the player, the group lost its only member and
+the stream stopped ("music source starved" on the Echo, a new stream when the
+user re-selected the manual entry). The streamer now keeps a player whose
+connection is live through a lapsed record, and counts an Echo selected under
+two names once. [Patch](sendspin-streamer-keep-lapsed-players.patch).
+
+**Log noise.** `ALSA buffer thin` is judged against half the shallow ring
+(24 ms) while the speaker builds short periods, instead of a whole 2048-frame
+period that sits above the shallow ring's ordinary depth.
+
+**Which router daemon.** The user paused `bsd`, `roamast`, `conn_diag` and
+`acsd2` for 40 s each while the Echo was pinged at 50 Hz. Stalls on the 5 s
+grid: baseline 3, `bsd` 1, `roamast` 2, `conn_diag` 3, `acsd2` **0**, and
+they came back 3 s after `acsd2` resumed. The user then fixed 5 GHz-1 at
+44/80 (non-DFS; the one neighbouring network in that block has its control
+channel on 44), which leaves `acsd2` nothing to manage and it exits. Over
+three minutes of ping: stall events 8.5 → 5.0 a minute, on the 5 s grid
+3.3 → 1.3, replies over 20 ms 13.4 → 7.0, worst 47.7 → 40.6 ms. A smaller
+5 s source remains and was not identified.
+
+| Run, `20261024-2011-dev`, channel 44 | Steady-play underruns | Arrival minimum per minute |
+|---|---:|---|
+| 65 ms, 20:35-20:44 | 0 | 33-43 ms |
+| 60 ms, 20:46-20:55 | 2 (one at 20:51, starved again 20:56) | 12-36 ms |
+
+65 ms stays the setting. 60 ms is still short of what this link's tail
+needs, by roughly the 20-30 ms outliers that remain after the channel change.
+
+## The 20-minute soaks, and delayed ACKs
+
+With every change above in place (channel 44, Smart Connect off, the
+streamer marking audio CS6 for WMM voice, core floor 4), 20 minutes at 65 ms
+was **not** clean: three underruns between 21:15 and 21:26 (21:18:34, two at
+21:24:45), each beside a 55-60 ms ping reply. 70 ms then ran 12 minutes clean
+through volume and mute changes over the streamer API, and had three more
+underruns in the 8 minutes after a stream stop/start.
+
+The arrival median does not sit at a fixed distance below the lead: it was
+55 then 61 ms at a 65 ms lead, and 68 then 60 ms at 70, changing only across
+a stream restart, while the streamer's own figure (`latencyMs`, play time
+minus now at commit) stayed at 72-74 ms and the clock filter's offset moved
+smoothly. Five restarts in a row at 70 ms all landed at 60. Where the other
+8 ms goes on a bad start is not found.
+
+The socket explained the stall size. `ss -tni` on the PC showed **12.3 ms
+smoothed RTT** on the audio connection while ping read 1-2 ms: the Echo ACKs
+every second segment, and a live stream is one ~600-byte segment every 10 ms,
+so each ACK left one chunk late. The sender's loss recovery is paced by that
+RTT (RACK's reorder window, the tail-loss probe at 2xRTT), so one segment
+lost in the air cost ~25-35 ms before it was resent. The Sendspin session now
+re-arms `TCP_QUICKACK` after every read (`internal/sendspin/quickack.go`),
+and the same socket reads **1.8 ms**.
+
+| 20 min at 70 ms, channel 44 | Underruns | Arrival minimum per minute | Ping replies 47-60 ms |
+|---|---:|---|---:|
+| `20261024-2011-dev`, 21:36-21:56 | 3, all after the restart | 21-54 ms | 5 |
+| `20261024-2212-dev` (quick ACK), 22:12-22:33, two restarts | **0** | 29-56 ms; 38-47 ms in the 60 ms-median phase | 5 |
+
+The second run had the same stalls on the air and the same bad-start median
+(60 ms), and nothing reached the speaker. 70 ms is the setting.
+
+## 40 minutes of rough handling at 70 and 80 ms
+
+Each run: 5 minutes plain play, then volume sweeps every 15 s with mute
+toggles, two busy loops on the Echo's CPU, four stop/starts a minute apart,
+two deselect/reselects, CPU load with volume changes and a restart together,
+and 5 calm minutes.
+
+| `20261024-2212-dev` and later, channel 44 | Steady-play underruns | Real XRUNs |
+|---|---:|---:|
+| 70 ms, idle between soaks, 22:33-23:08 | 3 (22:42, two at 22:57), each in the 60 ms-median state | 0 |
+| 70 ms, 40 min (with a bulk-download phase) | 1 at a 1.9 s whole-device freeze (23:10:17); 9 during the download; 0 otherwise | 0 |
+| 80 ms, 40 min (download phase replaced with plain play) | 1, at 00:47:51: a chunk 101 ms past its play time, beside a 104 ms ping | 0 |
+
+The download phase pulled the firmware binary from the PC in a loop for 4.5
+minutes. Nothing in normal use downloads to an Echo that hard, so it was left
+out at 80 ms. The one 80 ms underrun needed a lead of ~180 ms to absorb, so a
+longer lead would not have helped. Volume, mute, CPU load, restarts and
+reselects caused no underruns at either lead.
+
+**Where the lost margin goes depends on how a stream starts.** After a
+streamer stop/start the median arrival lead sat ~10 ms under the lead (60 at
+70 ms, 70 at 80); after a deselect/reselect it sat at the lead (69-70 at 70,
+76-78 at 80). Ruled out: the clock filter (offset smooth throughout), the
+server's buffer backpressure (the Echo declares 576 KB; the duration cap is
+30 s), the Echo's decoder (decodes each frame as it arrives), the server's
+stereo-to-mono graph (480 samples in, 480 out, no hold) and the streamer's
+own timeline (`latencyMs` 72-74 at 70 across restarts). Finding it is worth
+~10 ms.
+
+**What 268bbbc's wider fill wait buys.** The fill wait now also counts
+`pastTight`: periods that arrived after b562fb9's 24/24 ms budget would have
+given up and inside the current 32/16. Over the 40 minutes at 80 ms it stayed
+at **0** across ~130 waits, so at 80 ms 268bbbc behaves like b562fb9. Its
+smaller reserve cost nothing either: no real XRUN in about four hours, two
+CPU-load phases included. The difference can only show at leads where packets
+run that late, 70 ms and under.

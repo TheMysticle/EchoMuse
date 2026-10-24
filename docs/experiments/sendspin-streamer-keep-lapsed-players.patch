@@ -1,0 +1,83 @@
+--- a/streamer.py
++++ b/streamer.py
+@@ -149,6 +149,7 @@
+         self.key, self.label, self.url, self.host, self.manual = key, label, url, host, manual
+         self.seen = time.monotonic()
+         self.error = ""
++        self.lapsed = False  # mDNS dropped it while its connection was live
+ 
+ 
+ def _pick_ipv4(addresses: list[str]) -> str | None:
+@@ -157,9 +158,10 @@
+ 
+ 
+ class Discovery:
+-    def __init__(self, loop: asyncio.AbstractEventLoop, on_change) -> None:
++    def __init__(self, loop: asyncio.AbstractEventLoop, on_change, keep=None) -> None:
+         self.loop = loop
+         self.on_change = on_change
++        self.keep = keep  # keep(player) -> True while it must outlive its mDNS record
+         self.players: dict[str, Player] = {}
+         self.azc: AsyncZeroconf | None = None
+         self.browser: AsyncServiceBrowser | None = None
+@@ -183,6 +185,13 @@
+     def _removed(self, name: str) -> None:
+         p = self.players.get(name)
+         if p and not p.manual:
++            # Multicast over Wi-Fi is lossy, and a record that misses its
++            # refresh is reported as removed. Deleting a player that is still
++            # connected took it out of the group and stopped the stream
++            # (2026-10-24 20:03). Keep it until the connection itself goes.
++            if self.keep and self.keep(p):
++                p.lapsed = True
++                return
+             del self.players[name]
+             self.on_change(name, None)
+ 
+@@ -336,7 +345,7 @@
+         self.loop = loop
+         self.settings = Settings()
+         self.server: SendspinServer | None = None
+-        self.discovery = Discovery(loop, self._player_changed)
++        self.discovery = Discovery(loop, self._player_changed, keep=self._connected)
+         self.sources: list[dict] = []
+         self.running = False
+         self.stream_task: asyncio.Task | None = None
+@@ -377,6 +386,13 @@
+ 
+     # -- players ----------------------------------------------------------
+ 
++    def _connected(self, p: Player) -> bool:
++        if not self.server:
++            return False
++        cid = self.server.get_client_id_for_url(p.url)
++        c = self.server.get_client(cid) if cid else None
++        return bool(c and c.is_connected)
++
+     def _player_changed(self, key: str, player: Player | None) -> None:
+         if player and key in self.settings.wanted:
+             self._dial(player)
+@@ -493,10 +509,12 @@
+     # -- grouping ---------------------------------------------------------
+ 
+     def ready_selected(self) -> list:
++        # One Echo can be listed twice (found by mDNS and added by address);
++        # selecting both must not count it twice.
+         out = []
+         for key in self.settings.selected:
+             c = self.client_for(key)
+-            if self.ready(c):
++            if self.ready(c) and all(c is not o for o in out):
+                 out.append(c)
+         return out
+ 
+@@ -504,6 +522,9 @@
+         """Keep every ticked, ready player in one group, and nobody else in it."""
+         while True:
+             try:
++                for key, p in list(self.discovery.players.items()):
++                    if p.lapsed and not self._connected(p):
++                        del self.discovery.players[key]
+                 self._probe()
+                 ready = self.ready_selected()
+                 self.apply_lead(ready)

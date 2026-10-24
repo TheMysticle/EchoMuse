@@ -184,7 +184,9 @@ func applySendspinConfig(spk *speaker.PcmSpeaker, cc *client.ControlClient, vol 
 // wins the music plane, so while the 0x04 plane has anything in it the
 // player reports itself taken, and the server moves it out of its group.
 func sendspinPoll(spk *speaker.PcmSpeaker) {
-	if c := sendspinPlayer(); c != nil {
+	c := sendspinPlayer()
+	sendspinCores(time.Now(), c != nil && c.LowLatency())
+	if c != nil {
 		plane, spot := spk.MusicPlaneBusy(), mux.ownerNow() == ownSpotify
 		c.SetExternal(plane || spot)
 		if reason := externalReason(plane, spot); reason != sendspinExternalWas {
@@ -221,6 +223,36 @@ var sendspinExternalWas = "available"
 // ticker goroutine touches it.
 var sendspinLoggedAt time.Time
 
+// lowLatencyCoreFloor holds every core online while a low-latency stream
+// plays. HPS parks and restarts the fourth core every second or two at this
+// load, and each hotplug stops every CPU while it runs: measured on a Radar
+// at 65ms lead, 2026-10-24, pinging the Echo at 100Hz, replies over 20ms fell
+// from 129 to 44 in two minutes with the floor at 4, and the longest fill
+// wait from the whole 32ms budget to 21ms. Idle cores sit in WFI, so the
+// cost is power, not heat worth measuring; num_limit_thermal still caps it.
+const lowLatencyCoreFloor = 4
+
+// sendspinCoresHold keeps the floor up between streams, so a stop/start or
+// a gap between tracks does not set hotplug going again for a few seconds.
+const sendspinCoresHold = 30 * time.Second
+
+// sendspinCoresUntil is when the raised floor may drop back. Only
+// sendspinPoll's ticker goroutine touches it.
+var sendspinCoresUntil time.Time
+
+func sendspinCores(now time.Time, lowLatency bool) {
+	switch {
+	case lowLatency:
+		if sendspinCoresUntil.IsZero() {
+			setCoreFloor(lowLatencyCoreFloor, "low-latency Sendspin stream")
+		}
+		sendspinCoresUntil = now.Add(sendspinCoresHold)
+	case !sendspinCoresUntil.IsZero() && now.After(sendspinCoresUntil):
+		sendspinCoresUntil = time.Time{}
+		setCoreFloor(hpsCoreFloor, "low-latency stream ended")
+	}
+}
+
 // logSendspinStats puts the sync numbers in the device log once a minute
 // while playing. The counts run from the stream's start, so a rate is the
 // difference between two lines.
@@ -228,8 +260,8 @@ func logSendspinStats(st sendspin.Status) {
 	p := st.Player
 	log.Printf("[sendspin] playing: synced=%v syncErr=%dus buffered=%dms snaps=%d corrections=%d underruns=%d lateDrops=%d lastErr=%dus",
 		st.Synced, st.SyncErrUs, st.BufferedMs, p.Snaps, p.Corrections, p.Underruns, p.LateDrops, p.LastErrorUs)
-	log.Printf("[sendspin] fill wait: waits=%d recovered=%d timeouts=%d max=%dus",
-		p.Waits, p.WaitRecovered, p.WaitTimeouts, p.WaitMaxUs)
+	log.Printf("[sendspin] fill wait: waits=%d recovered=%d pastTight=%d timeouts=%d max=%dus",
+		p.Waits, p.WaitRecovered, p.WaitPastTight, p.WaitTimeouts, p.WaitMaxUs)
 }
 
 // logSendspinSync puts the minute's time exchanges beside the counts above:

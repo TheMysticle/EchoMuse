@@ -1984,21 +1984,24 @@ func platformInit() int {
 // binary, rather than in a provisioning script: it travels with the firmware
 // and re-applies on every start. Absent on a kernel without MTK HPS, in which
 // case there is nothing to do and nothing to warn about.
-func applyCoreFloor() {
+func applyCoreFloor() { setCoreFloor(hpsCoreFloor, "hotplug still scales above up_threshold") }
+
+// setCoreFloor writes the hotplug floor, best-effort, logging a change.
+func setCoreFloor(n int, why string) {
 	const path = "/proc/hps/num_base_perf_serv"
 	before, err := os.ReadFile(path)
 	if err != nil {
 		return // not an MTK HPS kernel
 	}
-	if strings.TrimSpace(string(before)) == strconv.Itoa(hpsCoreFloor) {
+	if strings.TrimSpace(string(before)) == strconv.Itoa(n) {
 		return
 	}
-	if err := os.WriteFile(path, []byte(strconv.Itoa(hpsCoreFloor)), 0o644); err != nil {
-		log.Printf("[cpu] could not raise core floor to %d: %v", hpsCoreFloor, err)
+	if err := os.WriteFile(path, []byte(strconv.Itoa(n)), 0o644); err != nil {
+		log.Printf("[cpu] could not set core floor to %d: %v", n, err)
 		return
 	}
-	log.Printf("[cpu] core floor %s -> %d (online=%d, hotplug still scales above up_threshold)",
-		strings.TrimSpace(string(before)), hpsCoreFloor, coresOnline())
+	log.Printf("[cpu] core floor %s -> %d (online=%d, %s)",
+		strings.TrimSpace(string(before)), n, coresOnline(), why)
 }
 
 // coresTotal is how many cores the SoC has, online or parked. Reported so a

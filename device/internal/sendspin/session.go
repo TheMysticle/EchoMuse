@@ -34,6 +34,7 @@ const (
 type session struct {
 	c      *Client
 	ws     *websocket.Conn
+	ack    quickAcker
 	remote string
 
 	sendMu sync.Mutex
@@ -72,7 +73,7 @@ type session struct {
 }
 
 func newSession(c *Client, ws *websocket.Conn) *session {
-	return &session{c: c, ws: ws, remote: ws.RemoteAddr().String(), filter: newTimeFilter()}
+	return &session{c: c, ws: ws, ack: newQuickAcker(ws), remote: ws.RemoteAddr().String(), filter: newTimeFilter()}
 }
 
 var errProtocol = errors.New("sendspin: protocol error")
@@ -587,6 +588,7 @@ func (s *session) readMsg() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	s.ack.arm()
 	if mt != websocket.BinaryMessage {
 		// Cleartext after transport mode is a silent failure.
 		return nil, fmt.Errorf("%w: cleartext frame after handshake", errProtocol)

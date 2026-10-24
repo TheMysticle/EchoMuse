@@ -288,12 +288,16 @@ func (p *PcmSpeaker) pullSource(n int) []byte {
 	// How close the DAC came to empty. The XRUN check above is nearly
 	// unobservable — tinyalsa recovers from -EPIPE inside pcm_write — so the
 	// margin on an ordinary period is the measurement that actually reports.
-	if low, shout := p.alsaMargin.Note(now, d); shout {
+	floor := MarginFloorFrames
+	if len(buf) < periodBytes {
+		floor = ShallowMarginFloorFrames // the ring is held shallow on purpose
+	}
+	if low, shout := p.alsaMargin.NoteFloor(now, d, floor); shout {
 		log.Printf("[speaker] ALSA buffer thin — %d frames queued (%.1fms), "+
 			"lowest seen >=%d (a bound, not the minimum — see AlsaMargin), "+
 			"%d period(s) under %d since boot; this is where a click comes "+
 			"from", d, float64(d)*1000/48000, low,
-			p.alsaMargin.Thin(), MarginFloorFrames)
+			p.alsaMargin.Thin(), floor)
 	}
 	playAt := now.Add(time.Duration(d) * time.Second / 48000)
 	p.dacStep.note(playAt, read, string(b), time.Duration(len(buf)/4)*time.Second/48000)

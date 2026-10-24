@@ -356,7 +356,8 @@ func (c *Client) Fill(out []byte, playAt time.Time, uncertain time.Duration) boo
 	} else {
 		at = oc.Observe(playAt)
 	}
-	c.player.waitForPeriod(len(out)/4, at, fillWaitDeadline(time.Now(), playAt, uncertain))
+	now := time.Now()
+	c.player.waitForPeriod(len(out)/4, at, fillWaitDeadline(now, playAt, uncertain), tightFillWaitDeadline(now, playAt, uncertain))
 	return c.player.Fill(out, at)
 }
 

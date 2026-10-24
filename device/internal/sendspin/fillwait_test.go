@@ -20,7 +20,7 @@ func TestFillWaitDeadlinePreservesHardwareReserve(t *testing.T) {
 	}
 }
 
-func waitingPlayer(t *testing.T, partial int) (*player, time.Time, <-chan struct{}) {
+func waitingPlayer(t *testing.T, partial int, tight time.Time) (*player, time.Time, <-chan struct{}) {
 	t.Helper()
 	p := newPlayer(syncedFilter(0))
 	p.push(5_000_000, ramp(0, 512+partial))
@@ -31,7 +31,7 @@ func waitingPlayer(t *testing.T, partial int) (*player, time.Time, <-chan struct
 	playAt := at(5_000_000 + 512*1_000_000/48000)
 	done := make(chan struct{})
 	go func() {
-		p.waitForPeriod(512, playAt, time.Now().Add(time.Second))
+		p.waitForPeriod(512, playAt, time.Now().Add(time.Second), tight)
 		close(done)
 	}()
 	limit := time.Now().Add(time.Second)
@@ -46,7 +46,7 @@ func waitingPlayer(t *testing.T, partial int) (*player, time.Time, <-chan struct
 
 func TestFillWaitRecoversLateDataWithoutMovingPlaybackTime(t *testing.T) {
 	for _, partial := range []int{0, 128} {
-		p, playAt, done := waitingPlayer(t, partial)
+		p, playAt, done := waitingPlayer(t, partial, time.Time{})
 		// Simulate a packet arriving after the speaker discovered a shortage.
 		// push must not be blocked by the waiter's player mutex.
 		p.push(5_000_000+int64(512+partial)*1_000_000/48000, ramp(512+partial, 512-partial))
@@ -71,8 +71,25 @@ func TestFillWaitRecoversLateDataWithoutMovingPlaybackTime(t *testing.T) {
 	}
 }
 
+// A period that turns up after the old 24/24 budget would have given up, and
+// inside the current one, is counted: it is an underrun the wider budget saved.
+func TestFillWaitCountsRecoveriesPastTheTightBudget(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		tight time.Duration
+		want  int
+	}{{"inside the tight budget", time.Hour, 0}, {"past it", -time.Millisecond, 1}} {
+		p, _, done := waitingPlayer(t, 0, time.Now().Add(tc.tight))
+		p.push(5_000_000+512*1_000_000/48000, ramp(512, 512))
+		<-done
+		if st := p.stats(); st.WaitRecovered != 1 || st.WaitPastTight != tc.want {
+			t.Fatalf("%s: %+v, want pastTight=%d", tc.name, st, tc.want)
+		}
+	}
+}
+
 func TestFillWaitClearCancelsOldStream(t *testing.T) {
-	p, _, done := waitingPlayer(t, 0)
+	p, _, done := waitingPlayer(t, 0, time.Time{})
 	p.clear()
 	select {
 	case <-done:
@@ -92,7 +109,7 @@ func TestFillWaitDeadlineDoesNotHideAnUnderrun(t *testing.T) {
 	p.shallow.Store(true)
 	p.mu.Unlock()
 	start := time.Now()
-	p.waitForPeriod(512, at(5_000_000), start.Add(5*time.Millisecond))
+	p.waitForPeriod(512, at(5_000_000), start.Add(5*time.Millisecond), time.Time{})
 	if elapsed := time.Since(start); elapsed > 250*time.Millisecond {
 		t.Fatalf("deadline did not bound the wait: %v", elapsed)
 	}
@@ -136,11 +153,11 @@ func TestFillAvailabilityIncludesCorrectionAndStartupSilence(t *testing.T) {
 func TestFillWaitNormalAndNonLowLatencyPathsDoNotWait(t *testing.T) {
 	p := newTestPlayer(0)
 	p.shallow.Store(true)
-	p.waitForPeriod(512, at(5_000_000), time.Now().Add(time.Hour))
+	p.waitForPeriod(512, at(5_000_000), time.Now().Add(time.Hour), time.Time{})
 	p.shallow.Store(false)
 	p.q = nil
 	p.playing = true
-	p.waitForPeriod(512, at(5_000_000), time.Now().Add(time.Hour))
+	p.waitForPeriod(512, at(5_000_000), time.Now().Add(time.Hour), time.Time{})
 	if p.stats().Waits != 0 {
 		t.Fatal("waited without a low-latency shortage")
 	}

@@ -1,0 +1,75 @@
+--- a/streamer.py
++++ b/streamer.py
+@@ -19,12 +19,13 @@
+ import logging
+ import math
+ import os
++import socket
+ import time
+ from collections import deque
+ from pathlib import Path
+ 
+ import numpy as np
+-from aiohttp import WSMsgType, web
++from aiohttp import ClientSession, ClientTimeout, TCPConnector, WSMsgType, web
+ from aiosendspin.audio.format import AudioFormat
+ from aiosendspin.models.types import PairMethod
+ from aiosendspin.noise.keys import Identity, b64url_decode
+@@ -86,6 +87,26 @@
+ FRAMES = RATE * CHUNK_MS // 1000
+ CHUNK_BYTES = FRAMES * 4  # s16le stereo
+ PLAYER_ROLE = "player@v1"
++
++# Mark every connection to a player as voice traffic (DSCP CS6). Wi-Fi access
++# points with WMM, which is on by default, send it from the voice queue: the
++# shortest wait for the air, ahead of a phone's video on the same radio. The
++# router's own QoS cannot do this: it shapes only the internet link, and the
++# stream never leaves the LAN. Broadcom maps by IP precedence, so 6 -> AC_VO.
++DSCP_CS6_TOS = 48 << 2
++
++
++def _voice_socket(addr_info) -> socket.socket:
++    family, type_, proto, _, _ = addr_info
++    sock = socket.socket(family=family, type=type_, proto=proto)
++    try:
++        if family == socket.AF_INET:
++            sock.setsockopt(socket.IPPROTO_IP, socket.IP_TOS, DSCP_CS6_TOS)
++        elif family == socket.AF_INET6:
++            sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_TCLASS, DSCP_CS6_TOS)
++    except OSError as e:
++        log.warning("could not mark the player connection as voice: %s", e)
++    return sock
+ SERVICE = "_sendspin._tcp.local."
+ 
+ 
+@@ -345,6 +366,7 @@
+         self.loop = loop
+         self.settings = Settings()
+         self.server: SendspinServer | None = None
++        self.session: ClientSession | None = None
+         self.discovery = Discovery(loop, self._player_changed, keep=self._connected)
+         self.sources: list[dict] = []
+         self.running = False
+@@ -369,7 +391,12 @@
+     async def start(self) -> None:
+         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+         store = await FileServerPairingStore.open(CONFIG_DIR / "pairings.json")
+-        self.server = SendspinServer(self.loop, load_identity(), "Sendspin Streamer", pairing_store=store)
++        # The server makes this same session itself when given none; ours
++        # differs only in marking its sockets (see _voice_socket).
++        self.session = ClientSession(connector=TCPConnector(socket_factory=_voice_socket),
++                                     timeout=ClientTimeout(total=30))
++        self.server = SendspinServer(self.loop, load_identity(), "Sendspin Streamer",
++                                     pairing_store=store, client_session=self.session)
+         self.sources = await list_sources()
+         for key, url in self.settings.manual.items():
+             self.discovery.add_manual(key, url)
+@@ -383,6 +410,8 @@
+         await self.discovery.stop()
+         if self.server:
+             await self.server.close()
++        if self.session:
++            await self.session.close()
+ 
+     # -- players ----------------------------------------------------------
+ 

@@ -14,9 +14,26 @@ const (
 	maxFillWait     = 32 * time.Millisecond
 )
 
+// The 24/24ms budget this replaced (b562fb9). It is computed beside the real
+// one only to count the periods that arrived inside the wider budget and
+// outside the old: each is an underrun the old budget would have taken, and
+// the count is how the wider one earns its smaller reserve.
+const (
+	tightFillWaitReserve = 24 * time.Millisecond
+	tightMaxFillWait     = 24 * time.Millisecond
+)
+
 func fillWaitDeadline(now, measured time.Time, uncertain time.Duration) time.Time {
-	deadline := measured.Add(-fillWaitReserve - max(uncertain, 0))
-	if cap := now.Add(maxFillWait); deadline.After(cap) {
+	return fillWaitDeadlineWith(now, measured, uncertain, fillWaitReserve, maxFillWait)
+}
+
+func tightFillWaitDeadline(now, measured time.Time, uncertain time.Duration) time.Time {
+	return fillWaitDeadlineWith(now, measured, uncertain, tightFillWaitReserve, tightMaxFillWait)
+}
+
+func fillWaitDeadlineWith(now, measured time.Time, uncertain, reserve, most time.Duration) time.Time {
+	deadline := measured.Add(-reserve - max(uncertain, 0))
+	if cap := now.Add(most); deadline.After(cap) {
 		deadline = cap
 	}
 	return deadline
@@ -85,7 +102,8 @@ func (p *player) needsDataLocked(frames int, playAt time.Time) bool {
 // waitForPeriod only waits on an actual shortage, never on the normal path.
 // Producers remain free to decode/push while the speaker waits. Clear/end
 // wakes the waiter too; a new stream must not inherit the old wait or counters.
-func (p *player) waitForPeriod(frames int, playAt, deadline time.Time) {
+// A recovery after tight (zero: not counted) is also counted as WaitPastTight.
+func (p *player) waitForPeriod(frames int, playAt, deadline, tight time.Time) {
 	p.mu.Lock()
 	if !p.shallow.Load() || !p.needsDataLocked(frames, playAt) || time.Until(deadline) <= 0 {
 		p.mu.Unlock()
@@ -114,6 +132,9 @@ func (p *player) waitForPeriod(frames int, playAt, deadline time.Time) {
 				p.st.WaitTimeouts++
 			} else {
 				p.st.WaitRecovered++
+				if !tight.IsZero() && time.Now().After(tight) {
+					p.st.WaitPastTight++
+				}
 			}
 			p.mu.Unlock()
 			return

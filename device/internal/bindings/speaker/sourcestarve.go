@@ -137,7 +137,19 @@ const MarginFloorFrames = 2048
 // it fills, and counting that would report a fault at the start of every
 // track, the same innocent case SourceStarve excludes.
 func (m *AlsaMargin) Note(now time.Time, frames int) (int, bool) {
-	if frames >= MarginFloorFrames {
+	return m.NoteFloor(now, frames, MarginFloorFrames)
+}
+
+// ShallowMarginFloorFrames is the floor while a low-latency stream holds the
+// ring to shallowRingFrames (48ms): half of it. The whole-period floor sits
+// above that ring's ordinary depth, so it called a healthy stream thin every
+// 10-40s (2026-10-24), and a warning that fires on health is one nobody
+// reads when it matters.
+const ShallowMarginFloorFrames = shallowRingFrames / 2
+
+// NoteFloor is Note against a floor other than a whole period.
+func (m *AlsaMargin) NoteFloor(now time.Time, frames, floor int) (int, bool) {
+	if frames >= floor {
 		m.primed.Store(true)
 		return int(m.lowest.Load()), false
 	}
