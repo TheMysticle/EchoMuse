@@ -113,6 +113,17 @@ func (m *musicMux) Fill(out []byte, playAt time.Time, uncertain time.Duration) b
 	return false
 }
 
+// LowLatency lets the speaker keep its ring shallow, but only for a Sendspin
+// stream that arrives with little lead; Spotify and a server asking for the
+// default 2s keep the full ring.
+func (m *musicMux) LowLatency() bool {
+	if m.ownerNow() != ownSendspin {
+		return false
+	}
+	c := sendspinPlayer()
+	return c != nil && c.LowLatency()
+}
+
 func (m *musicMux) ownerNow() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()

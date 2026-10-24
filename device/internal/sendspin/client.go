@@ -360,6 +360,9 @@ func (c *Client) Fill(out []byte, playAt time.Time, uncertain time.Duration) boo
 // the music plane is taken.
 func (c *Client) Active() bool { return c.player.active() }
 
+// LowLatency reports a stream running with little lead (see player.lowLatency).
+func (c *Client) LowLatency() bool { return c.player.lowLatency() }
+
 // Buffered is how much audio is queued and not yet played.
 func (c *Client) Buffered() time.Duration { return c.player.buffered() }
 

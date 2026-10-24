@@ -41,6 +41,16 @@ const periodSize = 2048
 const alsaPeriodSize = 2048
 const alsaPeriodCount = 4
 const alsaBufferFrames = alsaPeriodSize * alsaPeriodCount
+
+// ringwait.go states the same sizes where host tests can see them; these fail
+// the build if either drifts.
+var (
+	_ [alsaBufferFrames - ringFrames]struct{}
+	_ [ringFrames - alsaBufferFrames]struct{}
+	_ [periodSize - loopPeriodFrames]struct{}
+	_ [loopPeriodFrames - periodSize]struct{}
+)
+
 const periodBytes = periodSize * 2 * 2 // 2 channels * 2 bytes = 8192
 
 // The wire carries MONO 48kHz — PumpPeriod duplicates L=R before queueing.
@@ -242,6 +252,9 @@ func (p *PcmSpeaker) pullSource() []byte {
 		p.srcLastNs.Store(time.Now().UnixNano())
 		return p.srcBuf
 	}
+	if sh, ok := box.s.(interface{ LowLatency() bool }); ok && sh.LowLatency() {
+		p.throttleRing()
+	}
 	before := time.Now()
 	b, err := os.ReadFile(p.statusFile)
 	read := time.Since(before)
@@ -289,6 +302,22 @@ func (p *PcmSpeaker) pullSource() []byte {
 	}
 	p.srcLastNs.Store(now.UnixNano())
 	return p.srcBuf
+}
+
+// throttleRing waits until the ring has drained to the shallow target, so the
+// period built next goes in with less audio queued ahead of it.
+func (p *PcmSpeaker) throttleRing() {
+	b, err := os.ReadFile(p.statusFile)
+	if err != nil {
+		return
+	}
+	d, ok := pcmDelay(string(b))
+	if !ok {
+		return
+	}
+	if w := ringWait(d, shallowRingFrames); w > 0 {
+		time.Sleep(w)
+	}
 }
 
 // SourceAudible is MusicAudible for the pull source alone.

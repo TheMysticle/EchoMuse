@@ -1,8 +1,10 @@
 package sendspin
 
 import (
+	"log"
 	"math"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -52,6 +54,83 @@ type player struct {
 	gainTarget, gain int32 // Q15
 
 	st playerStats
+
+	arr arrivalLog
+
+	// leadEwmaUs is a running average of how long before its play time a
+	// chunk arrives, and shallow is whether that is short enough for the
+	// speaker to run its ring shallow. Written under mu, read by the
+	// speaker's goroutine without it.
+	leadEwmaUs atomic.Int64
+	shallow    atomic.Bool
+}
+
+const (
+	// shallowBelowUs and shallowAboveUs are the lead at which a stream is
+	// treated as low-latency, with hysteresis. Music Assistant asks for 2s and
+	// a ring kept shallow for it would only add underflow risk.
+	shallowBelowUs = 300_000
+	shallowAboveUs = 400_000
+)
+
+// arrivalLog summarises how long before its play time each chunk arrived,
+// once a minute. A chunk that arrives with little lead left is the part of a
+// dropout the Echo cannot fix by itself. It counts into 1ms buckets: it runs
+// under the player's lock, which the speaker's pull needs, and sorting a
+// minute of leads there stalled the speaker once a minute (2026-10-24: a
+// kernel DL1 underflow every 60s, to the second).
+type arrivalLog struct {
+	n        int
+	min, max int64
+	buckets  [arrivalBuckets]int32
+	since    time.Time
+}
+
+const (
+	arrivalBuckets = 1000
+	arrivalFloorMs = -250 // bucket 0; leads outside the range clamp to the ends
+)
+
+func (a *arrivalLog) note(now time.Time, leadUs int64) {
+	if a.since.IsZero() {
+		a.since = now
+	}
+	if a.n == 0 || leadUs < a.min {
+		a.min = leadUs
+	}
+	if a.n == 0 || leadUs > a.max {
+		a.max = leadUs
+	}
+	a.n++
+	i := int(leadUs/1000) - arrivalFloorMs
+	a.buckets[min(max(i, 0), arrivalBuckets-1)]++
+	if now.Sub(a.since) < time.Minute {
+		return
+	}
+	log.Printf("[sendspin] arrival: n=%d lead min=%dms median=%dms max=%dms",
+		a.n, a.min/1000, a.medianMs(), a.max/1000)
+	*a = arrivalLog{since: now}
+}
+
+func (a *arrivalLog) medianMs() int {
+	seen := 0
+	for i, c := range a.buckets {
+		if seen += int(c); seen*2 >= a.n {
+			return i + arrivalFloorMs
+		}
+	}
+	return 0
+}
+
+// shallowNext is the next value of the low-latency flag for a lead average.
+func shallowNext(cur bool, ewmaUs int64) bool {
+	switch {
+	case ewmaUs < shallowBelowUs:
+		return true
+	case ewmaUs > shallowAboveUs:
+		return false
+	}
+	return cur
 }
 
 // playerStats are counts since the stream started, for the status report.
@@ -106,8 +185,24 @@ func (p *player) push(ts int64, pcm []int16) {
 	if n := len(p.q); n > 0 && ts < p.q[n-1].ts {
 		p.clearLocked()
 	}
+	if p.filter.synchronized() {
+		lead := p.filter.clientTime(ts) - p.delayUs - nowUs()
+		p.arr.note(time.Now(), lead)
+		avg := p.leadEwmaUs.Load()
+		if avg == 0 {
+			avg = lead
+		} else {
+			avg += (lead - avg) / 64
+		}
+		p.leadEwmaUs.Store(avg)
+		p.shallow.Store(shallowNext(p.shallow.Load(), avg))
+	}
 	p.q = append(p.q, chunk{ts: ts, pcm: pcm})
 }
+
+// lowLatency reports a stream whose chunks arrive with little lead, which is
+// what lets the speaker keep its ring shallow for it.
+func (p *player) lowLatency() bool { return p.shallow.Load() && p.active() }
 
 // clear drops everything buffered: stream/clear, stream/end, or HA taking
 // the music plane.
@@ -119,6 +214,8 @@ func (p *player) clear() {
 
 func (p *player) clearLocked() {
 	p.q, p.off, p.playing = nil, 0, false
+	p.leadEwmaUs.Store(0)
+	p.shallow.Store(false)
 }
 
 func (p *player) resetStats() {
