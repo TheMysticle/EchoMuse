@@ -278,3 +278,44 @@ func benchPeriod(b *testing.B, p Params) {
 		c.Process(buf)
 	}
 }
+
+// The speaker feeds the chain whole periods, and shorter blocks when a
+// low-latency stream has the speaker to itself, in any order. A Radar's chain
+// runs stock's FIR, which panicked on the shorter block the first time (found
+// on a device by pressing Start on a Sendspin stream). Both entry points, with
+// the stock curve on.
+func TestRadarChainTakesVaryingPeriodsInAnyOrder(t *testing.T) {
+	rt, err := LoadRadarTuning(filepath.Join("testdata", "radar_tuning"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := NewForBoard(48000, "radar", rt)
+	c.SetActive(true)
+	p := DefaultParams()
+	p.StockCurve = true
+	c.SetParams(p)
+	c.SetVolumeGain(0.5)
+
+	tone := func(frames int) []byte {
+		mono := make([]int16, frames)
+		for i := range mono {
+			mono[i] = int16(12000 * math.Sin(2*math.Pi*200*float64(i)/48000))
+		}
+		return stereo(mono)
+	}
+	for i, frames := range []int{512, 512, 1024, 2048, 512, 2048, 1024} {
+		buf := tone(frames)
+		c.Process(buf)
+		if len(buf) != frames*4 {
+			t.Fatalf("call %d: buffer changed length", i)
+		}
+		wide := make([]float64, frames*2)
+		for j := range wide {
+			wide[j] = 8000 * math.Sin(float64(j)*0.01)
+		}
+		c.ProcessFloat(wide, nil)
+	}
+	if c.fir == nil || c.fir.period != MaxPeriodFrames {
+		t.Fatal("the FIR was not sized for the whole period although the stream opened with a shorter one")
+	}
+}

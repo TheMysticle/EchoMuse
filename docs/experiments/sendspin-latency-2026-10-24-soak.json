@@ -1,0 +1,117 @@
+{
+  "configured_lead_ms": 79,
+  "displayed_lead_ms": 81,
+  "ring_target_ms": 48,
+  "pull_frames": 512,
+  "hardware_period_frames": 2048,
+  "hardware_period_count": 4,
+  "kernel_pointer_underflows": 0,
+  "kernel_log_retains_boot": true,
+  "stats": [
+    {
+      "time": "2026/10/24 13:37:14",
+      "snaps": 3,
+      "corrections": 10,
+      "underruns": 2,
+      "lateDrops": 16
+    },
+    {
+      "time": "2026/10/24 13:38:14",
+      "snaps": 3,
+      "corrections": 15,
+      "underruns": 2,
+      "lateDrops": 16
+    },
+    {
+      "time": "2026/10/24 13:39:14",
+      "snaps": 3,
+      "corrections": 20,
+      "underruns": 2,
+      "lateDrops": 16
+    },
+    {
+      "time": "2026/10/24 13:40:14",
+      "snaps": 3,
+      "corrections": 25,
+      "underruns": 2,
+      "lateDrops": 16
+    },
+    {
+      "time": "2026/10/24 13:41:14",
+      "snaps": 3,
+      "corrections": 30,
+      "underruns": 2,
+      "lateDrops": 16
+    },
+    {
+      "time": "2026/10/24 13:42:14",
+      "snaps": 3,
+      "corrections": 35,
+      "underruns": 2,
+      "lateDrops": 16
+    },
+    {
+      "time": "2026/10/24 13:43:14",
+      "snaps": 4,
+      "corrections": 38,
+      "underruns": 3,
+      "lateDrops": 17
+    },
+    {
+      "time": "2026/10/24 13:44:14",
+      "snaps": 4,
+      "corrections": 44,
+      "underruns": 3,
+      "lateDrops": 17
+    },
+    {
+      "time": "2026/10/24 13:45:14",
+      "snaps": 4,
+      "corrections": 50,
+      "underruns": 3,
+      "lateDrops": 17
+    },
+    {
+      "time": "2026/10/24 13:46:14",
+      "snaps": 4,
+      "corrections": 54,
+      "underruns": 3,
+      "lateDrops": 17
+    },
+    {
+      "time": "2026/10/24 13:47:14",
+      "snaps": 4,
+      "corrections": 60,
+      "underruns": 3,
+      "lateDrops": 17
+    },
+    {
+      "time": "2026/10/24 13:48:14",
+      "snaps": 5,
+      "corrections": 64,
+      "underruns": 4,
+      "lateDrops": 17
+    },
+    {
+      "time": "2026/10/24 13:49:14",
+      "snaps": 5,
+      "corrections": 69,
+      "underruns": 4,
+      "lateDrops": 17
+    },
+    {
+      "time": "2026/10/24 13:50:14",
+      "snaps": 5,
+      "corrections": 75,
+      "underruns": 4,
+      "lateDrops": 17
+    },
+    {
+      "time": "2026/10/24 13:51:15",
+      "snaps": 6,
+      "corrections": 79,
+      "underruns": 5,
+      "lateDrops": 17
+    }
+  ]
+}

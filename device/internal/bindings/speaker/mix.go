@@ -60,7 +60,15 @@ const rampStep = unityGain / duckRampPeriods
 // the one field that needs atomicity — it lives in PcmSpeaker, not here.
 type Mixer struct {
 	gain int32 // current, Q15, ramps toward the target
+
+	// slices is how many calls make up one period of ramp: 0 or 1 when each
+	// call is a whole period, 4 for quarter-periods. The ramp is a rate,
+	// so shortening the period must shorten the gain step proportionally. Set by the loop before it mixes; the default changes nothing.
+	slices int32
 }
+
+// SetSlices says how many mixes make one period of ramp.
+func (m *Mixer) SetSlices(n int) { m.slices = int32(n) }
 
 // DuckGain converts decibels of attenuation to Q15.
 //
@@ -153,13 +161,17 @@ func (m *Mixer) MixResponse(dst []float64, voice, music []byte, target int32, ga
 // stepGain moves the current gain one period toward the target, by at most
 // rampStep. Clamped rather than divided, so it always arrives exactly.
 func (m *Mixer) stepGain(target int32) {
+	step := int32(rampStep)
+	if m.slices > 1 {
+		step /= m.slices
+	}
 	switch {
 	case m.gain < target:
-		if m.gain += rampStep; m.gain > target {
+		if m.gain += step; m.gain > target {
 			m.gain = target
 		}
 	case m.gain > target:
-		if m.gain -= rampStep; m.gain < target {
+		if m.gain -= step; m.gain < target {
 			m.gain = target
 		}
 	}

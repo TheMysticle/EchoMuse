@@ -26,6 +26,9 @@ const (
 	// 0.5% cap. The DAC's own crystal runs -0.056% (1.15 frames a period,
 	// measured 2026-08-10), so this keeps up with room to spare.
 	maxStepFrames = 8
+	// stepPeriodFrames is the period maxStepFrames is per. A half-length
+	// period gets half the step, so the correction rate stays 0.39%.
+	stepPeriodFrames = 2048
 	// snapUs: past this the error is a disturbance rather than drift, and
 	// one-shot resync beats a second of audible speed change.
 	snapUs = 5000
@@ -43,10 +46,12 @@ type chunk struct {
 // millisecond. The existing music plane is push-and-play-in-order, which is
 // why Sendspin cannot simply feed it.
 type player struct {
-	mu      sync.Mutex
-	q       []chunk
-	off     int // samples consumed from q[0]
-	playing bool
+	mu         sync.Mutex
+	q          []chunk
+	off        int // samples consumed from q[0]
+	playing    bool
+	arrived    chan struct{} // coalesced notification; the pull never holds mu while waiting
+	generation uint64        // changes when a stream is cleared
 
 	filter  *timeFilter
 	delayUs int64 // static_delay_ms, µs
@@ -135,15 +140,19 @@ func shallowNext(cur bool, ewmaUs int64) bool {
 
 // playerStats are counts since the stream started, for the status report.
 type playerStats struct {
-	Snaps       int `json:"snaps"`
-	Corrections int `json:"corrections"`
-	Underruns   int `json:"underruns"`
-	LateDrops   int `json:"lateDrops"`
-	LastErrorUs int `json:"lastErrorUs"`
+	Snaps         int   `json:"snaps"`
+	Corrections   int   `json:"corrections"`
+	Underruns     int   `json:"underruns"`
+	LateDrops     int   `json:"lateDrops"`
+	LastErrorUs   int   `json:"lastErrorUs"`
+	Waits         int   `json:"waits"`
+	WaitRecovered int   `json:"waitRecovered"`
+	WaitTimeouts  int   `json:"waitTimeouts"`
+	WaitMaxUs     int64 `json:"waitMaxUs"`
 }
 
 func newPlayer(f *timeFilter) *player {
-	return &player{filter: f, gainTarget: unity, gain: unity}
+	return &player{filter: f, gainTarget: unity, gain: unity, arrived: make(chan struct{}, 1)}
 }
 
 const unity int32 = 1 << 15
@@ -198,11 +207,14 @@ func (p *player) push(ts int64, pcm []int16) {
 		p.shallow.Store(shallowNext(p.shallow.Load(), avg))
 	}
 	p.q = append(p.q, chunk{ts: ts, pcm: pcm})
+	p.notifyLocked()
 }
 
 // lowLatency reports a stream whose chunks arrive with little lead, which is
-// what lets the speaker keep its ring shallow for it.
-func (p *player) lowLatency() bool { return p.shallow.Load() && p.active() }
+// what lets the speaker keep its ring shallow for it. Keep this policy through
+// an empty queue: filling the hardware ring with silence during a packet gap
+// makes recovery harder. clearLocked resets it when the stream actually ends.
+func (p *player) lowLatency() bool { return p.shallow.Load() }
 
 // clear drops everything buffered: stream/clear, stream/end, or HA taking
 // the music plane.
@@ -214,6 +226,8 @@ func (p *player) clear() {
 
 func (p *player) clearLocked() {
 	p.q, p.off, p.playing = nil, 0, false
+	p.generation++
+	p.notifyLocked()
 	p.leadEwmaUs.Store(0)
 	p.shallow.Store(false)
 }
@@ -262,37 +276,21 @@ func (p *player) Fill(out []byte, playAt time.Time) bool {
 		return false
 	}
 
-	errUs := toUs(playAt) - p.localTimeLocked()
-	errFrames := int(math.Round(float64(errUs) * outRate / 1e6))
-	p.st.LastErrorUs = int(errUs)
-
-	lead := 0 // frames of silence before the first sample
-	repeat := 0
-	switch {
-	case !p.playing || errUs > snapUs || errUs < -snapUs:
-		if errFrames > 0 {
-			// Late: the first samples should already have played.
-			if !p.dropLocked(errFrames) {
-				p.playing = false
-				return false
-			}
-		} else if errFrames < 0 {
-			if -errFrames >= frames {
-				p.playing = false
-				return false // not due yet
-			}
-			lead = -errFrames
-		}
+	plan := p.planLocked(frames, playAt)
+	p.st.LastErrorUs = int(plan.errUs)
+	lead, repeat := plan.lead, plan.repeat
+	if plan.notDue {
+		p.playing = false
+		return false
+	}
+	if plan.drop > 0 && !p.dropLocked(plan.drop) {
+		p.playing = false
+		return false
+	}
+	if plan.snap {
 		p.playing = true
 		p.st.Snaps++
-	case errFrames > deadbandFrames:
-		if !p.dropLocked(min(errFrames, maxStepFrames)) {
-			p.playing = false
-			return false
-		}
-		p.st.Corrections++
-	case errFrames < -deadbandFrames:
-		repeat = min(-errFrames, maxStepFrames)
+	} else if plan.drop > 0 || repeat > 0 {
 		p.st.Corrections++
 	}
 

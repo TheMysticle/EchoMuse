@@ -61,14 +61,16 @@ func radarEQBand(gain float64, boundaries []float64) int {
 // overlap-save. See controller/em_eq.py's _OverlapSaveFIR, which this is
 // held bit-exact to (testdata/gen_vectors.py + vectors.json).
 //
-// Fixed block size, unlike the Python reference: every production caller
-// hands Process exactly one period (periodSamples) every time, so there
-// is no equivalent of Python's arbitrary-chunk-length handling to carry —
-// process panics if ever called with a different length, which is the
-// correct failure mode for a bug in the caller rather than silently
-// computing a wrong answer. Tests exercise exactly periodSamples per
-// call, same as production, and prove the general overlap-save MATH via
-// fft_test.go instead (which is not tied to any one block size).
+// Block size, unlike the Python reference: the FFT is sized once for the
+// longest block (periodSamples), and process takes any block from one sample
+// up to that. Overlap-save is exact for any block that fits the FFT: the new
+// samples are appended to the carried history, convolved, and the valid part
+// of the product is exactly those samples' outputs. The speaker hands it a
+// whole period, or a shorter block when a low-latency stream has the speaker to
+// itself; a block LONGER than it was sized for panics, which is the correct
+// failure for a bug in the caller rather than silently computing a wrong
+// answer. Tests prove the general overlap-save MATH via fft_test.go, and that
+// different block sizes give the same output (TestEQFIRIsTheSameInHalfBlocks).
 //
 // The input is real, so each period is transformed with a complex FFT of
 // HALF the block size and the usual even/odd split (realFFT), and only the
@@ -80,7 +82,7 @@ type eqFIR struct {
 	band     int
 	fadeFrom int // band to crossfade FROM on the next period, or -1
 	m        int // filter length (taps)
-	period   int // fixed new-samples-per-call this was sized for
+	period   int // the longest block (new samples per call) this was sized for
 	rf       *realFFT
 	overlap  []float64 // last m-1 raw input samples carried across periods
 
@@ -149,36 +151,37 @@ func newEQFIRBands(bands [][]float64, periodSamples int) *eqFIR {
 	}
 }
 
-// process filters exactly f.period samples, returning f.out — reused
-// across calls, so the result must be consumed before the next call to
-// process (true of every call site in this package: Chain.Process reads
-// it back within the same period it was produced in, never retains it
-// across periods). Panics if len(x) != f.period — see the type doc.
+// process filters len(x) samples, 1 to f.period, returning a prefix of
+// f.out — reused across calls, so the result must be consumed before the next
+// call to process (true of every call site in this package: Chain.Process
+// reads it back within the same period it was produced in, never retains it
+// across periods). Panics if len(x) is 0 or more than f.period.
 func (f *eqFIR) process(x []float64) []float64 {
-	if len(x) != f.period {
-		panic("eqFIR.process: called with a different length than newEQFIR was sized for")
+	n := len(x)
+	if n == 0 || n > f.period {
+		panic("eqFIR.process: called with a longer block than newEQFIR was sized for")
 	}
 
 	in := f.in
 	copy(in, f.overlap)
 	copy(in[f.m-1:], x)
-	for i := f.m - 1 + len(x); i < len(in); i++ {
+	for i := f.m - 1 + n; i < len(in); i++ {
 		in[i] = 0
 	}
 	f.rf.forward(in, f.spec)
 
+	out := f.out[:n]
 	if f.fadeFrom >= 0 {
-		f.convolve(f.hs[f.fadeFrom], f.fadeOut)
+		f.convolve(f.hs[f.fadeFrom], f.fadeOut[:n])
 	}
-	f.convolve(f.hs[f.band], f.out)
+	f.convolve(f.hs[f.band], out)
 	if f.fadeFrom >= 0 {
 		// Linear crossfade across the period from the old band's output to
 		// the new one's — both filtered the same input history, so this is
 		// a change of curve, faded so it does not land as a step.
-		out := f.out
-		n := float64(len(out))
+		fn := float64(n)
 		for i := range out {
-			w := float64(i+1) / n
+			w := float64(i+1) / fn
 			out[i] = f.fadeOut[i]*(1-w) + out[i]*w
 		}
 		f.fadeFrom = -1
@@ -187,8 +190,8 @@ func (f *eqFIR) process(x []float64) []float64 {
 	// Carry the last m-1 RAW input samples for the next call — history of
 	// the signal, not of the filtered output. They are the tail of the
 	// block just assembled.
-	copy(f.overlap, in[len(x):len(x)+f.m-1])
-	return f.out
+	copy(f.overlap, in[n:n+f.m-1])
+	return out
 }
 
 // convolve multiplies the block's spectrum by h and writes the valid part

@@ -13,18 +13,19 @@ const (
 // source reports a low-latency stream. The blocking write otherwise keeps the
 // ring full (171ms), and everything in it is lead the stream must have
 // arrived with: lead must exceed the ring's occupancy plus the period being
-// built, so 64ms plus the 43ms period needs ~107ms.
+// built. With 512-frame pulls this is 48ms + 10.67ms = 58.67ms,
+// before network jitter and scheduling overhead. Voice still uses 2048 frames.
 //
-// Measured on a Radar, 2026-10-24, by the kernel's own DL1 underflow count
-// (the hardware ring running dry, a click each): 50ms gave 181 in four
-// minutes, 58ms about one every 20s, 64ms none over two four-minute runs.
-// Lower is not available on this loop; a stall of more than the target
-// empties the ring. Do not go below 64 without that count.
-const shallowRingFrames = 64 * 48
+// The earlier 64ms floor was inferred from Auddrv_DL1_Interrupt_Handler
+// messages. The vendor handler treats equal DMA pointers as a full ring wrap,
+// so status reads near an IRQ can produce false underflow messages. Validate
+// with mtk_pcm_I2S0dl1_pointer underflow / ALSA XRUN, player underruns and audio,
+// not the IRQ message count alone. See docs/experiments/sendspin-latency-2026-10-24.md.
+const shallowRingFrames = 48 * 48
 
 // maxRingWait bounds one wait. It has to exceed a period (43ms) or the ring
 // never drains: the first cap, 40ms, left a Radar holding 125ms.
-const maxRingWait = 120 * time.Millisecond
+const maxRingWait = 140 * time.Millisecond
 
 // ringWait is how long to hold off building the next period so the ring
 // drains to target from d queued frames.
@@ -33,4 +34,17 @@ func ringWait(d, target int) time.Duration {
 		return 0
 	}
 	return min(time.Duration(d-target)*time.Second/48000, maxRingWait)
+}
+
+const lowLatencyPeriodFrames = 512
+
+// sourcePeriodBytes is the length of the period the pull source is asked to
+// build, in stereo S16 bytes. A quarter of the loop's when a low-latency stream has
+// the speaker to itself; a voice period is a whole one and so is everything
+// mixed against it. Everything but this choice is length-agnostic.
+func sourcePeriodBytes(voiceReady, lowLatency bool) int {
+	if lowLatency && !voiceReady {
+		return lowLatencyPeriodFrames * 4
+	}
+	return loopPeriodFrames * 4
 }

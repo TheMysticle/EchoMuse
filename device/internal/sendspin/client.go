@@ -343,8 +343,11 @@ func (c *Client) applySettings(p playerSettings) {
 // Called from one goroutine only.
 func (c *Client) Fill(out []byte, playAt time.Time, uncertain time.Duration) bool {
 	oc := c.oc.Load()
-	if oc == nil {
-		oc = NewOutputClock(time.Duration(len(out)/4) * time.Second / outRate)
+	// A clock is made for one period length. When the speaker changes it (a
+	// voice turn needs whole periods where a low-latency stream gets shorter ones) the
+	// spacing of the readings changes with it, so the loop starts over.
+	if period := time.Duration(len(out)/4) * time.Second / outRate; oc == nil || oc.Nominal() != period {
+		oc = NewOutputClock(period)
 		c.oc.Store(oc)
 	}
 	var at time.Time
@@ -353,6 +356,7 @@ func (c *Client) Fill(out []byte, playAt time.Time, uncertain time.Duration) boo
 	} else {
 		at = oc.Observe(playAt)
 	}
+	c.player.waitForPeriod(len(out)/4, at, fillWaitDeadline(time.Now(), playAt, uncertain))
 	return c.player.Fill(out, at)
 }
 

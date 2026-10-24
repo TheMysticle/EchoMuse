@@ -81,6 +81,9 @@ func NewOutputClock(period time.Duration) *OutputClock {
 	return &OutputClock{nominal: float64(period), per: float64(period)}
 }
 
+// Nominal is the period the clock was made for.
+func (c *OutputClock) Nominal() time.Duration { return time.Duration(c.nominal) }
+
 // Observe takes this period's measured DAC time and returns the smoothed one.
 func (c *OutputClock) Observe(measured time.Time) time.Time {
 	if !c.valid {

@@ -228,6 +228,8 @@ func logSendspinStats(st sendspin.Status) {
 	p := st.Player
 	log.Printf("[sendspin] playing: synced=%v syncErr=%dus buffered=%dms snaps=%d corrections=%d underruns=%d lateDrops=%d lastErr=%dus",
 		st.Synced, st.SyncErrUs, st.BufferedMs, p.Snaps, p.Corrections, p.Underruns, p.LateDrops, p.LastErrorUs)
+	log.Printf("[sendspin] fill wait: waits=%d recovered=%d timeouts=%d max=%dus",
+		p.Waits, p.WaitRecovered, p.WaitTimeouts, p.WaitMaxUs)
 }
 
 // logSendspinSync puts the minute's time exchanges beside the counts above:

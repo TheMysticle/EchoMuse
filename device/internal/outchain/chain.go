@@ -103,6 +103,11 @@ type peakLimiter interface {
 	takeStats() (maxReductionDb float64, clipped, clippedBypassed uint64)
 }
 
+// MaxPeriodFrames is the longest block the chain is asked to process: the
+// speaker's loop period. The stock FIR is sized for it; shorter blocks work.
+// internal/bindings/speaker pins its own period to this by test.
+const MaxPeriodFrames = 2048
+
 // Chain runs EQ → bass guard → limiter on stereo S16_LE periods.
 //
 // Order is em_eq's: the guard removes excursion the driver cannot deliver,
@@ -432,14 +437,15 @@ func (c *Chain) beginProcess() (applied *Params, active bool) {
 // signal domain, in place, ending at the backstop clip.
 func (c *Chain) runMono(x []float64) {
 	frames := len(x)
-	// FIR on/off is decided in apply(), but SIZED here — this is the first
-	// point the chain knows the period's frame count. In production this
-	// never changes between calls, so sizing happens once; a device that
-	// somehow called Process with a varying frames count would panic
-	// inside eqFIR.process, which is the right failure for that bug
-	// rather than a wrong answer.
+	// FIR on/off is decided in apply(), but SIZED here, once. The speaker
+	// hands over a whole period or a shorter block (a block shorter than the
+	// size is exact); a block LONGER than MaxPeriodFrames would panic inside
+	// eqFIR.process, which is the right failure for that bug rather than a
+	// wrong answer.
 	if c.wantFIR && c.fir == nil {
-		c.fir = newEQFIRBands(c.firBands, frames)
+		// Sized for the longest period whatever this one is: a stream may
+		// open with a short block and a voice reply then needs a whole one.
+		c.fir = newEQFIRBands(c.firBands, max(frames, MaxPeriodFrames))
 		c.fir.startOn(radarEQBand(math.Float64frombits(c.preTarget.Load()), c.firBounds))
 	} else if !c.wantFIR && c.fir != nil {
 		c.fir = nil

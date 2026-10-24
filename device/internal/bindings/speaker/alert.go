@@ -67,6 +67,14 @@ func (a *AlertAudio) Stop() {
 	a.speech = nil
 }
 func (a *AlertAudio) Active() bool { a.mu.Lock(); defer a.mu.Unlock(); return a.active }
+
+// SetSlices says how many mixes make one period of duck ramp (see Mixer).
+func (a *AlertAudio) SetSlices(n int) {
+	a.mu.Lock()
+	a.duck.SetSlices(n)
+	a.mu.Unlock()
+}
+
 func (a *AlertAudio) Mix(out []byte, voice bool, duckTarget int32) []byte {
 	a.mu.Lock()
 	defer a.mu.Unlock()

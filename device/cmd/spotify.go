@@ -69,11 +69,18 @@ func (m *musicMux) Active() bool {
 	// While this Echo leads a group its audio is held in the leader, ahead of
 	// the speaker, after the engine has stopped looking busy.
 	spActive := func() bool { return spl != nil && (spl.Active() || groupActive()) }
+	// A low-lead Sendspin queue can briefly be empty between packets. Keep
+	// pulling (silence if necessary) so the speaker stays shallow and its
+	// output clock keeps ticking. A competing Spotify stream may still take
+	// over; stream/end, clear and disconnect clear Sendspin's LowLatency flag.
+	ssActive := func() bool {
+		return ss != nil && (ss.Active() || (ss.LowLatency() && !spActive()))
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	switch m.owner {
 	case ownSendspin:
-		if ss != nil && ss.Active() {
+		if ssActive() {
 			return true
 		}
 	case ownSpotify:
@@ -82,7 +89,7 @@ func (m *musicMux) Active() bool {
 		}
 	}
 	m.owner = ownNone
-	if ss != nil && ss.Active() {
+	if ssActive() {
 		m.owner = ownSendspin
 		return true
 	}

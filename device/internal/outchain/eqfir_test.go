@@ -82,14 +82,79 @@ func TestEQFIRReturnsNilForEmptyTaps(t *testing.T) {
 	}
 }
 
-func TestEQFIRPanicsOnWrongLength(t *testing.T) {
-	fir := newEQFIR([]float64{1, 0, 0}, 8)
-	defer func() {
-		if recover() == nil {
-			t.Fatal("expected a panic calling process with the wrong length")
+func TestEQFIRPanicsOnABlockLongerThanItWasSizedFor(t *testing.T) {
+	for _, n := range []int{9, 0} {
+		fir := newEQFIR([]float64{1, 0, 0}, 8)
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Fatalf("expected a panic calling process with %d samples", n)
+				}
+			}()
+			fir.process(make([]float64, n))
+		}()
+	}
+}
+
+// The speaker feeds the chain half a period when a low-latency stream has it
+// to itself, and a whole one for a voice turn, so one filter sees both in any
+// order. This panicked on a Radar the first time (the filter insisted on one
+// length); the output has to be the same filtering however the signal is cut.
+func TestEQFIRIsTheSameInHalfBlocks(t *testing.T) {
+	rng := rand.New(rand.NewSource(7))
+	h := randomSlice(rng, 2048, 0.05) // the production filter length
+	x := randomSlice(rng, 2048*8, 1.0)
+	want := naiveFilter(x, h)
+
+	cuts := map[string][]int{
+		"all_half":    {1024},
+		"all_quarter": {512},
+		"mixed":       {2048, 1024, 1024, 2048, 1024, 1024, 1024, 1024, 512, 512, 1024, 2048},
+		"odd_pieces":  {1000, 48, 2000, 1, 1023, 17, 2047},
+	}
+	for name, lens := range cuts {
+		t.Run(name, func(t *testing.T) {
+			fir := newEQFIR(h, 2048)
+			got := make([]float64, 0, len(x))
+			for pos, i := 0, 0; pos < len(x); i++ {
+				n := min(lens[i%len(lens)], len(x)-pos)
+				got = append(got, fir.process(x[pos:pos+n])...)
+				pos += n
+			}
+			if len(got) != len(x) {
+				t.Fatalf("got %d samples, want %d", len(got), len(x))
+			}
+			for i := range want {
+				if math.Abs(got[i]-want[i]) > 1e-8 {
+					t.Fatalf("sample %d: got %v want %v", i, got[i], want[i])
+				}
+			}
+		})
+	}
+}
+
+// Switching band mid-stream crossfades across the block it lands in, whatever
+// its length.
+func TestEQFIRCrossfadesAcrossAShortBlock(t *testing.T) {
+	rng := rand.New(rand.NewSource(3))
+	a := randomSlice(rng, 64, 0.1)
+	b := randomSlice(rng, 64, 0.1)
+	fir := newEQFIRBands([][]float64{a, b}, 256)
+	x := randomSlice(rng, 128, 1)
+	fir.process(x)
+	fir.setBand(1)
+	out := fir.process(x)
+	if len(out) != 128 {
+		t.Fatalf("got %d samples", len(out))
+	}
+	for i, v := range out {
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			t.Fatalf("sample %d is %v", i, v)
 		}
-	}()
-	fir.process(make([]float64, 7))
+	}
+	if fir.fadeFrom != -1 {
+		t.Fatal("the crossfade did not complete in the block")
+	}
 }
 
 func TestEQFIRResetClearsHistory(t *testing.T) {

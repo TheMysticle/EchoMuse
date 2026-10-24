@@ -229,9 +229,19 @@ func (p *PcmSpeaker) SetMusicSource(s MusicSource) {
 // pause between the two (scheduler, GC) a late measurement: +4–10ms
 // readings every minute on C95, 2026-10-01 (#707). The bracket's width says
 // how much to trust the reading, and the source is told.
-func (p *PcmSpeaker) pullSource() []byte {
+func (p *PcmSpeaker) pullSource(n int) []byte {
+	buf := p.srcBuf[:n]
 	box := p.src.Load()
-	if box == nil || !box.s.Active() {
+	if box == nil {
+		return nil
+	}
+	// Keep silence shallow too when a low-lead stream temporarily runs dry.
+	// Otherwise the unpaced silence fills the hardware ring, and the next
+	// arriving audio must wait for that extra queue to drain before recovering.
+	if sh, ok := box.s.(interface{ LowLatency() bool }); ok && sh.LowLatency() {
+		p.throttleRing()
+	}
+	if !box.s.Active() {
 		return nil
 	}
 	// A source that ignores playAt is not worth a procfs read. os.ReadFile
@@ -242,7 +252,7 @@ func (p *PcmSpeaker) pullSource() []byte {
 	// answer. Default is to read, so a source that says nothing keeps
 	// today's behaviour.
 	if nc, ok := box.s.(interface{ NeedsClock() bool }); ok && !nc.NeedsClock() {
-		if !box.s.Fill(p.srcBuf, time.Time{}, 0) {
+		if !box.s.Fill(buf, time.Time{}, 0) {
 			if total, shout := p.srcStarve.Note(time.Now(), p.srcLastNs.Load()); shout {
 				log.Printf("[speaker] music source starved — %d period(s) since boot "+
 					"it had audio for and could not fill; a brief click is this", total)
@@ -250,10 +260,7 @@ func (p *PcmSpeaker) pullSource() []byte {
 			return nil
 		}
 		p.srcLastNs.Store(time.Now().UnixNano())
-		return p.srcBuf
-	}
-	if sh, ok := box.s.(interface{ LowLatency() bool }); ok && sh.LowLatency() {
-		p.throttleRing()
+		return buf
 	}
 	before := time.Now()
 	b, err := os.ReadFile(p.statusFile)
@@ -289,8 +296,8 @@ func (p *PcmSpeaker) pullSource() []byte {
 			p.alsaMargin.Thin(), MarginFloorFrames)
 	}
 	playAt := now.Add(time.Duration(d) * time.Second / 48000)
-	p.dacStep.note(playAt, read, string(b), time.Duration(len(p.srcBuf)/4)*time.Second/48000)
-	if !box.s.Fill(p.srcBuf, playAt, read/2) {
+	p.dacStep.note(playAt, read, string(b), time.Duration(len(buf)/4)*time.Second/48000)
+	if !box.s.Fill(buf, playAt, read/2) {
 		// The pull path's underrun. The channel-fed planes have counted and
 		// logged theirs since v7; this one discarded it silently, so a brief
 		// dropout on Spotify or Sendspin audio left no trace anywhere.
@@ -301,7 +308,7 @@ func (p *PcmSpeaker) pullSource() []byte {
 		return nil
 	}
 	p.srcLastNs.Store(now.UnixNano())
-	return p.srcBuf
+	return buf
 }
 
 // throttleRing waits until the ring has drained to the shallow target, so the
@@ -318,6 +325,17 @@ func (p *PcmSpeaker) throttleRing() {
 	if w := ringWait(d, shallowRingFrames); w > 0 {
 		time.Sleep(w)
 	}
+}
+
+// sourceLowLatency reports whether the pull source is a stream that arrives
+// with little lead, and so wants the shallow ring and shorter periods.
+func (p *PcmSpeaker) sourceLowLatency() bool {
+	box := p.src.Load()
+	if box == nil {
+		return false
+	}
+	ll, ok := box.s.(interface{ LowLatency() bool })
+	return ok && ll.LowLatency()
 }
 
 // SourceAudible is MusicAudible for the pull source alone.
@@ -649,9 +667,21 @@ func (p *PcmSpeaker) silenceLoop() {
 		} else if p.music.playing {
 			p.report(p.music.drained(), "music")
 		}
+		// The source period is a quarter of the loop's when a low-latency Sendspin
+		// stream is the only thing playing: the source must have audio for
+		// the period it is asked to build, so a shorter one lowers the lead
+		// the stream needs by the difference (32ms).
+		sourceBytes := periodBytes
 		if music == nil && !p.music.playing && !p.music.isActive() {
-			music = p.pullSource()
+			sourceBytes = sourcePeriodBytes(voice != nil, p.sourceLowLatency())
+			music = p.pullSource(sourceBytes)
 		}
+		slices := 1
+		if voice == nil && sourceBytes < periodBytes {
+			slices = periodBytes / sourceBytes
+		}
+		p.mixer.SetSlices(slices)
+		p.alert.SetSlices(slices)
 
 		var response responsePeriod
 		hasResponse := voice != nil
@@ -710,11 +740,11 @@ func (p *PcmSpeaker) silenceLoop() {
 			out = p.mixer.Mix(voice, music, duckTarget)
 			process := out != nil
 			if out == nil {
-				out = silencePeriod
+				out = silencePeriod[:sourceBytes]
 				if !p.chain.Idle() {
 					// Filter tails still ringing out of the last audio.
-					copy(p.chainBuf, silencePeriod)
-					out, process = p.chainBuf, true
+					copy(p.chainBuf[:sourceBytes], silencePeriod[:sourceBytes])
+					out, process = p.chainBuf[:sourceBytes], true
 				}
 			}
 			if process {
