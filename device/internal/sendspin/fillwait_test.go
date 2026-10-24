@@ -8,11 +8,11 @@ import (
 func TestFillWaitDeadlinePreservesHardwareReserve(t *testing.T) {
 	now := time.Now()
 	for _, tc := range []struct{ lead, uncertainty, want time.Duration }{
-		{48 * time.Millisecond, 0, 24 * time.Millisecond},
-		{48 * time.Millisecond, 3 * time.Millisecond, 21 * time.Millisecond},
-		{2 * time.Second, 0, 24 * time.Millisecond},
-		{20 * time.Millisecond, 0, -4 * time.Millisecond},
-		{48 * time.Millisecond, -time.Second, 24 * time.Millisecond},
+		{48 * time.Millisecond, 0, 32 * time.Millisecond},
+		{48 * time.Millisecond, 3 * time.Millisecond, 29 * time.Millisecond},
+		{2 * time.Second, 0, 32 * time.Millisecond},
+		{12 * time.Millisecond, 0, -4 * time.Millisecond},
+		{48 * time.Millisecond, -time.Second, 32 * time.Millisecond},
 	} {
 		if got := fillWaitDeadline(now, now.Add(tc.lead), tc.uncertainty).Sub(now); got != tc.want {
 			t.Fatalf("lead %v uncertainty %v: %v, want %v", tc.lead, tc.uncertainty, got, tc.want)

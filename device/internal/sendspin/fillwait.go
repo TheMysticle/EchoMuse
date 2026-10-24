@@ -6,12 +6,12 @@ import (
 )
 
 // The next period's timestamp is fixed by already-queued ALSA audio. Missing
-// network data may still arrive before that audio drains. Spend at most 24ms
-// of that existing lead, leaving 24ms for DSP, the write and scheduler lateness.
+// network data may still arrive before that audio drains. Spend at most 32ms
+// of that existing lead, leaving 16ms for DSP, the write and scheduler lateness.
 // This changes when we build the period, never when we schedule it to play.
 const (
-	fillWaitReserve = 24 * time.Millisecond
-	maxFillWait     = 24 * time.Millisecond
+	fillWaitReserve = 16 * time.Millisecond
+	maxFillWait     = 32 * time.Millisecond
 )
 
 func fillWaitDeadline(now, measured time.Time, uncertain time.Duration) time.Time {

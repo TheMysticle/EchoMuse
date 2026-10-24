@@ -1,0 +1,1058 @@
+[
+  {
+    "observedAt": "2026-10-24 18:57:33",
+    "reserveMs": 24,
+    "arrivalLeadMs": {
+      "min": 42,
+      "median": 76,
+      "max": 87
+    },
+    "playerReportedAt": "2026/10/24 18:56:53",
+    "player": {
+      "syncErr": 444,
+      "buffered": 60,
+      "snaps": 0,
+      "corrections": 0,
+      "underruns": 0,
+      "lateDrops": 0,
+      "lastErr": 0
+    },
+    "wait": {
+      "waits": 1,
+      "recovered": 0,
+      "timeouts": 0,
+      "max": 0
+    },
+    "sender": {
+      "running": true,
+      "source": "alsa_output.pci-0000_0f_00.4.analog-stereo.monitor",
+      "latencyMs": 63,
+      "leadMs": 60,
+      "gapMaxMs": 11,
+      "commitMaxMs": 1,
+      "sync": "1 in sync",
+      "error": "",
+      "chunkMs": 10,
+      "captureRequestMs": 5
+    },
+    "pcmPointerUnderflows": 0,
+    "kernelBootRetained": true
+  },
+  {
+    "observedAt": "2026-10-24 18:58:33",
+    "reserveMs": 24,
+    "arrivalLeadMs": {
+      "min": 36,
+      "median": 57,
+      "max": 81
+    },
+    "playerReportedAt": "2026/10/24 18:57:53",
+    "player": {
+      "syncErr": 218,
+      "buffered": 11,
+      "snaps": 2,
+      "corrections": 9,
+      "underruns": 1,
+      "lateDrops": 0,
+      "lastErr": -94
+    },
+    "wait": {
+      "waits": 391,
+      "recovered": 390,
+      "timeouts": 1,
+      "max": 24247
+    },
+    "sender": {
+      "running": true,
+      "source": "alsa_output.pci-0000_0f_00.4.analog-stereo.monitor",
+      "latencyMs": 63,
+      "leadMs": 60,
+      "gapMaxMs": 11,
+      "commitMaxMs": 1,
+      "sync": "1 in sync",
+      "error": "",
+      "chunkMs": 10,
+      "captureRequestMs": 5
+    },
+    "pcmPointerUnderflows": 0,
+    "kernelBootRetained": true
+  },
+  {
+    "observedAt": "2026-10-24 18:59:33",
+    "reserveMs": 24,
+    "arrivalLeadMs": {
+      "min": 39,
+      "median": 56,
+      "max": 59
+    },
+    "playerReportedAt": "2026/10/24 18:58:53",
+    "player": {
+      "syncErr": 160,
+      "buffered": 6,
+      "snaps": 2,
+      "corrections": 15,
+      "underruns": 1,
+      "lateDrops": 0,
+      "lastErr": -88
+    },
+    "wait": {
+      "waits": 695,
+      "recovered": 694,
+      "timeouts": 1,
+      "max": 24247
+    },
+    "sender": {
+      "running": true,
+      "source": "alsa_output.pci-0000_0f_00.4.analog-stereo.monitor",
+      "latencyMs": 63,
+      "leadMs": 60,
+      "gapMaxMs": 11,
+      "commitMaxMs": 1,
+      "sync": "1 in sync",
+      "error": "",
+      "chunkMs": 10,
+      "captureRequestMs": 5
+    },
+    "pcmPointerUnderflows": 0,
+    "kernelBootRetained": true
+  },
+  {
+    "observedAt": "2026-10-24 19:00:33",
+    "reserveMs": 24,
+    "arrivalLeadMs": {
+      "min": 20,
+      "median": 56,
+      "max": 60
+    },
+    "playerReportedAt": "2026/10/24 18:59:53",
+    "player": {
+      "syncErr": 141,
+      "buffered": 6,
+      "snaps": 3,
+      "corrections": 19,
+      "underruns": 2,
+      "lateDrops": 1,
+      "lastErr": -29
+    },
+    "wait": {
+      "waits": 720,
+      "recovered": 718,
+      "timeouts": 2,
+      "max": 24247
+    },
+    "sender": {
+      "running": true,
+      "source": "alsa_output.pci-0000_0f_00.4.analog-stereo.monitor",
+      "latencyMs": 63,
+      "leadMs": 60,
+      "gapMaxMs": 11,
+      "commitMaxMs": 1,
+      "sync": "1 in sync",
+      "error": "",
+      "chunkMs": 10,
+      "captureRequestMs": 5
+    },
+    "pcmPointerUnderflows": 0,
+    "kernelBootRetained": true
+  },
+  {
+    "observedAt": "2026-10-24 19:01:33",
+    "reserveMs": 24,
+    "arrivalLeadMs": {
+      "min": 45,
+      "median": 56,
+      "max": 59
+    },
+    "playerReportedAt": "2026/10/24 19:00:53",
+    "player": {
+      "syncErr": 122,
+      "buffered": 6,
+      "snaps": 3,
+      "corrections": 24,
+      "underruns": 2,
+      "lateDrops": 1,
+      "lastErr": -70
+    },
+    "wait": {
+      "waits": 746,
+      "recovered": 744,
+      "timeouts": 2,
+      "max": 24247
+    },
+    "sender": {
+      "running": true,
+      "source": "alsa_output.pci-0000_0f_00.4.analog-stereo.monitor",
+      "latencyMs": 68,
+      "leadMs": 65,
+      "gapMaxMs": 11,
+      "commitMaxMs": 1,
+      "sync": "1 in sync",
+      "error": "",
+      "chunkMs": 10,
+      "captureRequestMs": 5
+    },
+    "pcmPointerUnderflows": 0,
+    "kernelBootRetained": true
+  },
+  {
+    "observedAt": "2026-10-24 19:02:33",
+    "reserveMs": 24,
+    "arrivalLeadMs": {
+      "min": 35,
+      "median": 59,
+      "max": 63
+    },
+    "playerReportedAt": "2026/10/24 19:01:53",
+    "player": {
+      "syncErr": 110,
+      "buffered": 10,
+      "snaps": 1,
+      "corrections": 8,
+      "underruns": 0,
+      "lateDrops": 0,
+      "lastErr": -94
+    },
+    "wait": {
+      "waits": 33,
+      "recovered": 33,
+      "timeouts": 0,
+      "max": 24495
+    },
+    "sender": {
+      "running": true,
+      "source": "alsa_output.pci-0000_0f_00.4.analog-stereo.monitor",
+      "latencyMs": 68,
+      "leadMs": 65,
+      "gapMaxMs": 11,
+      "commitMaxMs": 1,
+      "sync": "1 in sync",
+      "error": "",
+      "chunkMs": 10,
+      "captureRequestMs": 5
+    },
+    "pcmPointerUnderflows": 0,
+    "kernelBootRetained": true
+  },
+  {
+    "observedAt": "2026-10-24 19:03:33",
+    "reserveMs": 24,
+    "arrivalLeadMs": {
+      "min": 30,
+      "median": 60,
+      "max": 63
+    },
+    "playerReportedAt": "2026/10/24 19:02:53",
+    "player": {
+      "syncErr": 104,
+      "buffered": 24,
+      "snaps": 1,
+      "corrections": 14,
+      "underruns": 0,
+      "lateDrops": 0,
+      "lastErr": -92
+    },
+    "wait": {
+      "waits": 50,
+      "recovered": 50,
+      "timeouts": 0,
+      "max": 24495
+    },
+    "sender": {
+      "running": true,
+      "source": "alsa_output.pci-0000_0f_00.4.analog-stereo.monitor",
+      "latencyMs": 68,
+      "leadMs": 65,
+      "gapMaxMs": 11,
+      "commitMaxMs": 1,
+      "sync": "1 in sync",
+      "error": "",
+      "chunkMs": 10,
+      "captureRequestMs": 5
+    },
+    "pcmPointerUnderflows": 0,
+    "kernelBootRetained": true
+  },
+  {
+    "observedAt": "2026-10-24 19:04:33",
+    "reserveMs": 24,
+    "arrivalLeadMs": {
+      "min": 39,
+      "median": 60,
+      "max": 63
+    },
+    "playerReportedAt": "2026/10/24 19:03:53",
+    "player": {
+      "syncErr": 95,
+      "buffered": 25,
+      "snaps": 1,
+      "corrections": 19,
+      "underruns": 0,
+      "lateDrops": 0,
+      "lastErr": -99
+    },
+    "wait": {
+      "waits": 94,
+      "recovered": 94,
+      "timeouts": 0,
+      "max": 24495
+    },
+    "sender": {
+      "running": true,
+      "source": "alsa_output.pci-0000_0f_00.4.analog-stereo.monitor",
+      "latencyMs": 68,
+      "leadMs": 65,
+      "gapMaxMs": 11,
+      "commitMaxMs": 1,
+      "sync": "1 in sync",
+      "error": "",
+      "chunkMs": 10,
+      "captureRequestMs": 5
+    },
+    "pcmPointerUnderflows": 0,
+    "kernelBootRetained": true
+  },
+  {
+    "observedAt": "2026-10-24 19:05:33",
+    "reserveMs": 24,
+    "arrivalLeadMs": {
+      "min": 21,
+      "median": 60,
+      "max": 63
+    },
+    "playerReportedAt": "2026/10/24 19:04:53",
+    "player": {
+      "syncErr": 89,
+      "buffered": 8,
+      "snaps": 3,
+      "corrections": 23,
+      "underruns": 2,
+      "lateDrops": 0,
+      "lastErr": -73
+    },
+    "wait": {
+      "waits": 143,
+      "recovered": 141,
+      "timeouts": 2,
+      "max": 24495
+    },
+    "sender": {
+      "running": true,
+      "source": "alsa_output.pci-0000_0f_00.4.analog-stereo.monitor",
+      "latencyMs": 68,
+      "leadMs": 65,
+      "gapMaxMs": 12,
+      "commitMaxMs": 1,
+      "sync": "1 in sync",
+      "error": "",
+      "chunkMs": 10,
+      "captureRequestMs": 5
+    },
+    "pcmPointerUnderflows": 0,
+    "kernelBootRetained": true
+  },
+  {
+    "observedAt": "2026-10-24 19:06:33",
+    "reserveMs": 24,
+    "arrivalLeadMs": {
+      "min": 39,
+      "median": 60,
+      "max": 63
+    },
+    "playerReportedAt": "2026/10/24 19:05:53",
+    "player": {
+      "syncErr": 85,
+      "buffered": 12,
+      "snaps": 3,
+      "corrections": 29,
+      "underruns": 2,
+      "lateDrops": 0,
+      "lastErr": -78
+    },
+    "wait": {
+      "waits": 198,
+      "recovered": 196,
+      "timeouts": 2,
+      "max": 24495
+    },
+    "sender": {
+      "running": true,
+      "source": "alsa_output.pci-0000_0f_00.4.analog-stereo.monitor",
+      "latencyMs": 72,
+      "leadMs": 70,
+      "gapMaxMs": 11,
+      "commitMaxMs": 1,
+      "sync": "1 in sync",
+      "error": "",
+      "chunkMs": 10,
+      "captureRequestMs": 5
+    },
+    "pcmPointerUnderflows": 0,
+    "kernelBootRetained": true
+  },
+  {
+    "observedAt": "2026-10-24 19:07:33",
+    "reserveMs": 24,
+    "arrivalLeadMs": {
+      "min": 42,
+      "median": 66,
+      "max": 72
+    },
+    "playerReportedAt": "2026/10/24 19:06:53",
+    "player": {
+      "syncErr": 81,
+      "buffered": 21,
+      "snaps": 1,
+      "corrections": 2,
+      "underruns": 0,
+      "lateDrops": 0,
+      "lastErr": -54
+    },
+    "wait": {
+      "waits": 0,
+      "recovered": 0,
+      "timeouts": 0,
+      "max": 0
+    },
+    "sender": {
+      "running": true,
+      "source": "alsa_output.pci-0000_0f_00.4.analog-stereo.monitor",
+      "latencyMs": 72,
+      "leadMs": 70,
+      "gapMaxMs": 11,
+      "commitMaxMs": 1,
+      "sync": "1 in sync",
+      "error": "",
+      "chunkMs": 10,
+      "captureRequestMs": 5
+    },
+    "pcmPointerUnderflows": 0,
+    "kernelBootRetained": true
+  },
+  {
+    "observedAt": "2026-10-24 19:08:33",
+    "reserveMs": 24,
+    "arrivalLeadMs": {
+      "min": 31,
+      "median": 68,
+      "max": 72
+    },
+    "playerReportedAt": "2026/10/24 19:07:53",
+    "player": {
+      "syncErr": 78,
+      "buffered": 15,
+      "snaps": 1,
+      "corrections": 8,
+      "underruns": 0,
+      "lateDrops": 0,
+      "lastErr": -81
+    },
+    "wait": {
+      "waits": 8,
+      "recovered": 8,
+      "timeouts": 0,
+      "max": 18233
+    },
+    "sender": {
+      "running": true,
+      "source": "alsa_output.pci-0000_0f_00.4.analog-stereo.monitor",
+      "latencyMs": 72,
+      "leadMs": 70,
+      "gapMaxMs": 11,
+      "commitMaxMs": 1,
+      "sync": "1 in sync",
+      "error": "",
+      "chunkMs": 10,
+      "captureRequestMs": 5
+    },
+    "pcmPointerUnderflows": 0,
+    "kernelBootRetained": true
+  },
+  {
+    "observedAt": "2026-10-24 19:09:59",
+    "reserveMs": 16,
+    "playerReportedAt": "2026/10/24 19:09:52",
+    "player": {
+      "syncErr": 486,
+      "buffered": 40,
+      "snaps": 0,
+      "corrections": 0,
+      "underruns": 0,
+      "lateDrops": 6,
+      "lastErr": 129085
+    },
+    "wait": {
+      "waits": 1,
+      "recovered": 0,
+      "timeouts": 1,
+      "max": 32775
+    },
+    "sender": {
+      "running": true,
+      "source": "alsa_output.pci-0000_0f_00.4.analog-stereo.monitor",
+      "latencyMs": 62,
+      "leadMs": 60,
+      "gapMaxMs": 11,
+      "commitMaxMs": 2,
+      "sync": "2 in sync",
+      "error": "",
+      "chunkMs": 10,
+      "captureRequestMs": 5
+    },
+    "pcmPointerUnderflows": 0,
+    "kernelBootRetained": true
+  },
+  {
+    "observedAt": "2026-10-24 19:10:59",
+    "reserveMs": 16,
+    "arrivalLeadMs": {
+      "min": 35,
+      "median": 60,
+      "max": 63
+    },
+    "playerReportedAt": "2026/10/24 19:10:52",
+    "player": {
+      "syncErr": 259,
+      "buffered": 13,
+      "snaps": 1,
+      "corrections": 6,
+      "underruns": 0,
+      "lateDrops": 17,
+      "lastErr": -60
+    },
+    "wait": {
+      "waits": 31,
+      "recovered": 30,
+      "timeouts": 1,
+      "max": 32775
+    },
+    "sender": {
+      "running": true,
+      "source": "alsa_output.pci-0000_0f_00.4.analog-stereo.monitor",
+      "latencyMs": 62,
+      "leadMs": 60,
+      "gapMaxMs": 11,
+      "commitMaxMs": 1,
+      "sync": "1 in sync",
+      "error": "",
+      "chunkMs": 10,
+      "captureRequestMs": 5
+    },
+    "pcmPointerUnderflows": 0,
+    "kernelBootRetained": true
+  },
+  {
+    "observedAt": "2026-10-24 19:11:59",
+    "reserveMs": 16,
+    "arrivalLeadMs": {
+      "min": 41,
+      "median": 60,
+      "max": 63
+    },
+    "playerReportedAt": "2026/10/24 19:11:52",
+    "player": {
+      "syncErr": 182,
+      "buffered": 7,
+      "snaps": 1,
+      "corrections": 10,
+      "underruns": 0,
+      "lateDrops": 17,
+      "lastErr": -108
+    },
+    "wait": {
+      "waits": 46,
+      "recovered": 45,
+      "timeouts": 1,
+      "max": 32775
+    },
+    "sender": {
+      "running": true,
+      "source": "alsa_output.pci-0000_0f_00.4.analog-stereo.monitor",
+      "latencyMs": 62,
+      "leadMs": 60,
+      "gapMaxMs": 11,
+      "commitMaxMs": 1,
+      "sync": "1 in sync",
+      "error": "",
+      "chunkMs": 10,
+      "captureRequestMs": 5
+    },
+    "pcmPointerUnderflows": 0,
+    "kernelBootRetained": true
+  },
+  {
+    "observedAt": "2026-10-24 19:12:59",
+    "reserveMs": 16,
+    "arrivalLeadMs": {
+      "min": 40,
+      "median": 60,
+      "max": 63
+    },
+    "playerReportedAt": "2026/10/24 19:12:52",
+    "player": {
+      "syncErr": 147,
+      "buffered": 7,
+      "snaps": 1,
+      "corrections": 16,
+      "underruns": 0,
+      "lateDrops": 17,
+      "lastErr": -91
+    },
+    "wait": {
+      "waits": 59,
+      "recovered": 58,
+      "timeouts": 1,
+      "max": 32775
+    },
+    "sender": {
+      "running": true,
+      "source": "alsa_output.pci-0000_0f_00.4.analog-stereo.monitor",
+      "latencyMs": 62,
+      "leadMs": 60,
+      "gapMaxMs": 11,
+      "commitMaxMs": 0,
+      "sync": "1 in sync",
+      "error": "",
+      "chunkMs": 10,
+      "captureRequestMs": 5
+    },
+    "pcmPointerUnderflows": 0,
+    "kernelBootRetained": true
+  },
+  {
+    "observedAt": "2026-10-24 19:13:59",
+    "reserveMs": 16,
+    "arrivalLeadMs": {
+      "min": 15,
+      "median": 60,
+      "max": 63
+    },
+    "playerReportedAt": "2026/10/24 19:13:52",
+    "player": {
+      "syncErr": 124,
+      "buffered": 11,
+      "snaps": 2,
+      "corrections": 20,
+      "underruns": 1,
+      "lateDrops": 17,
+      "lastErr": -71
+    },
+    "wait": {
+      "waits": 94,
+      "recovered": 92,
+      "timeouts": 2,
+      "max": 32775
+    },
+    "sender": {
+      "running": true,
+      "source": "alsa_output.pci-0000_0f_00.4.analog-stereo.monitor",
+      "latencyMs": 62,
+      "leadMs": 60,
+      "gapMaxMs": 11,
+      "commitMaxMs": 1,
+      "sync": "1 in sync",
+      "error": "",
+      "chunkMs": 10,
+      "captureRequestMs": 5
+    },
+    "pcmPointerUnderflows": 0,
+    "kernelBootRetained": true
+  },
+  {
+    "observedAt": "2026-10-24 19:14:59",
+    "reserveMs": 16,
+    "arrivalLeadMs": {
+      "min": 38,
+      "median": 60,
+      "max": 63
+    },
+    "playerReportedAt": "2026/10/24 19:14:52",
+    "player": {
+      "syncErr": 113,
+      "buffered": 16,
+      "snaps": 2,
+      "corrections": 25,
+      "underruns": 1,
+      "lateDrops": 17,
+      "lastErr": -100
+    },
+    "wait": {
+      "waits": 124,
+      "recovered": 122,
+      "timeouts": 2,
+      "max": 32775
+    },
+    "sender": {
+      "running": true,
+      "source": "alsa_output.pci-0000_0f_00.4.analog-stereo.monitor",
+      "latencyMs": 62,
+      "leadMs": 60,
+      "gapMaxMs": 11,
+      "commitMaxMs": 1,
+      "sync": "1 in sync",
+      "error": "",
+      "chunkMs": 10,
+      "captureRequestMs": 5
+    },
+    "pcmPointerUnderflows": 0,
+    "kernelBootRetained": true
+  },
+  {
+    "observedAt": "2026-10-24 19:15:59",
+    "reserveMs": 16,
+    "arrivalLeadMs": {
+      "min": 42,
+      "median": 61,
+      "max": 64
+    },
+    "playerReportedAt": "2026/10/24 19:15:53",
+    "player": {
+      "syncErr": 103,
+      "buffered": 11,
+      "snaps": 1,
+      "corrections": 2,
+      "underruns": 0,
+      "lateDrops": 0,
+      "lastErr": -73
+    },
+    "wait": {
+      "waits": 43,
+      "recovered": 43,
+      "timeouts": 0,
+      "max": 12957
+    },
+    "sender": {
+      "running": true,
+      "source": "alsa_output.pci-0000_0f_00.4.analog-stereo.monitor",
+      "latencyMs": 67,
+      "leadMs": 65,
+      "gapMaxMs": 11,
+      "commitMaxMs": 1,
+      "sync": "1 in sync",
+      "error": "",
+      "chunkMs": 10,
+      "captureRequestMs": 5
+    },
+    "pcmPointerUnderflows": 0,
+    "kernelBootRetained": true
+  },
+  {
+    "observedAt": "2026-10-24 19:16:59",
+    "reserveMs": 16,
+    "arrivalLeadMs": {
+      "min": 44,
+      "median": 61,
+      "max": 64
+    },
+    "playerReportedAt": "2026/10/24 19:16:53",
+    "player": {
+      "syncErr": 95,
+      "buffered": 15,
+      "snaps": 1,
+      "corrections": 8,
+      "underruns": 0,
+      "lateDrops": 0,
+      "lastErr": -75
+    },
+    "wait": {
+      "waits": 60,
+      "recovered": 60,
+      "timeouts": 0,
+      "max": 12957
+    },
+    "sender": {
+      "running": true,
+      "source": "alsa_output.pci-0000_0f_00.4.analog-stereo.monitor",
+      "latencyMs": 68,
+      "leadMs": 65,
+      "gapMaxMs": 11,
+      "commitMaxMs": 1,
+      "sync": "1 in sync",
+      "error": "",
+      "chunkMs": 10,
+      "captureRequestMs": 5
+    },
+    "pcmPointerUnderflows": 0,
+    "kernelBootRetained": true
+  },
+  {
+    "observedAt": "2026-10-24 19:17:59",
+    "reserveMs": 16,
+    "arrivalLeadMs": {
+      "min": 44,
+      "median": 61,
+      "max": 65
+    },
+    "playerReportedAt": "2026/10/24 19:17:53",
+    "player": {
+      "syncErr": 91,
+      "buffered": 15,
+      "snaps": 1,
+      "corrections": 14,
+      "underruns": 0,
+      "lateDrops": 0,
+      "lastErr": -89
+    },
+    "wait": {
+      "waits": 83,
+      "recovered": 83,
+      "timeouts": 0,
+      "max": 12957
+    },
+    "sender": {
+      "running": true,
+      "source": "alsa_output.pci-0000_0f_00.4.analog-stereo.monitor",
+      "latencyMs": 67,
+      "leadMs": 65,
+      "gapMaxMs": 11,
+      "commitMaxMs": 1,
+      "sync": "1 in sync",
+      "error": "",
+      "chunkMs": 10,
+      "captureRequestMs": 5
+    },
+    "pcmPointerUnderflows": 0,
+    "kernelBootRetained": true
+  },
+  {
+    "observedAt": "2026-10-24 19:18:59",
+    "reserveMs": 16,
+    "arrivalLeadMs": {
+      "min": 40,
+      "median": 61,
+      "max": 65
+    },
+    "playerReportedAt": "2026/10/24 19:18:53",
+    "player": {
+      "syncErr": 88,
+      "buffered": 20,
+      "snaps": 1,
+      "corrections": 20,
+      "underruns": 0,
+      "lateDrops": 0,
+      "lastErr": -68
+    },
+    "wait": {
+      "waits": 118,
+      "recovered": 118,
+      "timeouts": 0,
+      "max": 12957
+    },
+    "sender": {
+      "running": true,
+      "source": "alsa_output.pci-0000_0f_00.4.analog-stereo.monitor",
+      "latencyMs": 68,
+      "leadMs": 65,
+      "gapMaxMs": 11,
+      "commitMaxMs": 1,
+      "sync": "1 in sync",
+      "error": "",
+      "chunkMs": 10,
+      "captureRequestMs": 5
+    },
+    "pcmPointerUnderflows": 0,
+    "kernelBootRetained": true
+  },
+  {
+    "observedAt": "2026-10-24 19:19:59",
+    "reserveMs": 16,
+    "arrivalLeadMs": {
+      "min": 22,
+      "median": 61,
+      "max": 64
+    },
+    "playerReportedAt": "2026/10/24 19:19:53",
+    "player": {
+      "syncErr": 85,
+      "buffered": 13,
+      "snaps": 1,
+      "corrections": 26,
+      "underruns": 0,
+      "lateDrops": 0,
+      "lastErr": -96
+    },
+    "wait": {
+      "waits": 129,
+      "recovered": 129,
+      "timeouts": 0,
+      "max": 28559
+    },
+    "sender": {
+      "running": true,
+      "source": "alsa_output.pci-0000_0f_00.4.analog-stereo.monitor",
+      "latencyMs": 68,
+      "leadMs": 65,
+      "gapMaxMs": 11,
+      "commitMaxMs": 1,
+      "sync": "1 in sync",
+      "error": "",
+      "chunkMs": 10,
+      "captureRequestMs": 5
+    },
+    "pcmPointerUnderflows": 0,
+    "kernelBootRetained": true
+  },
+  {
+    "observedAt": "2026-10-24 19:20:59",
+    "reserveMs": 16,
+    "arrivalLeadMs": {
+      "min": 42,
+      "median": 61,
+      "max": 64
+    },
+    "playerReportedAt": "2026/10/24 19:20:53",
+    "player": {
+      "syncErr": 81,
+      "buffered": 18,
+      "snaps": 1,
+      "corrections": 32,
+      "underruns": 0,
+      "lateDrops": 0,
+      "lastErr": -70
+    },
+    "wait": {
+      "waits": 152,
+      "recovered": 152,
+      "timeouts": 0,
+      "max": 28559
+    },
+    "sender": {
+      "running": true,
+      "source": "alsa_output.pci-0000_0f_00.4.analog-stereo.monitor",
+      "rmsDb": -120.0,
+      "peakDb": -120.0,
+      "latencyMs": 68,
+      "leadMs": 65,
+      "gapMaxMs": 11,
+      "commitMaxMs": 1,
+      "sync": "1 in sync",
+      "error": "",
+      "chunkMs": 10,
+      "captureRequestMs": 5
+    },
+    "pcmPointerUnderflows": 0,
+    "kernelBootRetained": true
+  },
+  {
+    "observedAt": "2026-10-24 19:21:23",
+    "reserveMs": 16,
+    "arrivalLeadMs": {
+      "min": 42,
+      "median": 61,
+      "max": 64
+    },
+    "playerReportedAt": "2026/10/24 19:20:53",
+    "player": {
+      "syncErr": 81,
+      "buffered": 18,
+      "snaps": 1,
+      "corrections": 32,
+      "underruns": 0,
+      "lateDrops": 0,
+      "lastErr": -70
+    },
+    "wait": {
+      "waits": 152,
+      "recovered": 152,
+      "timeouts": 0,
+      "max": 28559
+    },
+    "sender": {
+      "running": true,
+      "source": "alsa_output.pci-0000_0f_00.4.analog-stereo.monitor",
+      "rmsDb": -33.7,
+      "peakDb": -25.7,
+      "latencyMs": 68,
+      "leadMs": 65,
+      "gapMaxMs": 11,
+      "commitMaxMs": 1,
+      "sync": "1 in sync",
+      "error": "",
+      "chunkMs": 10,
+      "captureRequestMs": 5
+    },
+    "pcmPointerUnderflows": 0,
+    "kernelBootRetained": true
+  },
+  {
+    "observedAt": "2026-10-24 19:22:23",
+    "reserveMs": 16,
+    "arrivalLeadMs": {
+      "min": 41,
+      "median": 61,
+      "max": 65
+    },
+    "playerReportedAt": "2026/10/24 19:21:53",
+    "player": {
+      "syncErr": 77,
+      "buffered": 18,
+      "snaps": 1,
+      "corrections": 38,
+      "underruns": 0,
+      "lateDrops": 0,
+      "lastErr": -71
+    },
+    "wait": {
+      "waits": 165,
+      "recovered": 165,
+      "timeouts": 0,
+      "max": 28559
+    },
+    "sender": {
+      "running": true,
+      "source": "alsa_output.pci-0000_0f_00.4.analog-stereo.monitor",
+      "rmsDb": -33.3,
+      "peakDb": -24.5,
+      "latencyMs": 68,
+      "leadMs": 65,
+      "gapMaxMs": 11,
+      "commitMaxMs": 1,
+      "sync": "1 in sync",
+      "error": "",
+      "chunkMs": 10,
+      "captureRequestMs": 5
+    },
+    "pcmPointerUnderflows": 0,
+    "kernelBootRetained": true
+  },
+  {
+    "observedAt": "2026-10-24 19:23:23",
+    "reserveMs": 16,
+    "arrivalLeadMs": {
+      "min": 40,
+      "median": 61,
+      "max": 64
+    },
+    "playerReportedAt": "2026/10/24 19:22:53",
+    "player": {
+      "syncErr": 74,
+      "buffered": 11,
+      "snaps": 1,
+      "corrections": 44,
+      "underruns": 0,
+      "lateDrops": 0,
+      "lastErr": -83
+    },
+    "wait": {
+      "waits": 179,
+      "recovered": 179,
+      "timeouts": 0,
+      "max": 28559
+    },
+    "sender": {
+      "running": true,
+      "source": "alsa_output.pci-0000_0f_00.4.analog-stereo.monitor",
+      "rmsDb": -30.0,
+      "peakDb": -22.4,
+      "latencyMs": 67,
+      "leadMs": 65,
+      "gapMaxMs": 11,
+      "commitMaxMs": 1,
+      "sync": "1 in sync",
+      "error": "",
+      "chunkMs": 10,
+      "captureRequestMs": 5
+    },
+    "pcmPointerUnderflows": 0,
+    "kernelBootRetained": true
+  }
+]

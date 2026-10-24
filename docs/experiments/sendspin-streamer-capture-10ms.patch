@@ -1,0 +1,77 @@
+--- a/streamer.py
++++ b/streamer.py
+@@ -81,7 +81,8 @@
+ CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "sendspin-streamer"
+ 
+ RATE = 48000
+-CHUNK_MS = 20
++CHUNK_MS = 10
++CAPTURE_LATENCY_MS = 5
+ FRAMES = RATE * CHUNK_MS // 1000
+ CHUNK_BYTES = FRAMES * 4  # s16le stereo
+ PLAYER_ROLE = "player@v1"
+@@ -252,7 +253,7 @@
+     async def start(self) -> None:
+         self.proc = await asyncio.create_subprocess_exec(
+             "parec", f"--device={self.name}", "--format=s16le", f"--rate={RATE}",
+-            "--channels=2", "--latency-msec=10",
++            "--channels=2", f"--latency-msec={CAPTURE_LATENCY_MS}",
+             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+ 
+     async def chunks(self):
+@@ -635,8 +636,8 @@
+         fmt = AudioFormat(sample_rate=RATE, bit_depth=16, channels=2)
+         target_ms: float | None = None
+         off_chunks = 0
+-        gaps: deque[float] = deque(maxlen=500)
+-        commits: deque[float] = deque(maxlen=500)
++        gaps: deque[float] = deque(maxlen=10_000 // CHUNK_MS)
++        commits: deque[float] = deque(maxlen=10_000 // CHUNK_MS)
+         last_chunk = None
+         while self.running:
+             src = (ClickSource() if name == "test:clicks" else
+@@ -682,7 +683,7 @@
+                         target_ms = ms
+                     elif target_ms is not None:
+                         off_chunks = off_chunks + 1 if abs(ms - target_ms) > 150 else 0
+-                        if off_chunks >= 25:
++                        if off_chunks * CHUNK_MS >= 500:
+                             log.info("lead drifted to %.0fms from %.0fms; re-anchoring", ms, target_ms)
+                             self.restart_stream = True
+                 self.source_error = "the input stopped producing audio"
+@@ -731,6 +732,8 @@
+             "latencyMs": None if self.latency_ms is None else round(self.latency_ms),
+             "leadMs": self.settings.lead_ms,
+             "gapMaxMs": round(self.gap_max_ms),
++            "chunkMs": CHUNK_MS,
++            "captureRequestMs": CAPTURE_LATENCY_MS,
+             "commitMaxMs": round(self.commit_max_ms),
+             "sync": self.sync_note,
+             "error": self.source_error,
+--- a/index.html
++++ b/index.html
+@@ -121,12 +121,12 @@
+       <div id="srcErr" class="err"></div>
+       <div class="latency">
+         <div><span class="n" id="lat">--</span><span class="u">ms</span></div>
+-        <div class="cap">scheduled delay from capture to the speakers</div>
++        <div class="cap">remaining scheduled playback lead</div>
+         <div class="cap" id="jit" style="margin-top:6px"></div>
+       </div>
+       <p class="hint">Pick your laptop's mic or line-in port, tick the players you want, and press Start.
+-        The number above is how far ahead the players are told to play; add roughly 30 ms for capture,
+-        and a few ms for the player's own output. Use "Test clicks" to judge it by ear.</p>
++        The number above excludes capture buffering. Capture uses 10 ms batches and requests a 5 ms
++        audio-server buffer; actual buffering depends on the source. End-to-end delay needs a loopback measurement.</p>
+     </section>
+ 
+     <section class="card">
+@@ -202,7 +202,7 @@
+   $('rms').textContent = s.running ? s.rmsDb.toFixed(0) + ' dB' : '-- dB';
+   $('peak').textContent = s.running ? 'peak ' + s.peakDb.toFixed(0) + ' dB' : 'peak -- dB';
+   $('lat').textContent = s.latencyMs == null ? '--' : s.latencyMs;
+-  $('jit').textContent = s.running ? 'this PC, last 10 s: worst gap between chunks ' + s.gapMaxMs + ' ms (20 ms is perfect), worst send ' + s.commitMaxMs + ' ms' : '';
++  $('jit').textContent = s.running ? 'this PC, last 10 s: worst gap between chunks ' + s.gapMaxMs + ' ms (' + s.chunkMs + ' ms expected), worst send ' + s.commitMaxMs + ' ms' : '';
+   if (document.activeElement !== $('lead')) $('lead').value = String(s.leadMs);
+   $('srcErr').textContent = s.error || '';
+   $('syncNote').textContent = s.sync ? ' - ' + s.sync : '';

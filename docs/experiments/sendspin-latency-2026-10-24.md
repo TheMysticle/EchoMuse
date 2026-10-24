@@ -187,3 +187,113 @@ sync is user-reported. Simultaneous voice remains outside this validation.
 Evidence: [retained playback counters](sendspin-latency-2026-10-24-milestone.txt).
 The race-enabled Sendspin, speaker and output-chain suites passed again
 (cached); the candidate's ARM build and targeted vet had already passed.
+
+
+## Sender capture experiment after the receiver milestone
+
+Receiver milestone commit: `b562fb9`. Firmware remains the same; no new flash.
+The sender is outside this Git repository. Its reviewed change is preserved as
+[an applicable patch](sendspin-streamer-capture-10ms.patch), relative to
+`/home/Mysticle/sendspin-streamer`. Original files were backed up under
+`/tmp/echomuse-capture-candidate/` before installation.
+
+- Capture/submission batches: 20 ms → 10 ms, matching the existing 480-frame FLAC.
+- Requested Pulse capture latency: 10 ms → 5 ms. `pactl` reports the old capture
+  stream's fragment as 1920 bytes / 480 stereo frames (10 ms), and the new one
+  as 1024 bytes / 256 stereo frames (5.33 ms). These are negotiated parameters,
+  not a physical latency measurement. PipeWire reports zero in its latency
+  fields here; that must not be interpreted as actual zero buffering.
+- Preserve the ten-second diagnostics window and 500 ms sustained-drift trigger
+  when doubling the submission frequency.
+- Relabel the displayed number as remaining scheduled playback lead. Replace
+  the unmeasured fixed “add 30 ms” claim with the actual requested capture
+  configuration and a requirement for loopback measurement.
+
+Validation: Python compilation, tone/click chunk sizes and initialization,
+and 100 consecutive 10 ms FLAC submissions for each of mono and stereo emitted
+one packet immediately per submission, with exact 10 ms durations and a
+contiguous timestamp progression. The desktop-monitor capture is then tested
+live with the same connected Radar. The HTPC sender is unchanged.
+
+### 60 ms lead trial
+
+The sender displayed approximately 62–63 ms remaining lead, with ordinary
+capture gaps of 11 ms and encode/send maxima of about 1 ms after initialization.
+The first minute after the lead change contained one player underrun. Another
+occurred at 18:59:39, with the next summary reporting minimum arrival lead
+20 ms, median 56 ms, two cumulative player underruns, three snaps and one late
+drop. The PCM pointer-underflow count remained zero. This is a failed stability
+trial, not evidence that 60 ms is dropout-free. Lead was raised to 65 ms for a
+separate trial while keeping the reduced capture buffering.
+
+
+The 65 ms trial also failed: after initially clean reports, the 19:04:53 summary
+recorded two player underruns / wait timeouts, minimum arrival lead 21 ms,
+median 60 ms, and zero late drops. Sender snapshots every two seconds covering
+that minute showed maximum capture gaps of 11 ms and commit times of 1 ms,
+pointing away from sender capture/encoding stalls for those events. The
+hardware pointer-underflow count stayed zero. A brief 70 ms trial was clean
+but was not run for ten minutes before moving to the next receiver experiment.
+
+### Further receiver experiment: use more of the existing queue as jitter margin
+
+Keep FLAC lossless, the 48 ms target queue and 512-frame pulls. Reduce the
+processing/scheduling reserve from 24 to 16 ms and raise the maximum missing-data
+wait from 24 to 32 ms. This does not change scheduled playback timestamps; it
+spends up to eight more milliseconds of existing queued audio waiting for a
+late packet. The tradeoff is less reserve against DSP or scheduler stalls.
+The preceding failed trial still had roughly 27 ms queued at a missing-data
+timeout, with no hardware pointer underflows, motivating the controlled test.
+The successful milestone binary is retained separately before deployment.
+
+
+The revised receiver is `20261024-1908-dev`, SHA-256
+`43352bc3b0611bc4ba272b5e23b692281ca1fc5214129669ca487cc54e9428b7`.
+The prior successful firmware is backed up on the device at
+`/data/local/bin/server_b.milestone-b562fb9`. The updated reserve passed the
+race-enabled Sendspin suite and ARM cross-build before deployment.
+
+At 60 ms lead the revised receiver still had one steady-playback underrun
+in the 19:13:52 report, with minimum arrival lead 15 ms and median 60 ms.
+The hardware pointer-underflow count remained zero. The trial moved to 65 ms;
+its first report at 19:15:53 had zero underruns, zero late drops, one startup
+snap, 43 recovered waits and no wait timeouts. This is the baseline for the
+subsequent soak, not a continuation of the earlier 65 ms trial on the old build.
+
+During reconnection the sender temporarily displayed “2 in sync” for two
+selected discovery aliases of the same Bedroom device. Removing the duplicate
+manual selection restored the correct one-device count without restarting
+playback. The sender's count is not evidence of acoustic sync between devices.
+
+
+## Pre-commit verification of `20261024-1908-dev`, 65 ms lead
+
+Firmware `20261024-1908-dev` (fill-wait reserve 16 ms, maximum wait 32 ms), the
+sender at 65 ms lead with 10 ms capture batches. Read from the Radar's console
+after each manual step; no restarts of the server between 19:09:38 and 19:47.
+
+| Step (device time) | Result |
+|---|---|
+| Steady playback 19:01–19:28 | 0 player underruns, 0 late drops, 1 startup snap, arrival median 61 ms, minimum 39–43 ms |
+| 19:28:52 sender/Wi-Fi stall | One chunk 33 ms past its deadline: +1 underrun, +8 late drops, +1 snap, +1 fill-wait timeout. Recovered unaided; the next minute was clean |
+| Wake word mid-stream, 19:32:44 | Voice turn 58 periods, 0 underruns. Music ducked and returned cleanly (user). No new Sendspin underruns |
+| Volume buttons, first run, 19:34:40 | The minute added 3 underruns, 3 snaps, 3 timeouts, with arrival never late (minimum 20 ms). Cause not established: the same minute follows the wake test and contains a beam switch |
+| Volume buttons, controlled rerun, 19:39:01 | 4 minutes of control then 6 presses: counters unchanged, arrival minimum 42 ms |
+| Spotify 19:42–19:45, then back to the stream | No `ALSA buffer thin` lines while Spotify played (ring at its normal depth); the stream resynced at once (`syncErr` 162 µs, 0 underruns) |
+| Stop/start twice, 19:46:57 and 19:47:14 | Resynced both times. The first minute after a start carries about 15 late drops and one wait timeout, as in the earlier runs |
+
+Throughout: 0 `mtk_pcm_I2S0dl1_pointer underflow`, 0 server panics, DAC resets 0.
+`Interrupt_Handler underflow` lines reached 77 over about 6 hours of uptime,
+roughly one a minute, with no relation to any counter above.
+
+Not covered: Music Assistant and grouped playback, simultaneous voice at
+sub-80 ms (voice still builds whole 2048-frame periods), a 10-minute soak at
+65 ms after the stop/start steps, and any measurement of end-to-end acoustic delay.
+Two earlier 60 ms trials and a 65 ms trial on the previous build each dropped out
+once or twice a few minutes in; 65 ms on this build had one stall in 46 minutes.
+
+Known noise: the `[speaker] ALSA buffer thin` warning compares against the whole
+2048-frame period, so with the 48 ms ring (2304 frames) it fires every 10–40 s
+during healthy low-latency playback. It should be silenced for low-latency
+streams in a follow-up; not changed here because that code is not in the
+tested binary.

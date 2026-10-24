@@ -1,12 +1,12 @@
-cat /proc/uptime 
+cat /proc/uptime
  1009.04 2244.28
-readlink /data/local/bin/server 
+readlink /data/local/bin/server
  server_b
-dmesg | busybox head -1 
+dmesg | busybox head -1
  [    0.000000] <1>-(0)[0:swapper][name:setup&]Booting Linux on physical CPU 0x0
-dmesg | busybox grep -c "mtk_pcm_I2S0dl1_pointer underflow" 
+dmesg | busybox grep -c "mtk_pcm_I2S0dl1_pointer underflow"
  0
-busybox grep "\[sendspin\]" /tmp/server.log | busybox tail -60 
+busybox grep "\[sendspin\]" /tmp/server.log | busybox tail -60
  2026/10/24 13:37:14 [sendspin] arrival: n=6000 lead min=36ms median=78ms max=88ms
 2026/10/24 13:37:14 [sendspin] playing: synced=true syncErr=171us buffered=41ms snaps=3 corrections=10 underruns=2 lateDrops=16 lastErr=-76us
 2026/10/24 13:37:14 [sendspin] sync: n=20 delay=1054..1386us meas=47571886270..47571886570us offset=47571886356us drift=0.00ppm
@@ -67,7 +67,7 @@ busybox grep "\[sendspin\]" /tmp/server.log | busybox tail -60
 2026/10/24 13:51:15 [sendspin] playing: synced=true syncErr=70us buffered=49ms snaps=6 corrections=79 underruns=5 lateDrops=17 lastErr=-95us
 2026/10/24 13:51:15 [sendspin] sync: n=20 delay=1057..1799us meas=47571882678..47571883474us offset=47571883237us drift=-3.75ppm
 2026/10/24 13:51:15 [sendspin] dac: n=5635 resid=-366..1727us big=2038 nudgeMax=2us gated=0 coasted=4 resets=0 rate=-0.8ppm
-busybox grep -E "ALSA|margin|dac step|source starved" /tmp/server.log | busybox tail -3 
+busybox grep -E "ALSA|margin|dac step|source starved" /tmp/server.log | busybox tail -3
  2026/10/24 13:44:05 [speaker] ALSA buffer thin — 2032 frames queued (42.3ms), lowest seen >=1840 (a bound, not the minimum — see AlsaMargin), 2 period(s) under 2048 since boot; this is where a click comes from
 2026/10/24 13:45:47 [speaker] dac step +3197us (read 6837us) prev{state=RUNNING owner_pid=509 trigger_time=1262304029.735429001 tstamp=1792842347.980854115 delay=2288 avail=5904 avail_max=5904 hw_ptr=31260432 appl_ptr=31262720} now{state=RUNNING owner_pid=509 trigger_time=1262304029.735429001 tstamp=1792842347.991402961 delay=2288 avail=5904 avail_max=5904 hw_ptr=31260944 appl_ptr=31263232}
 2026/10/24 13:45:48 [speaker] dac step -3228us (read 185us) prev{state=RUNNING owner_pid=509 trigger_time=1262304029.735429001 tstamp=1792842347.991402961 delay=2288 avail=5904 avail_max=5904 hw_ptr=31260944 appl_ptr=31263232} now{state=RUNNING owner_pid=509 trigger_time=1262304029.735429001 tstamp=1792842348.004879499 delay=2144 avail=6048 avail_max=0 hw_ptr=31261600 appl_ptr=31263744}
