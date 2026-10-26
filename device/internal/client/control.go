@@ -632,6 +632,7 @@ func (c *ControlClient) connect(ctx context.Context, server *discovery.ServerInf
 	c.serverBaseURL = baseURL
 	c.lastServer = server
 	c.serverAddrMu.Unlock()
+	saveLastController(server)
 
 	reg := map[string]interface{}{
 		"type":      "register",
@@ -1737,8 +1738,12 @@ func (c *ControlClient) writeJSON(v interface{}) error {
 
 func (c *ControlClient) lastKnownServer() *discovery.ServerInfo {
 	c.serverAddrMu.RLock()
-	defer c.serverAddrMu.RUnlock()
-	return c.lastServer
+	s := c.lastServer
+	c.serverAddrMu.RUnlock()
+	if s == nil {
+		s = loadLastController() // the controller of the previous run
+	}
+	return s
 }
 
 // probeTCP reports whether addr (host:port) accepts a TCP connection

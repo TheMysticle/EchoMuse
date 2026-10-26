@@ -24,9 +24,16 @@ type ServerInfo struct {
 	TLSPort int
 }
 
+// OnMiss, when set, is told after each browse in FindServer that found
+// nothing, with how many in a row have. cmd wires it to wifi.RejoinIfDeaf:
+// an Echo that has stopped hearing multicast finds nothing however often it
+// asks.
+var OnMiss func(consecutive int)
+
 func FindServer(ctx context.Context) (*ServerInfo, error) {
 	backoff := 5 * time.Second
 	maxBackoff := 60 * time.Second
+	misses := 0
 
 	for {
 		if ctx.Err() != nil {
@@ -41,6 +48,10 @@ func FindServer(ctx context.Context) (*ServerInfo, error) {
 		}
 
 		log.Printf("mDNS: no server found, retrying in %s", backoff)
+		misses++
+		if OnMiss != nil {
+			OnMiss(misses)
+		}
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()

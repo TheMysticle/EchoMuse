@@ -34,6 +34,7 @@ import (
 	"github.com/wilbowes/EchoMuse/internal/config"
 	"github.com/wilbowes/EchoMuse/internal/cpuprofile"
 	"github.com/wilbowes/EchoMuse/internal/cue"
+	"github.com/wilbowes/EchoMuse/internal/discovery"
 	"github.com/wilbowes/EchoMuse/internal/earcon"
 	"github.com/wilbowes/EchoMuse/internal/listen"
 	"github.com/wilbowes/EchoMuse/internal/platform"
@@ -106,6 +107,7 @@ func main() {
 	// is rolled back before anything tries to use the network — same
 	// self-healing philosophy as the A/B binary slots.
 	wifi.RecoverIfPending()
+	discovery.OnMiss = func(n int) { wifi.RejoinIfDeaf(n) }
 
 	// Amazon's WiFi Simple Setup daemon (BLE+WiFi provisioning of
 	// neighbouring Amazon devices) is useless on a repurposed device and
