@@ -862,3 +862,116 @@
  log = logging.getLogger("streamer")
  
  HERE = Path(__file__).resolve().parent
+
+# 2026-10-26: dial a ticked player for PLAYBACK while streaming, and mark the group stopped on Stop, so a grouped Echo (0207+) goes to the streamer while it streams and back to its group after
+--- a/streamer.py
++++ b/streamer.py
+@@ -29,7 +29,7 @@
+ import numpy as np
+ from aiohttp import ClientSession, ClientTimeout, TCPConnector, WSMsgType, web
+ from aiosendspin.audio.format import AudioFormat
+-from aiosendspin.models.types import PairMethod
++from aiosendspin.models.types import ConnectionReason, PairMethod
+ from aiosendspin.noise.keys import Identity, b64url_decode
+ from aiosendspin.noise.pairing import PairingAttempt
+ from aiosendspin.noise.pairing_token import decode_token
+@@ -886,8 +886,25 @@
+             self._dial(player)
+ 
+     def _dial(self, p: Player) -> None:
++        # A ticked player is dialled for PLAYBACK, the rest for DISCOVERY.
++        # aiosendspin's first server/activate carries playback only for a
++        # playback dial, and an Echo in a speaker group (firmware 0207+)
++        # keeps the group against a server that activates nothing: so with
++        # every dial a discovery one, a grouped Echo refused the streamer
++        # with concurrent_attempt for ever and could never be ticked
++        # (Lounge, 2026-10-26). An unticked player must stay a discovery
++        # dial, or merely listing an Echo here would take it off its group.
++        # Ticked counts only while streaming: a playback dial with nothing
++        # playing is admitted, then drops to no activity as the group stops,
++        # the speaker group takes the Echo back, and the 10 s retry took it
++        # again, so the two swapped it every 5 s.
+         assert self.server
+-        self.server.connect_to_client(p.url, retry_initial_connection=True, retry_indefinitely=True)
++        ticked = self.running and any(self.discovery.players.get(k) is not None
++                     and self.discovery.players[k].url == p.url
++                     for k in self.settings.selected)
++        self.server.connect_to_client(
++            p.url, retry_initial_connection=True, retry_indefinitely=True,
++            connection_reason=ConnectionReason.PLAYBACK if ticked else ConnectionReason.DISCOVERY)
+ 
+     def client_for(self, key: str):
+         p = self.discovery.players.get(key)
+@@ -960,6 +977,12 @@
+         if not on and key in s:
+             s.remove(key)
+         self.settings.save()
++        # Re-dial so the reason follows the tick: a refused player is asked
++        # again for playback now rather than at the next 10 s retry.
++        p = self.discovery.players.get(key)
++        if p is not None and key in self.settings.wanted:
++            self._dial_at[key] = time.monotonic()
++            self._dial(p)
+ 
+     def role(self, key: str):
+         c = self.client_for(key)
+@@ -1083,8 +1106,8 @@
+             _, w = await asyncio.wait_for(asyncio.open_connection(host, int(port)), 2)
+             w.close()
+             p.error = (f"{host}:{port} is up but not accepting this connection. An Echo serves one "
+-                       f"Sendspin server at a time, so Music Assistant or another streamer probably "
+-                       f"has it. Retrying every 10 s.")
++                       f"Sendspin server at a time, so Music Assistant, another streamer or its speaker "
++                       f"group probably has it. Tick it to take it over from a group. Retrying every 10 s.")
+         except (OSError, asyncio.TimeoutError, ValueError):
+             p.error = (f"can't reach {host}:{port}. Is Sendspin switched on for that Echo, is it "
+                        f"online, and is the address right?")
+@@ -1199,12 +1222,23 @@
+             self.settings.save()
+         if not self.settings.source:
+             raise ValueError("choose an input first")
+-        await self.stop_stream()
++        await self.stop_stream(end_playback=False)
+         self.running = True
+         self.source_error = ""
+         self.stream_task = asyncio.create_task(self._stream_loop())
++        self._redial_ticked()
++
++    def _redial_ticked(self) -> None:
++        """Re-dial every ticked player now, so a start asks for playback at
++        once (and a stop drops back to discovery) rather than at the next
++        10 s retry."""
++        for key in self.settings.selected:
++            p = self.discovery.players.get(key)
++            if p is not None and key in self.settings.wanted:
++                self._dial_at[key] = time.monotonic()
++                self._dial(p)
+ 
+-    async def stop_stream(self) -> None:
++    async def stop_stream(self, end_playback: bool = True) -> None:
+         self.running = False
+         if self.stream_task:
+             self.stream_task.cancel()
+@@ -1213,8 +1247,22 @@
+             except asyncio.CancelledError:
+                 pass
+             self.stream_task = None
++        # The stream loop stops only the transport, which aiosendspin leaves
++        # in PLAYING; the players then keep the playback activity and an Echo
++        # taken from its speaker group stays "busy" there after Stop
++        # (2026-10-26). Mark the group stopped so they drop it. Not on the
++        # stop inside start_stream, which would hand a grouped Echo back for
++        # the instant before the new stream asks again.
++        if end_playback:
++            for group in {id(c.group): c.group for c in self.ready_selected()}.values():
++                try:
++                    await group.stop()
++                except Exception as e:
++                    log.warning("stopping the group: %s", e)
+         self.latency_ms = None
+         self.rms_db = self.peak_db = -120.0
++        if self.server:
++            self._redial_ticked()
+ 
+     def _meter(self, pcm: bytes) -> None:
+         a = np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768.0
