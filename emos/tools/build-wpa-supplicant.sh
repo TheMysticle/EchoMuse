@@ -139,6 +139,105 @@ if 'emOS' not in s:
                 '#define PRIV_NETLINK_H\n#include <linux/netlink.h>\n#include <linux/rtnetlink.h>',1)
     open(p,'w').write(s)
 PY
+
+# 4. Re-install each new group key a few seconds after installing it. The
+#    MediaTek firmware does not start a new GTK's replay counter at the RSC:
+#    the driver zeroes the RSC field of CMD_802_11_KEY (mtk_cfg80211_add_key
+#    never reads params->seq), and the firmware takes the last group PN it
+#    has SEEN. When the AP is still sending under the old key as the new one
+#    goes in -- it waits for every station to answer group message 1, and a
+#    dozing phone delays that -- the counter is the old key's last PN, the AP
+#    starts the new key at 0, and every broadcast and multicast frame is
+#    dropped as a replay until the new key's count passes the old one: about
+#    as long as the old key lived, most of an hour after an hourly rekey. The
+#    Echo keeps every connection it opened and loses ARP and mDNS, so nothing
+#    can reach it. Re-installing the same key once the AP has switched makes
+#    the last PN seen the new key's own. A re-install before the switch
+#    changes nothing, hence several, out to 60 s. Measured 2026-10-26, see
+#    docs/experiments/echo-multicast-deafness-2026-10-26.md.
+python3 - <<'PY'
+p='src/rsn_supp/wpa.c'
+s=open(p).read()
+if 'emos_gtk_reinstall' not in s:
+    head = """
+/* emOS: see "Re-install each new group key" in build-wpa-supplicant.sh. */
+static struct {
+	enum wpa_alg alg;
+	int keyidx, tx;
+	u8 gtk[32];
+	size_t gtk_len;
+	u8 rsc[8];
+	size_t rsc_len;
+} emos_gtk;
+
+static void emos_gtk_reinstall(void *eloop_ctx, void *timeout_ctx)
+{
+	struct wpa_sm *sm = eloop_ctx;
+	int r;
+
+	r = wpa_sm_set_key(sm, emos_gtk.alg, broadcast_ether_addr,
+			   emos_gtk.keyidx, emos_gtk.tx, emos_gtk.rsc,
+			   emos_gtk.rsc_len, emos_gtk.gtk, emos_gtk.gtk_len,
+			   KEY_FLAG_GROUP_RX);
+	wpa_printf(MSG_DEBUG, "emOS: GTK re-installed (keyidx=%d) r=%d",
+		   emos_gtk.keyidx, r);
+}
+
+static void emos_gtk_reinstall_cancel(struct wpa_sm *sm)
+{
+	eloop_cancel_timeout(emos_gtk_reinstall, sm, NULL);
+	forced_memzero(&emos_gtk, sizeof(emos_gtk));
+}
+
+static void emos_gtk_reinstall_schedule(struct wpa_sm *sm,
+					const struct wpa_gtk_data *gd,
+					const u8 *gtk, int tx, const u8 *rsc)
+{
+	static const int after_s[] = { 1, 3, 10, 30, 60 };
+	size_t i;
+
+	emos_gtk_reinstall_cancel(sm);
+	if ((size_t) gd->gtk_len > sizeof(emos_gtk.gtk) ||
+	    (size_t) gd->key_rsc_len > sizeof(emos_gtk.rsc))
+		return;
+	emos_gtk.alg = gd->alg;
+	emos_gtk.keyidx = gd->keyidx;
+	emos_gtk.tx = tx;
+	os_memcpy(emos_gtk.gtk, gtk, gd->gtk_len);
+	emos_gtk.gtk_len = gd->gtk_len;
+	os_memcpy(emos_gtk.rsc, rsc, gd->key_rsc_len);
+	emos_gtk.rsc_len = gd->key_rsc_len;
+	for (i = 0; i < ARRAY_SIZE(after_s); i++)
+		eloop_register_timeout(after_s[i], 0, emos_gtk_reinstall,
+				       sm, NULL);
+}
+
+static int wpa_supplicant_install_gtk(struct wpa_sm *sm,"""
+    old = "\nstatic int wpa_supplicant_install_gtk(struct wpa_sm *sm,"
+    assert s.count(old) == 1, "install_gtk definition not found"
+    s = s.replace(old, head, 1)
+    old = """		forced_memzero(gtk_buf, sizeof(gtk_buf));
+		return -1;
+	}
+	forced_memzero(gtk_buf, sizeof(gtk_buf));
+"""
+    new = """		forced_memzero(gtk_buf, sizeof(gtk_buf));
+		return -1;
+	}
+	emos_gtk_reinstall_schedule(sm, gd, _gtk, gd->tx, key_rsc);
+	forced_memzero(gtk_buf, sizeof(gtk_buf));
+"""
+    assert s.count(old) == 1, "install_gtk success path not found"
+    s = s.replace(old, new, 1)
+    # A key re-installed after the link has gone is a key for nobody, and the
+    # timers hold sm, so they must not outlive a disassociation or the sm.
+    for fn in ('void wpa_sm_notify_disassoc(struct wpa_sm *sm)\n{\n',
+               'void wpa_sm_deinit(struct wpa_sm *sm)\n{\n'):
+        assert s.count(fn) == 1, fn
+        s = s.replace(fn, fn + '\temos_gtk_reinstall_cancel(sm);\n', 1)
+    open(p,'w').write(s)
+    print("wpa.c patched (GTK re-install)")
+PY
 cd wpa_supplicant
 cat > .config <<'CFG'
 CONFIG_DRIVER_NL80211=y
