@@ -6,21 +6,26 @@ import (
 )
 
 // The next period's timestamp is fixed by already-queued ALSA audio. Missing
-// network data may still arrive before that audio drains. Spend at most 32ms
-// of that existing lead, leaving 16ms for DSP, the write and scheduler lateness.
+// network data may still arrive before that audio drains. Spend at most 40ms
+// of that existing lead, leaving 8ms for DSP, the write and scheduler lateness.
+// The ring's depth adds no tolerance by itself: the deadline is measured from
+// when the period plays, so a packet must arrive by then less this reserve
+// whatever is queued. The reserve is the margin, and the 16ms one cost three
+// underruns in 4.5 hours at 70ms lead (2026-10-25), two of them on packets
+// that arrived 14 and 18ms before they were due.
 // This changes when we build the period, never when we schedule it to play.
 const (
-	fillWaitReserve = 16 * time.Millisecond
-	maxFillWait     = 32 * time.Millisecond
+	fillWaitReserve = 8 * time.Millisecond
+	maxFillWait     = 40 * time.Millisecond
 )
 
-// The 24/24ms budget this replaced (b562fb9). It is computed beside the real
+// The 16/32ms budget this replaced (268bbbc). It is computed beside the real
 // one only to count the periods that arrived inside the wider budget and
 // outside the old: each is an underrun the old budget would have taken, and
 // the count is how the wider one earns its smaller reserve.
 const (
-	tightFillWaitReserve = 24 * time.Millisecond
-	tightMaxFillWait     = 24 * time.Millisecond
+	tightFillWaitReserve = 16 * time.Millisecond
+	tightMaxFillWait     = 32 * time.Millisecond
 )
 
 func fillWaitDeadline(now, measured time.Time, uncertain time.Duration) time.Time {

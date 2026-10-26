@@ -433,3 +433,328 @@ at **0** across ~130 waits, so at 80 ms 268bbbc behaves like b562fb9. Its
 smaller reserve cost nothing either: no real XRUN in about four hours, two
 CPU-load phases included. The difference can only show at leads where packets
 run that late, 70 ms and under.
+
+## 2026-10-25: the streamer keeps its own timeline, against b562fb9 at 79 ms
+
+**Why stop/start lost ~10 ms.** aiosendspin 9.1.1 only ever moves a stream's
+timeline later, and two of its stages ignore the moves. The resampler that
+makes the Echo's mono stamps output from its own clock and ignores input jumps
+up to 20 ms; `_encode_for_transform_key` stamps frames from the encoder's
+`pending_timestamp_us` whenever that is within 500 ms of the commit. So frames
+left the PC earlier than the commit timeline by 0-20 ms, a different amount
+each start, and the streamer's `latencyMs` (the commit timeline) was not what
+the Echo received: a first start showed "100 ms" with frames carrying 78. The
+patch (`sendspin-streamer-resampler-follows-timeline.patch`) makes both stages
+follow the timeline, and gives the streamer its own (`OwnTimeline`): chunk n
+plays at anchor + n x 10 ms; the first 500 ms go out as silence while the
+anchor is measured; after that it is only steered, at most 2 ms per 2 s (under
+the Echo's 5 ms snap), except that a lead more than 10 ms short for 400 ms
+moves later at once, as the library's own rebase would. Offline simulation:
+Pulse's +12 ms capture creep after a start is absorbed in seven steps of at
+most 1.6 ms; a lasting +30 ms capture jump costs one 30 ms gap.
+
+Four stop/start and reselect cycles, Echo arrival median (raw:
+`sendspin-latency-2026-10-25-owntimeline.txt`):
+
+| | cycle 1 | 2 | 3 (reselect) | 4 |
+|---|---:|---:|---:|---:|
+| before (resampler fix only) | 76 | 76 | 76 | 70 |
+| OwnTimeline | 79 | 79 | 79 | 79 |
+
+Every start settled within 2 ms of its target; no emergency move.
+
+**20-minute soak at 80 ms**, stop/start at minute 7, reselect at 14: 0 real
+XRUNs, 18 clean minutes, and 2 underruns 12 and 22 s after the stop/start. The
+streamer's log shows every chunk in that window leaving the PC with at least
+72.9 ms of lead; the Echo received one 111 ms past its play time, ~190 ms in
+transit. Network or Echo side, the same class as the 00:47 stall at 80 ms.
+
+### Against what was running on 2026-10-24 at 16:39
+
+The user watched YouTube on the two living-room Echoes (fed by the HTPC) at
+16:39 with no audible fault. Those Echoes run `20261024-1357-dev`, which is
+b562fb9's source (built 13:57, committed 18:54 with no edits between). No log
+from them or from the HTPC exists; the same build's runs on Bedroom from this
+PC are in `sendspin-latency-2026-10-24-milestone.txt`.
+
+| | 2026-10-24 (1357 = b562fb9) | 2026-10-25 (124c763 + streamer patches) |
+|---|---|---|
+| Fill wait (budget/reserve) | 24 / 24 ms | 32 / 16 ms |
+| TCP quick ACK, core floor 4 | no, no (floor 2) | yes, yes |
+| Lead | 79 ms (≈81 shown, library timeline) | 80 ms (own timeline) |
+| Capture batches / Pulse latency | 20 ms / 10 ms | 10 ms / 5 ms |
+| DSCP | none | CS6 (WMM voice) |
+| Router 5 GHz | auto channel, acsd2 stalls | channel 44/80, acsd2 gone |
+| Bedroom playback | 48 min (13:59-14:47) + 39 min (18:13-18:52), no restarts | 20 min soak + 4 cycles, 6 restarts; 40 min rough soak the night before |
+| Steady underruns | **0 in 87 min** | **2 in ~30 min** (both just after a restart); 1 in 40 min |
+| Fill-wait timeouts after start | 0 | 1 burst |
+| Real XRUNs | 0 | 0 |
+
+The afternoon runs had no restarts in them and a worse router, and were still
+clean, so the network is not an obvious explanation by itself. Two streamer
+changes since then alter what goes on the air and have no measurement of their
+own: twice the packet rate (10 ms batches) and CS6 marking, which puts audio
+in the WMM voice queue, where many drivers send without aggregation. Either
+could lengthen a stall. Next: A/B on Bedroom with today's firmware and the
+streamer returned to 20 ms batches without DSCP, OwnTimeline kept.
+
+### A/B on Bedroom, 2026-10-25 (times +01:00, after the DST change)
+
+Same firmware (124c763) and OwnTimeline throughout; only the streamer's
+batch size, capture request and marking changed.
+
+| Run | Batches / capture / DSCP | Length | Underruns | Worst arrival min | Real XRUNs |
+|---|---|---|---:|---:|---:|
+| soak 1 (02:31) | 10 ms / 5 ms / CS6 | 20 min, stop/start + reselect | 2 | — | 0 |
+| A/B (02:04) | 20 ms / 10 ms / off | 20 min, stop/start + reselect | 0 | 39 ms | 0 |
+| soak 2 (02:27) | 10 ms / 5 ms / CS6 | 20 min, stop/start + reselect | 0 | 33 ms | 0 |
+| untouched (02:47-04:17) | 10 ms / 5 ms / CS6 | 90 min, no interaction | **0** | 20 ms | 0 |
+
+The 90-minute run matches the 87 clean minutes of 2026-10-24 at 10-15 ms less
+real delay: underruns 0, lateDrops 0, snaps 2 (both at stream start), arrival
+median 78-80 ms in every minute, one "ALSA buffer thin" note (23.3 ms queued,
+03:23:36) and no XRUN. Ping alongside: 27,193 sent, 0 lost, max 61 ms, nothing
+above 33 ms in the minute of the 20 ms arrival minimum. So today's settings do
+not stall on untouched playback; the two underruns of soak 1 followed a
+stop/start, and one in three 20-minute runs with interaction is all the
+evidence against them. 20 ms batches stay rejected for their extra ~10 ms.
+Next: long runs WITH interaction on today's settings, then DSCP off at 10 ms
+batches if those show stalls.
+
+### DSCP with interaction, automated (2026-10-25 11:14-13:14 +01:00)
+
+The streamer gained `POST /api/config` (`chunkMs`, `captureMs`, `dscp`, all
+while running; DSCP is re-marked on open sockets with no break), so both runs
+were driven from one script with no restart between them. 10 ms batches and
+5 ms capture in both, 60 min each, a stop/start or a reselect every 10 min.
+
+| Run | DSCP | Underruns | Snaps after start | Worst arrival min | Ping >20 ms / max |
+|---|---|---:|---:|---:|---|
+| A 11:14 | off | **0** | 0 | 40 ms | 65 / 40 ms |
+| B 12:14 | CS6 | **1** (12:48:33) | 1 | 11 ms | 163 / 50 ms |
+
+B's underrun came mid-stream, 9.5 min after a stop/start, not after an
+action: one packet reached the Echo ~70 ms late (arrival min 11 ms), with a
+fill-wait timeout, a snap and a 15th late drop. The streamer sent every frame
+in that window with at least 78.2 ms of lead, and ping (best-effort queue)
+saw nothing above 9.3 ms within 20 s of it. The "music source starved" lines
+right after each reselect, in both runs, are the player being removed by the
+reselect itself.
+
+Across the day, CS6 has 3 underruns in 190 min (2 in the first 20-min soak,
+1 here) and no DSCP at 10 ms batches has 0 in 60 min; yesterday's 87 clean
+minutes were also unmarked. That is short of proof, but DSCP buys nothing
+measurable and costs no delay to drop, so the streamer's default is now
+10 ms / 5 ms / DSCP off.
+
+## The remaining stalls come from the router's radio, on a 5 s grid (2026-10-25 15:25-15:50 +01:00)
+
+Read during the first 75 ms run, with the Echo untouched apart from
+read-only queries.
+
+**Nothing is lost; packets arrive late.** The PC's audio socket showed
+`retrans:0/31 dsack_dups:31` after 11 minutes: every retransmission the
+sender made was reported back by the Echo as a duplicate, so the original had
+arrived, only after the sender's ~5 ms probe timer. About three a minute.
+
+**The late ones keep time.** Logging that socket's retransmit counter once a
+second, 15 of 20 seconds with a new retransmit fell in the same two seconds of
+a 5 s cycle; 19 of 24 Echo ping replies over 10 ms (5 Hz) fell in one
+half-second of it, at 3.5 s past each multiple of 5 s of Unix time.
+
+**Every Wi-Fi client sees the same stall at the same moment.** Pinging three
+other wireless clients (.116, .82, .4; 1.6-1.9 ms median) at 5 Hz for 10
+minutes alongside the Echo: each had 52-61 replies over 10 ms peaking in the
+same half-second, and 35 of the Echo's 50 spikes were matched within 250 ms on
+all three. There was also one 4-second burst, 15:38:46-50, of 11-82 ms
+replies on all four at once.
+
+**The router's CPU and its wired side do not stall.** Five minutes of 5 Hz
+ping to the router itself (answered by its CPU): median 0.42 ms, p99 0.6 ms,
+max 8 ms, slow for 1 of the 23 Wi-Fi spikes in that window. A wired client
+(.211): max 0.3 ms. So the router's radio holds downlink to every station for
+10-30 ms on a 5 s timer while its CPU is idle. That is the "smaller 5 s
+source" left after acsd2 was stopped on 2026-10-24, and nothing on the Echo
+can remove it.
+
+Ruled out on the Echo, all read-only:
+
+| Suspect | Finding |
+|---|---|
+| Group-key rekey | The router rekeys every 3600.03 s (hh:13:20, EAPOL `R1X len=145`/`T1X len=113` in dmesg). The minutes holding one read 62 and 63 ms arrival minimum at 80 ms, which is normal. |
+| Background scans | No `bgscan` in the conf, `disable_scan_offload=1`, no scan or roam lines from the driver in 15.5 h of kernel log. |
+| Power save | WEXT `SIOCGIWPOWER` reports power management disabled; `iwpriv get_power_mode` is unsupported. Moot anyway: other stations stall at the same instant. |
+| Aggregation | Two `+RxBA` setups in 15.5 h (TID 2 and 7), none near a stall. |
+| BLE coexistence | `bleProxyEnabled=false` on Bedroom. |
+| The serial console | The USB ACM gadget logs every console write to the kernel ring, but `printk.disable_uart=Y` (one UART interrupt since boot), so reading the Echo costs no UART time. It does shorten dmesg's history to ~15 h. |
+| init's 5 s supervision loop | Reads `carrier` and the address; no supplicant or driver call. |
+
+**What drives it is not yet known; the router's settings rule some things
+out.** On the router (RAX70 on SWRT, `RT-AX95Q` profile, kernel 4.1.52), the
+Echo and the three clients that stalled with it all sit on `eth6` (5 GHz-1,
+44/80). `acsd2` is not running, band steering is off (`smart_connect_x=0`, no
+`bsd` process), radio power save is off, DTIM 1, beacon 100 TU. Still running
+and able to touch the radio periodically: `roamast` (`wl1_user_rssi=-70`),
+`conn_diag`, `networkmap`, `wlceventd`, the `amas_*` mesh daemons, plus the
+driver's own MU-MIMO/TxBF sounding (`wl1_mumimo=1`, `wl1_txbf=1`) and periodic
+calibration (`wl1_cal_period=-1`, driver default). Telling these apart needs
+the router's process wakeups on the 5 s grid, which waits until no soak is
+running: a first try at sampling every process's `/proc/<pid>/status` from the
+router's busybox shell kept a core busy for 90 s (16:00-16:01:28), and that
+minute of the 75 ms soak read a 33 ms arrival minimum against 49-56 ms
+elsewhere. No underrun, but minutes 36-37 of that run are marked as perturbed.
+
+### 75 and 70 ms, automated with interaction (2026-10-25 15:24-17:24 +01:00)
+
+Firmware 124c763 (`20261025-0030-dev`), streamer 10 ms batches / 5 ms
+capture / DSCP off, OwnTimeline. 60 min at each lead, a stop/start or a
+reselect every 10 min (six per run), Echo read each minute, 5 Hz ping and the
+audio socket's `ss` counters alongside.
+
+| Lead | Underruns | Real XRUNs | Worst arrival min | Fill waits per 10 min (pastTight) | Ping max / >20 ms |
+|---|---:|---:|---:|---|---|
+| 75 ms | **0** | 0 | 33 ms (the perturbed minute; 35 otherwise) | 6-30 (0) | 37 ms / 106 |
+| 70 ms | **0** | 0 | 26 ms | 70-112 (up to 3) | 49 ms / 89 |
+
+Both: one fill-wait timeout per stream, at its start, as at 80 ms; the
+"starved" and "ALSA buffer thin" lines fall at each reselect, from the player
+being removed. One mid-stream "ALSA buffer thin" at 70 ms (17:12:18), with no
+starvation and no underrun. The 70 ms run spent its margin: fill waits were
+3-10 times as frequent as at 75, and pastTight reached 3, so three periods
+were saved only by 268bbbc's wider budget. Neither setting has met the pass
+bar yet (2 hours with interaction, then a sync check on two Echoes); 75 ms is
+the next candidate for it, and no rare 70 ms network stall like 12:48:33's
+fell inside these two hours.
+
+### What the router does on the 5 s grid (2026-10-25 17:40-17:55, no soak running)
+
+Router threads' `voluntary_ctxt_switches` sampled at ~3 Hz for 150 s (one
+`grep` per sample; the shell loop of 16:00 was the costly part), with 5 Hz
+ping to the Echo and .116. Two threads keep a 5 s period at the stall phase:
+`fc_evt`, the Broadcom flow-cache event thread (708 wakeups, 65% in one
+half-second; all 5 ping spikes of the window within 0.03 s of one of its
+bursts), and `miniupnpd` (584, 59%), which wakes half a second earlier.
+`roamast` runs on a 10 s period at another phase and is cleared. Neither
+`miniupnpd` (`notify_interval=60`, `clean_ruleset_interval=600`) nor the flow
+cache (`Flow Timer Interval = 10000 millisecs`) has a 5 s timer of its own.
+
+**Something on the LAN does.** Listening to multicast from the PC for 90 s:
+192.168.1.50 (`f4:b1:c2:xx:xx:xx`, wired: on none of the router's radios, no
+DHCP lease) sends one 101-byte SSDP `M-SEARCH` every 5.00 s (4.78-5.22),
+always at phase 2.5 s, just before `miniupnpd` wakes. Every UPnP device
+answers each search, and the router's wireless multicast forwarding
+(`wl1_wmf_bss_enable=1`) sends the search itself to each Wi-Fi station as
+unicast.
+
+Three minutes of its search times against 10 Hz pings to three Wi-Fi
+clients: of 11-12 replies over 10 ms per client, 4-5 came 0.5-0.7 s after a
+search, a window holding 20% of the time. A second group sat 2.7-3.2 s after
+one, which .50 does not explain. So .50's search is one trigger of the
+stalls, not shown to be the only one. The test that settles it is to stop
+that device's searching for ten minutes and count the stalls; that is a
+device on the user's network, not something to switch off from here.
+
+**The door station.** .50 is the building's Dahua VTO door station. Its UPnP
+page has UPnP disabled (every port mapping reads "Failed"), and it searches
+anyway: `M-SEARCH`, `ST: upnp:rootdevice`, `MX: 5`, every 5 s, from built-in
+discovery that page does not control.
+
+**Filtering it from the radios made things worse (18:13-18:23).** The user
+added, on the router's bridge, `ebtables -I FORWARD -s f4:b1:c2:xx:xx:xx -o
+eth5|eth6|eth7 -p IPv4 --ip-proto udp --ip-dport 1900 -j DROP`. The counters
+showed one drop per radio per search. 10 min of 10 Hz ping to three Wi-Fi
+clients, against the 3-minute baseline at 17:5x:
+
+| | >10 ms per min | >20 ms per min | Max |
+|---|---:|---:|---:|
+| Baseline | 3.7-4.0 | 2.3-2.7 | 38 ms |
+| Filter on | 14.3-14.9 | 8.3-10.4 | 62 ms |
+
+The spikes still came 0.5-0.7 s and 2.7-3.2 s after each search, although
+Wi-Fi no longer received it. So the copies sent to the stations are not the
+trigger. **The fourfold rise was not the rule**: the 2.4 minutes after it was
+removed (18:29-18:31:30, no rule of any kind) read 12.8-16.5 per minute over
+10 ms and 7.4-9.9 over 20 ms, the same as with it. The network was simply
+busier in the evening than at 17:5x, and the first reading here blamed the
+rule for that. The Echo (75 ms lead) had no underrun or XRUN through it; worst minute
+32 ms. The rule was asked to be removed straight after.
+
+**An iptables INPUT drop of its searches (from 18:31:30) changes nothing
+measurable.** The user added `iptables -I INPUT -s 192.168.1.50 -p udp --dport
+1900 -j DROP`, one drop per search; 7.6 minutes with it: 10.6-12.4 per
+minute over 10 ms, 4.9-7.4 over 20 ms, against 12.8-16.5 and 7.4-9.9 in the
+2.4 minutes before it. 15-30% fewer, from a baseline too short to call it; left in place for the passive 70 ms run that started at 18:31.
+The door station's searches continued after the user also unticked every
+service on its UPnP page.
+
+### 70 ms for two hours, no actions (18:31-20:31): two underruns, fails
+
+Streamer at lead 70, 10 ms batches, 5 ms capture, DSCP off; one stream for
+the whole run, no stop/start or reselect; the iptables drop above in place
+throughout. The user pressed the Echo's volume-down buttons at about 18:38
+and watched a film on it during the run.
+
+| | |
+|---|---|
+| Underruns | **2**: in minute 10 (18:40-18:41, arrival minimum -13 ms, 6 late drops, a snap, a fill-wait timeout) and minute 17 (18:47-18:48, arrival minimum 14 ms, a snap, a fill-wait timeout) |
+| XRUNs (`mtk_pcm_I2S0dl1_pointer underflow`) | 0 |
+| Worst arrival minimum otherwise | 27 ms (minute 3); 31 ms or more in every later minute |
+| Fill waits | 449 in 120 min, 2 pastTight, 2 timeouts (the two underruns) |
+| Ping to the Echo, 0.2 s | 35,862 samples, none lost, max 60.4 ms at 18:47:58 |
+
+The second underrun lines up with the run's one ping stall over 60 ms. The
+first does not: the worst ping in that minute was 34 ms, so a packet 83 ms
+late on the audio socket came with no comparable stall on ICMP. The Echo's
+log for those minutes had already been trimmed when it was read. Both fell
+in the first 17 minutes; the remaining 103 were clean, which is the rare
+40-70 ms stall arriving twice in close succession, as before, and not a
+property of a stream's first minutes (this stream started at 18:31, nine
+minutes earlier). `Auddrv_DL1_Interrupt_Handler underflow` lines ran at 4-9
+an hour through the run, as at 80 ms; they are not underruns.
+
+70 ms fails the pass bar. 75 ms passed one hour with interaction and has no
+two-hour run; 80 ms stays the setting.
+
+The same stream ran on unattended at 70 ms until it was read at 23:01, 4 h
+30 min in all. One more underrun, at 20:59-21:00 (arrival minimum 18 ms, a
+snap, a fill-wait timeout, "ALSA buffer thin" at 20.0 ms 30 s before), so 3 in
+4.5 hours, each with a fill-wait timeout; none in the two hours after it.
+Arrival minimum under 30 ms in five other minutes (24-28 ms) without one.
+
+### Fill-wait reserve 16 -> 8 ms (build 20261025-2308-dev, from 23:10)
+
+Shrinking the 48 ms ring would add no tolerance: `fillWaitDeadline` runs to
+the period's play time less the reserve, whatever is queued, so a packet has
+to arrive by then however deep the ring is. The margin is the reserve. This
+build takes it from 16 to 8 ms and the longest wait from 32 to 40 ms; the old
+16/32 budget becomes the "tight" one, so `pastTight` now counts the periods
+the 8 ms reserve saved. The cost would be a real XRUN when the write after a
+long wait comes later than 8 ms; that is what this run has to show. Only low-latency
+streams wait at all (`waitForPeriod` returns at once unless `shallow`).
+Previous firmware kept on the Echo as `server_b.0030-reserve16-80ms`.
+Passive 70 ms run from 23:10:52, two hours; the 16 ms run's files are in the
+scratchpad's `run-reserve16/`.
+
+Result, 23:10:52-01:10:54, 70 ms lead, interaction in the first 20 minutes:
+
+| | |
+|---|---|
+| Underruns | **1**, at 23:29:25: a Wi-Fi freeze of ~650 ms (three pings answered together at 545/337/128 ms), arrival minimum -622 ms, 68 late drops, a snap. No buffer under ~700 ms survives it, and no user action came near it |
+| XRUNs (`mtk_pcm_I2S0dl1_pointer underflow`) | 0, through all of the interaction |
+| Saved by the 8 ms reserve (`pastTight`) | 2: minute 58 (00:08, arrival minimum 18 ms, the depth that underran at 21:00 on the 16 ms reserve) and minute 64 (00:14, 24 ms, ping 47 ms at 00:13:56) |
+| Fill waits | 1146, 1143 recovered, 3 timeouts (one at stream start, two in the freeze) |
+| Arrival minimum, other minutes | 18-34 ms in eleven of them, otherwise 47 or more |
+
+Interaction (user): volume presses at 23:12 and many at 23:15; wake word and a
+question at 23:13, 23:14 and 23:17 (loud music, score 0.984); a 10 s timer at
+23:30 stopped after three rings; a false wake at 23:43 (score 0.295 on music,
+cancelled with the button) after which the mic was muted. Every voice turn
+played with 0 voice underruns and changed no music counter except fill waits,
+all recovered inside the old budget. The two living-room Echos were powered
+on at 23:51; no stall followed.
+
+Against the 16 ms reserve over 18:31-23:01 (3 underruns in 4.5 h, two on
+packets 14 and 18 ms early), the 8 ms reserve took both depths that had cost
+an underrun without one and without an XRUN. Its only underrun was a freeze no
+setting covers. One two-hour run is not the pass bar: it needs repeating, and
+the freeze needs explaining.

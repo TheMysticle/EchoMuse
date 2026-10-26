@@ -1,0 +1,831 @@
+--- a/streamer.py
++++ b/streamer.py
+@@ -21,8 +21,10 @@
+ import os
+ import socket
+ import time
++import weakref
+ from collections import deque
+ from pathlib import Path
++from uuid import UUID
+ 
+ import numpy as np
+ from aiohttp import ClientSession, ClientTimeout, TCPConnector, WSMsgType, web
+@@ -32,12 +34,27 @@
+ from aiosendspin.noise.pairing import PairingAttempt
+ from aiosendspin.noise.pairing_token import decode_token
+ from aiosendspin.noise.trust_store import FileServerPairingStore
++from aiosendspin.server.channels import MAIN_CHANNEL
+ from aiosendspin.server.server import SendspinServer
+ from zeroconf import ServiceStateChange
+ from zeroconf.asyncio import AsyncServiceBrowser, AsyncServiceInfo, AsyncZeroconf
+ 
+ from aiosendspin.audio.codecs import FlacEncoder
+ 
++# Everything below replaces private aiosendspin functions, written against
++# 9.1.1 exactly. Another version may rename or reshape any of them, and a
++# patch that silently stops applying puts back the early-stamped frames and
++# lost margin it exists to fix, which is heard as dropouts, not as an error.
++AIOSENDSPIN_VERSION = "9.1.1"
++try:
++    from importlib.metadata import version as _dist_version
++    _found = _dist_version("aiosendspin")
++except Exception:
++    _found = "unknown"
++if _found != AIOSENDSPIN_VERSION:
++    raise SystemExit(f"aiosendspin {_found} is installed; this streamer is written against "
++                     f"{AIOSENDSPIN_VERSION}. Run ./run.sh, which installs the pinned versions.")
++
+ # libav's FLAC encoder holds each frame back until it has a full frame and
+ # stamps it with its FIRST sample, so every chunk reaches the Echo that much
+ # earlier than its time allows: 4608 samples (96 ms) at the default level, 1152
+@@ -76,18 +93,157 @@
+ 
+ FlacEncoder._ensure_initialized = _flac_small_frames
+ 
++# aiosendspin's resampler (stereo->mono for an Echo) stamps its output from
++# its own running clock and only re-anchors when the input timestamps drift
++# more than 20 ms from it. When a chunk comes in late, the stream timeline is
++# rebased forward by a few ms so audio stays at least the lead ahead; the
++# resampler ignores each such jump and keeps stamping on the old timeline, so
++# every frame after it is stamped EARLY. Jumps pile up to just under 20 ms:
++# measured on a Radar at 80 ms lead, a stream started by stop/start (parec
++# delivers a few late chunks while it starts) arrived with 70 ms of margin, a
++# reselect (which recreates the resampler) with 78. The audio also plays that
++# much earlier than the lead says, which matters for lip-sync.
++#
++# Follow the input timeline instead: move the output clock by the same jump.
++# The filter graph is kept, so there is no click beyond the gap the rebase
++# itself made. Replaces push_stream._resample_pcm_standalone (aiosendspin
++# 9.1.1), which push_stream calls through its module global.
++from aiosendspin.server import push_stream as _ps  # noqa: E402
++
++_ps_resample = _ps._resample_pcm_standalone
++_resample_follow = {"n": 0, "us": 0, "logged": 0.0}
++
++
++def _resample_following_input(state, source_pcm, source_format, input_timestamp_us):
++    expected = state.pending_input_timestamp_us
++    if expected is not None and state.pending_timestamp_us is not None:
++        jump = input_timestamp_us - expected
++        if 50 < abs(jump) <= 20_000:  # the library would ignore it
++            state.pending_input_timestamp_us = input_timestamp_us
++            state.pending_input_ts_residue = 0
++            state.pending_timestamp_us += jump
++            _resample_follow["n"] += 1
++            _resample_follow["us"] += jump
++            now = time.monotonic()
++            if now - _resample_follow["logged"] >= 10:
++                _resample_follow["logged"] = now
++                log.info("resampler followed %d timeline jump(s), %+.1f ms in all",
++                         _resample_follow["n"], _resample_follow["us"] / 1000)
++    return _ps_resample(state, source_pcm, source_format, input_timestamp_us)
++
++
++_ps._resample_pcm_standalone = _resample_following_input
++
++# The encoder has the same habit one step later: push_stream stamps encoded
++# frames from the encoder's own running clock whenever that is within 500 ms
++# of the commit's timestamp, so the same startup rebases leave frames stamped
++# early (frames sent at 72.7 ms of lead while the commit timeline sat at 82).
++# The clock exists for encoders that hold audio back; ours encodes each 10 ms
++# chunk into exactly 10 ms of frames, so when the frames cover exactly the
++# input the commit's timestamp is the right one. Anything else is left to the
++# library. Replaces push_stream._encode_for_transform_key (aiosendspin 9.1.1).
++_ps_encode = _ps._encode_for_transform_key
++
++
++def _encode_on_commit_timeline(transformer, pcm_data, output_ts, duration_us):
++    frames = _ps_encode(transformer, pcm_data, output_ts, duration_us)
++    if not frames or frames[0][1] == output_ts:
++        return frames
++    if abs(sum(d for _, _, d in frames) - duration_us) > 1:
++        return frames
++    ts, out = output_ts, []
++    for data, _, dur in frames:
++        out.append((data, ts, dur))
++        ts += dur
++    return out
++
++
++_ps._encode_for_transform_key = _encode_on_commit_timeline
++
++# DIAGNOSTIC (2026-10-25): each audio frame's lead (play time minus now) when
++# it is queued for a player and when the writer sends it, as medians every
++# 10 s, to find where a stop/start loses ~8 ms the Echo sees and the commit
++# does not.
++from aiosendspin.server import connection as _conn  # noqa: E402
++
++_lead_q: list[int] = []
++_lead_s: list[int] = []
++_lead_logged = [0.0]
++_conn_send_binary = _conn.SendspinConnection.send_binary
++_conn_send_data = _conn.SendspinConnection._send_binary_data
++
++
++def _lead_report() -> None:
++    now = time.monotonic()
++    if now - _lead_logged[0] < 10 or not _lead_s:
++        return
++    _lead_logged[0] = now
++    q, s = sorted(_lead_q), sorted(_lead_s)
++    log.info("frame lead: queued median %.1f min %.1f ms | sent median %.1f min %.1f ms (n=%d)",
++             q[len(q) // 2] / 1000 if q else -1, q[0] / 1000 if q else -1,
++             s[len(s) // 2] / 1000, s[0] / 1000, len(s))
++    _lead_q.clear()
++    _lead_s.clear()
++
++
++def _send_binary_logged(self, data, *, role, timestamp_us, message_type, **kw):
++    if role.startswith("player"):
++        _lead_q.append(timestamp_us - self._server.clock.now_us())
++    return _conn_send_binary(self, data, role=role, timestamp_us=timestamp_us,
++                             message_type=message_type, **kw)
++
++
++async def _send_data_logged(self, wsock, role, entry, buffer_tracker):
++    if role.startswith("player"):
++        _lead_s.append(entry.timestamp_us - self._server.clock.now_us())
++        _lead_report()
++    return await _conn_send_data(self, wsock, role, entry, buffer_tracker)
++
++
++_conn.SendspinConnection.send_binary = _send_binary_logged
++_conn.SendspinConnection._send_binary_data = _send_data_logged
++
+ log = logging.getLogger("streamer")
+ 
+ HERE = Path(__file__).resolve().parent
+-CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "sendspin-streamer"
++# --config-dir or SENDSPIN_STREAMER_CONFIG moves this; see main().
++CONFIG_DIR = Path(os.environ.get("SENDSPIN_STREAMER_CONFIG")
++                  or Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "sendspin-streamer")
+ 
+ RATE = 48000
+-CHUNK_MS = 10
+-CAPTURE_LATENCY_MS = 5
++# 10 ms batches, 5 ms capture request, no DSCP: the A/B of 2026-10-25 had
++# 0 underruns in 60 min of stop/start and reselect this way, and 1 (a single
++# packet ~70 ms late while ping saw nothing over 10 ms) with CS6, which had
++# also had the 2 of the morning's first soak. 20 ms batches cost ~10 ms.
++# These are only the starting values: POST /api/config changes all three while
++# running (see set_transport), and they are read through these globals.
++CHUNK_MS = int(os.environ.get("EM_CHUNK_MS", "10"))
++CAPTURE_LATENCY_MS = int(os.environ.get("EM_CAPTURE_MS", "5"))
++DSCP_ON = os.environ.get("EM_DSCP", "0") == "1"
++CHUNK_CHOICES = (10, 20)  # whole FLAC frames (10 ms) that divide the timeline's 200 ms blocks
+ FRAMES = RATE * CHUNK_MS // 1000
+ CHUNK_BYTES = FRAMES * 4  # s16le stereo
+ PLAYER_ROLE = "player@v1"
+ 
++# What each player plays. aiosendspin streams one timeline with any number of
++# channels, and asks a resolver which one each player takes; every channel is
++# committed with the same play time, so left and right stay sample-aligned.
++# A left or right channel carries that side on BOTH stereo slots: a stereo
++# player plays it on both speakers, and an Echo's stereo->mono downmix,
++# (L + R) / 2, gives exactly that side at the level stereo mode gives centred
++# sound (measured through aiosendspin's own graph: L=R at 10000 in, 10000 out;
++# L alone, 5000 out).
++CHANNEL_MODES = ("stereo", "left", "right")
++LEFT_CHANNEL = UUID(int=1)
++RIGHT_CHANNEL = UUID(int=2)
++MODE_CHANNEL = {"stereo": MAIN_CHANNEL, "left": LEFT_CHANNEL, "right": RIGHT_CHANNEL}
++
++
++def one_side(pcm: bytes, side: int) -> bytes:
++    """s16le stereo -> the same length of stereo with one side on both slots."""
++    a = np.frombuffer(pcm, dtype="<i2").reshape(-1, 2)
++    return np.repeat(a[:, side], 2).tobytes()
++
+ # Mark every connection to a player as voice traffic (DSCP CS6). Wi-Fi access
+ # points with WMM, which is on by default, send it from the voice queue: the
+ # shortest wait for the air, ahead of a phone's video on the same radio. The
+@@ -96,17 +252,43 @@
+ DSCP_CS6_TOS = 48 << 2
+ 
+ 
++# Every player socket, so a DSCP change from the API reaches connections
++# already open: IP_TOS applies to the next packet sent, no reconnect needed.
++_player_sockets: weakref.WeakSet[socket.socket] = weakref.WeakSet()
++
++
++def _mark(sock: socket.socket, on: bool) -> None:
++    tos = DSCP_CS6_TOS if on else 0
++    if sock.family == socket.AF_INET:
++        sock.setsockopt(socket.IPPROTO_IP, socket.IP_TOS, tos)
++    elif sock.family == socket.AF_INET6:
++        sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_TCLASS, tos)
++
++
+ def _voice_socket(addr_info) -> socket.socket:
+     family, type_, proto, _, _ = addr_info
+     sock = socket.socket(family=family, type=type_, proto=proto)
++    _player_sockets.add(sock)
++    if not DSCP_ON:
++        return sock
+     try:
+-        if family == socket.AF_INET:
+-            sock.setsockopt(socket.IPPROTO_IP, socket.IP_TOS, DSCP_CS6_TOS)
+-        elif family == socket.AF_INET6:
+-            sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_TCLASS, DSCP_CS6_TOS)
++        _mark(sock, True)
+     except OSError as e:
+         log.warning("could not mark the player connection as voice: %s", e)
+     return sock
++
++
++def _remark_player_sockets() -> int:
++    n = 0
++    for sock in list(_player_sockets):
++        if sock.fileno() < 0:
++            continue
++        try:
++            _mark(sock, DSCP_ON)
++            n += 1
++        except OSError as e:
++            log.warning("could not re-mark a player connection: %s", e)
++    return n
+ SERVICE = "_sendspin._tcp.local."
+ 
+ 
+@@ -141,14 +323,17 @@
+         self.wanted: list[str] = []      # players to keep connected
+         self.selected: list[str] = []    # players that get the stream
+         self.manual: dict[str, str] = {}  # key -> ws url, for players mDNS cannot find
+-        self.lead_ms = 0                 # 0 = whatever each player asks for
++        self.lead_ms = 80                # 0 = whatever each player asks for (2000 ms on an Echo)
++        self.channels: dict[str, str] = {}  # key -> "left" / "right"; absent is stereo
+         try:
+             d = json.loads(self.path.read_text())
+             self.source = d.get("source", "")
+             self.wanted = list(d.get("wanted", []))
+             self.selected = list(d.get("selected", []))
+             self.manual = dict(d.get("manual", {}))
+-            self.lead_ms = int(d.get("lead_ms", 0))
++            self.lead_ms = int(d.get("lead_ms", 80))
++            self.channels = {k: v for k, v in dict(d.get("channels", {})).items()
++                             if v in CHANNEL_MODES and v != "stereo"}
+         except (OSError, ValueError):
+             pass
+ 
+@@ -156,6 +341,7 @@
+         _write_private(self.path, json.dumps({
+             "source": self.source, "wanted": self.wanted,
+             "selected": self.selected, "manual": self.manual, "lead_ms": self.lead_ms,
++            "channels": self.channels,
+         }, indent=1))
+ 
+ 
+@@ -273,6 +459,82 @@
+     return out
+ 
+ 
++async def pipewire_quantum() -> tuple[int, int] | None:
++    """(quantum, rate) of the PipeWire graph our parec runs in, or None.
++
++    PipeWire hands a monitor source each block of the mix as the sink takes
++    it, and the sink plays that block one quantum later (its Latency param
++    reads minQuantum 1.0). pactl reports 0 for both latencies under
++    pipewire-pulse, so the quantum is read from pw-top: the driver row above
++    the "+ parec" follower. pw-top's first pass prints zeros, hence -n 2.
++    """
++    try:
++        proc = await asyncio.create_subprocess_exec(
++            "pw-top", "-b", "-n", "2",
++            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
++        out, _ = await asyncio.wait_for(proc.communicate(), 10)
++    except (OSError, asyncio.TimeoutError):
++        return None
++    found = None
++    driver = None
++    for line in out.decode(errors="replace").splitlines():
++        cols = line.split()
++        if len(cols) < 4 or not cols[1].isdigit():
++            continue
++        if "+" in cols:
++            name = cols[cols.index("+") + 1:]
++            if name[:1] == ["parec"] and driver:
++                found = driver
++        else:
++            q, r = cols[2], cols[3]
++            driver = (int(q), int(r)) if q.isdigit() and r.isdigit() and int(q) and int(r) else None
++    return found
++
++
++async def turned_down_apps(source: str) -> list[dict]:
++    """Apps playing into the sink this monitor source captures, with their own
++    mixer volume below 100%.
++
++    The monitor is taken after each app's volume and before the sink's
++    (PipeWire's monitor.channel-volumes is off by default), so the PC's master
++    volume does not reach the Echoes but an app's does: Firefox left at 63%
++    in the mixer sends YouTube 12 dB quieter while the master reads 100%.
++    """
++    if not source.endswith(".monitor"):
++        return []
++
++    async def pactl_json(*what: str):
++        proc = await asyncio.create_subprocess_exec(
++            "pactl", "-f", "json", "list", *what,
++            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
++        out, _ = await asyncio.wait_for(proc.communicate(), 5)
++        return json.loads(out or b"[]")
++
++    try:
++        sinks = await pactl_json("sinks")
++        sink = next((x["index"] for x in sinks if x.get("monitor_source") == source), None)
++        if sink is None:
++            return []
++        apps = []
++        for x in await pactl_json("sink-inputs"):
++            if x.get("sink") != sink or x.get("corked"):
++                continue
++            vols = [v.get("value", 65536) for v in x.get("volume", {}).values()]
++            top = max(vols) if vols else 65536
++            if x.get("mute") or top < 65536 * 0.98:
++                props = x.get("properties", {})
++                apps.append({
++                    "app": props.get("application.name") or props.get("media.name") or "an app",
++                    "percent": round(top / 65536 * 100),
++                    # Pulse volumes are cubic: 63% is 0.63^3 of the amplitude, -12 dB
++                    "db": None if x.get("mute") or top == 0 else round(20 * math.log10(top / 65536) * 3, 1),
++                    "muted": bool(x.get("mute")),
++                })
++        return apps
++    except (OSError, ValueError, asyncio.TimeoutError):
++        return []
++
++
+ class PulseSource:
+     """parec reading one source as 48kHz stereo s16le."""
+ 
+@@ -357,14 +619,183 @@
+         pass
+ 
+ 
++class SidesSource:
++    """A 440 Hz beep on the LEFT side only, then an 880 Hz beep on the RIGHT
++    only, each 0.4 s, every 2 s: a player set to left beeps low, one set to
++    right beeps high, and a stereo Echo plays both at half level."""
++
++    name = "test:sides"
++
++    async def start(self) -> None:
++        n = RATE * 400 // 1000
++        t = np.arange(n) / RATE
++        ramp = np.minimum(1, np.minimum(t, t[::-1]) / 0.01)  # 10 ms fades, no clicks
++        self.beeps = [(np.sin(2 * np.pi * f * t) * ramp * 0.3 * 32767).astype("<i2") for f in (440, 880)]
++        self.pos = 0
++
++    async def chunks(self):
++        t0 = time.monotonic()
++        n = 0
++        period = RATE * 2
++        while True:
++            delay = t0 + n * CHUNK_MS / 1000 - time.monotonic()
++            if delay > 0:
++                await asyncio.sleep(delay)
++            out = np.zeros((FRAMES, 2), dtype="<i2")
++            ph = (self.pos + np.arange(FRAMES)) % period
++            left = ph < len(self.beeps[0])
++            right = (ph >= RATE) & (ph < RATE + len(self.beeps[1]))
++            out[left, 0] = self.beeps[0][ph[left]]
++            out[right, 1] = self.beeps[1][ph[right] - RATE]
++            self.pos += FRAMES
++            yield out.tobytes()
++            n += 1
++
++    async def stop(self) -> None:
++        pass
++
++
+ # --------------------------------------------------------------------------
+ # The streamer
+ # --------------------------------------------------------------------------
+ 
++class OwnTimeline:
++    """Play times for a live stream at a fixed lead, kept by the streamer.
++
++    aiosendspin's own timeline only ever moves later: every chunk that reaches
++    it late pushes the whole stream later for good. A fresh start is busy (the
++    player connecting, the encoder and resampler being built), its first
++    chunks are late, and a stream at an 80 ms lead settled at 100 ms on a
++    Radar while one started on a running pipeline settled at 82. Explicit
++    timestamps take that rule out: chunk n plays at anchor + n x 10 ms, and a
++    late chunk is simply sent with less lead.
++
++    The first WARM chunks go out as silence while the streamer measures where
++    the stream sits, then moves it onto lead + TARGET_EXTRA: later by
++    stretching the timeline, earlier by dropping silent chunks. Nothing
++    audible is cut.
++
++    After that it is only ever STEERED, never cut: every 2 s the median lead
++    is compared with the target and the timeline moved by at most MAX_STEP
++    either way. The Echo absorbs a timing error under 5 ms by repeating or
++    dropping single samples, at most 2 per 10.7 ms period (0.39% speed, how
++    it already follows its own DAC clock), so a 2 ms step is ~0.5 s of those
++    and never a gap, a skip or a jump. That covers PulseAudio raising its
++    capture latency after a start (~12 ms over the first 30 s, measured) and
++    the capture clock's few-ppm drift.
++
++    One exception, so this is never worse than the library's own rule: when
++    the lead sits more than SHORT under the target for two blocks of FAST
++    chunks running (a lasting jump in capture latency, not a stall and its
++    catch-up burst), the Echo is short of audio and steering would take tens
++    of seconds, so the timeline is moved later at once. That is one gap, the
++    same one aiosendspin's rebase would have made.
++    """
++
++    # WARM (500 ms of silence at a stream's start), WARM_JUDGED (judged on its
++    # last 200 ms, once the slow start is over), WINDOW (chunks per
++    # steady-state check, 2 s) and FAST (chunks per shortfall check, 200 ms)
++    # are counts of chunks, set per stream in __init__ from the chunk size.
++    BAND_US = 1_000           # dead band: the capture cadence moves the median in 0.7 ms steps
++    MAX_STEP_US = 2_000       # well inside the Echo's 5 ms snap threshold
++    TARGET_EXTRA_US = 2_000   # median lead above the setting, as the library settled
++    SHORT_US = 10_000         # lead this far under the target is eating the Echo's margin
++
++    def __init__(self, lead_us: int) -> None:
++        self.lead_us = lead_us
++        self.target_us = lead_us + self.TARGET_EXTRA_US
++        self.chunk_ms = CHUNK_MS  # fixed for the stream; a change restarts it
++        self.WARM = 500 // CHUNK_MS
++        self.WARM_JUDGED = 200 // CHUNK_MS
++        self.WINDOW = 2000 // CHUNK_MS
++        self.FAST = 200 // CHUNK_MS
++        self.anchor: int | None = None
++        self.n = 0
++        self.warm = 0
++        self.drops = 0
++        self.silent = True  # whether the chunk last timed should be sent as silence
++        self.samples: list[int] = []
++        self.fast: list[int] = []
++        self.short_blocks = 0
++        self.rebases = 0
++        self.steps = 0
++        self.stepped_us = 0
++        self.logged = 0.0
++
++    @property
++    def warming(self) -> bool:
++        return self.warm < self.WARM
++
++    def next(self, now_us: int) -> int | None:
++        """Play time for the chunk in hand, or None to drop it."""
++        if self.anchor is None:
++            self.anchor = now_us + self.target_us
++        if self.drops:
++            self.drops -= 1
++            return None
++        play = self.anchor + self.n * self.chunk_ms * 1000
++        slack = play - now_us
++        self.silent = self.warming
++        if self.warming:
++            self.warm += 1
++            if self.warm > self.WARM - self.WARM_JUDGED:
++                self.samples.append(slack)
++            if self.warm == self.WARM:
++                self._settle(sorted(self.samples)[len(self.samples) // 2], warm=True)
++        else:
++            self.samples.append(slack)
++            self.fast.append(slack)
++            if len(self.fast) >= self.FAST:
++                self._check_short(sorted(self.fast)[len(self.fast) // 2])
++            if len(self.samples) >= self.WINDOW:
++                self._settle(sorted(self.samples)[len(self.samples) // 2], warm=False)
++        self.n += 1
++        return play
++
++    def _check_short(self, median: int) -> None:
++        self.fast = []
++        if median >= self.target_us - self.SHORT_US:
++            self.short_blocks = 0
++            return
++        self.short_blocks += 1
++        if self.short_blocks < 2:
++            return
++        self.anchor += self.target_us - median  # later only: a gap, never a skip
++        self.short_blocks = 0
++        self.samples = []
++        self.rebases += 1
++        log.warning("stream lead fell to %.1fms for 400ms; moved %.1fms later at once (%d time(s))",
++                    median / 1000, (self.target_us - median) / 1000, self.rebases)
++
++    def _settle(self, median: int, warm: bool) -> None:
++        self.samples = []
++        chunk = self.chunk_ms * 1000
++        off = median - self.target_us
++        if warm:
++            if off > 0:
++                self.drops = -(-off // chunk)
++                off -= self.drops * chunk
++            self.anchor -= off  # off <= 0 here: a stretch, never a step back
++            log.info("stream settled %.1fms off its lead; %d silent chunk(s) dropped",
++                     (median - self.target_us) / 1000, self.drops)
++        elif abs(off) > self.BAND_US:
++            step = max(-self.MAX_STEP_US, min(self.MAX_STEP_US, -off))
++            self.anchor += step
++            self.steps += 1
++            self.stepped_us += step
++            now = time.monotonic()
++            if now - self.logged >= 60:
++                self.logged = now
++                log.info("lead steered %d time(s), %+.1f ms in all; last %+.1f ms (was %+.1f off)",
++                         self.steps, self.stepped_us / 1000, step / 1000, off / 1000)
++
++
+ class App:
+     def __init__(self, loop: asyncio.AbstractEventLoop) -> None:
+         self.loop = loop
+         self.settings = Settings()
++        log.info("transport: %d ms chunks, %d ms capture request, DSCP %s",
++                 CHUNK_MS, CAPTURE_LATENCY_MS, "CS6" if DSCP_ON else "off")
+         self.server: SendspinServer | None = None
+         self.session: ClientSession | None = None
+         self.discovery = Discovery(loop, self._player_changed, keep=self._connected)
+@@ -376,7 +807,10 @@
+         self.stream_group = None
+         self.rms_db = -120.0
+         self.peak_db = -120.0
+-        self.latency_ms: float | None = None
++        self.latency_ms: float | None = None  # capture -> Echo, median of the last 2 s
++        self.quantum: tuple[int, int] | None = None  # PipeWire (frames, rate) under our parec
++        self.quantum_task: asyncio.Task | None = None
++        self.quiet_apps: list[dict] = []  # apps turned down in the captured sink's mixer
+         self.chunks_sent = 0
+         self.source_error = ""
+         self.sync_note = ""
+@@ -402,11 +836,14 @@
+             self.discovery.add_manual(key, url)
+         await self.discovery.start()
+         self.reconcile_task = asyncio.create_task(self._reconcile_loop())
++        self.quantum_task = asyncio.create_task(self._quantum_loop())
+ 
+     async def stop(self) -> None:
+         await self.stop_stream()
+         if self.reconcile_task:
+             self.reconcile_task.cancel()
++        if self.quantum_task:
++            self.quantum_task.cancel()
+         await self.discovery.stop()
+         if self.server:
+             await self.server.close()
+@@ -576,6 +1013,24 @@
+                 log.warning("grouping: %s", e)
+             await asyncio.sleep(1)
+ 
++    async def _quantum_loop(self) -> None:
++        """While capturing: re-read the PipeWire quantum every 30 s (another
++        app asking for a smaller one, or leaving, changes it under us), and
++        every 5 s which apps are turned down in the captured sink's mixer."""
++        last_quantum = 0.0
++        while True:
++            await asyncio.sleep(5)
++            if not self.running or self.settings.source.startswith("test:"):
++                self.quantum, self.quiet_apps, last_quantum = None, [], 0.0
++                continue
++            try:
++                self.quiet_apps = await turned_down_apps(self.settings.source)
++                if time.monotonic() - last_quantum >= 30:
++                    last_quantum = time.monotonic()
++                    self.quantum = await pipewire_quantum()
++            except Exception as e:
++                log.debug("audio probe: %s", e)
++
+     def _probe(self) -> None:
+         """Say why a wanted player is not connecting: a closed port reads very
+         differently from a handshake that fails."""
+@@ -648,6 +1103,72 @@
+         self.apply_lead(c for c in (self.client_for(k) for k in self.discovery.players) if c)
+         self.restart_stream = True
+ 
++    def set_channel(self, key: str, mode: str) -> None:
++        if mode not in CHANNEL_MODES:
++            raise ValueError(f"channel must be one of {CHANNEL_MODES}")
++        if self.settings.channels.get(key, "stereo") == mode:
++            return
++        if mode == "stereo":
++            self.settings.channels.pop(key, None)
++        else:
++            self.settings.channels[key] = mode
++        self.settings.save()
++        # A player that changes channel mid-stream would get a new encoder
++        # whose timing starts wherever that channel's does; a restart (the
++        # same 0.5 s silent warm-up as a stop/start) keeps every channel on
++        # one fresh timeline.
++        self.restart_stream = True
++
++    def channel_mode(self, client_id: str) -> str:
++        """The mode of a connected player. One Echo can be listed twice (mDNS
++        and by address), so any of its keys that is not stereo decides."""
++        for key, mode in self.settings.channels.items():
++            c = self.client_for(key)
++            if c is not None and c.client_id == client_id:
++                return mode
++        return "stereo"
++
++    def _resolve_channel(self, client_id: str) -> UUID:
++        return MODE_CHANNEL[self.channel_mode(client_id)]
++
++    def _sides_in_use(self) -> list[tuple[UUID, int]]:
++        modes = {self.channel_mode(c.client_id) for c in self.ready_selected()}
++        return [(MODE_CHANNEL[m], 0 if m == "left" else 1) for m in ("left", "right") if m in modes]
++
++    async def set_transport(self, chunk_ms: int | None, capture_ms: int | None,
++                            dscp: bool | None) -> None:
++        """Change the A/B transport settings while running.
++
++        DSCP is re-marked on open sockets with no interruption. A new chunk
++        size or capture request needs a new capture and a new timeline, so the
++        stream is restarted exactly as a stop/start would (one ~0.5 s silent
++        warm-up); a request that changes neither leaves the stream alone.
++        """
++        global CHUNK_MS, CAPTURE_LATENCY_MS, DSCP_ON, FRAMES, CHUNK_BYTES
++        if chunk_ms is not None and chunk_ms not in CHUNK_CHOICES:
++            raise ValueError(f"chunkMs must be one of {CHUNK_CHOICES}")
++        if capture_ms is not None and not 1 <= capture_ms <= 100:
++            raise ValueError("captureMs must be 1-100")
++        restart = ((chunk_ms is not None and chunk_ms != CHUNK_MS)
++                   or (capture_ms is not None and capture_ms != CAPTURE_LATENCY_MS))
++        was_running = self.running
++        if restart and was_running:
++            await self.stop_stream()
++        if chunk_ms is not None:
++            CHUNK_MS = chunk_ms
++            FRAMES = RATE * CHUNK_MS // 1000
++            CHUNK_BYTES = FRAMES * 4
++        if capture_ms is not None:
++            CAPTURE_LATENCY_MS = capture_ms
++        if dscp is not None and dscp != DSCP_ON:
++            DSCP_ON = dscp
++            log.info("DSCP %s on %d open player connection(s)",
++                     "CS6" if DSCP_ON else "off", _remark_player_sockets())
++        log.info("transport: %d ms chunks, %d ms capture request, DSCP %s",
++                 CHUNK_MS, CAPTURE_LATENCY_MS, "CS6" if DSCP_ON else "off")
++        if restart and was_running:
++            await self.start_stream()
++
+     # -- streaming --------------------------------------------------------
+ 
+     async def start_stream(self, source: str | None = None) -> None:
+@@ -686,17 +1207,23 @@
+         fmt = AudioFormat(sample_rate=RATE, bit_depth=16, channels=2)
+         target_ms: float | None = None
+         off_chunks = 0
++        timeline: OwnTimeline | None = None
+         gaps: deque[float] = deque(maxlen=10_000 // CHUNK_MS)
+         commits: deque[float] = deque(maxlen=10_000 // CHUNK_MS)
++        # play time minus capture of each chunk's first sample, last 2 s
++        delays: deque[float] = deque(maxlen=2000 // CHUNK_MS)
++        sides: list[tuple[UUID, int]] = []
+         last_chunk = None
+         while self.running:
+             src = (ClickSource() if name == "test:clicks" else
+-                   ToneSource() if name == "test:tone" else PulseSource(name))
++                   ToneSource() if name == "test:tone" else
++                   SidesSource() if name == "test:sides" else PulseSource(name))
+             stream = None
+             try:
+                 await src.start()
+                 async for pcm in src.chunks():
+                     arrived = time.monotonic()
++                    arrived_us = self.server.clock.now_us()
+                     if last_chunk is not None:
+                         gaps.append((arrived - last_chunk) * 1000)
+                         self.gap_max_ms = max(gaps)
+@@ -706,6 +1233,7 @@
+                     if leader is None or not self.ready(leader):
+                         stream = None
+                         self.latency_ms = None
++                        delays.clear()
+                         continue
+                     group = leader.group
+                     if (stream is None or stream.is_stopped or group is not self.stream_group
+@@ -713,18 +1241,41 @@
+                         if stream is not None and not stream.is_stopped:
+                             stream.stop()
+                         self.apply_lead(self.ready_selected())
+-                        stream = group.start_stream()
++                        stream = group.start_stream(channel_resolver=self._resolve_channel)
++                        sides = self._sides_in_use()
++                        delays.clear()
+                         stream.set_live_source(True)
+                         self.stream_group = group
+                         self.restart_stream = False
+                         target_ms, off_chunks, self.latency_ms = None, 0, None
+-                    stream.prepare_audio(pcm, fmt)
+-                    play_us = await stream.commit_audio()
++                        lead_ms = self.settings.lead_ms
++                        timeline = OwnTimeline(lead_ms * 1000) if lead_ms else None
++                    if timeline is not None:
++                        play_at = timeline.next(self.server.clock.now_us())
++                        if play_at is None:
++                            continue
++                        out = bytes(CHUNK_BYTES) if timeline.silent else pcm
++                        stream.prepare_audio(out, fmt)
++                        for channel, side in sides:
++                            stream.prepare_audio(out if timeline.silent else one_side(pcm, side),
++                                                 fmt, channel_id=channel)
++                        play_us = await stream.commit_audio(play_start_us=play_at)
++                    else:
++                        stream.prepare_audio(pcm, fmt)
++                        for channel, side in sides:
++                            stream.prepare_audio(one_side(pcm, side), fmt, channel_id=channel)
++                        play_us = await stream.commit_audio()
+                     commits.append((time.monotonic() - arrived) * 1000)
+                     self.commit_max_ms = max(commits)
+                     ms = (play_us - self.server.clock.now_us()) / 1000
+-                    self.latency_ms = ms if self.latency_ms is None else self.latency_ms * 0.9 + ms * 0.1
++                    # The chunk was complete when it arrived; its first sample,
++                    # which play_us is the time of, was captured CHUNK_MS before
++                    # that (on average over the capture blocks; see snapshot()).
++                    delays.append((play_us - arrived_us) / 1000 + CHUNK_MS)
++                    self.latency_ms = sorted(delays)[len(delays) // 2]
+                     self.chunks_sent += 1
++                    if timeline is not None:
++                        continue  # the timeline keeps its own lead
+                     # The capture clock and the network clock disagree by some
+                     # ppm, so a live stream's lead slowly grows or shrinks.
+                     # When it has wandered 150ms from where it started,
+@@ -772,6 +1323,7 @@
+                 "delayMs": r.static_delay_ms if r else None,
+                 "askMs": r.min_buffer_ms if r else None,
+                 "error": p.error,
++                "channel": self.settings.channels.get(key, "stereo"),
+             })
+         return {
+             "running": self.running,
+@@ -779,11 +1331,24 @@
+             "sources": self.sources,
+             "rmsDb": round(self.rms_db, 1),
+             "peakDb": round(self.peak_db, 1),
++            # From capture: the chunk's play time minus when its first sample
++            # reached us. The PC's own output plays a sample one quantum after
++            # PipeWire hands it to the monitor, plus its place in its block (half
++            # a quantum on average), so a video player kept in sync with this
++            # PC's output sees the Echo latencyMs - 1.5 quanta behind it. That
++            # is the lip-sync figure. Neither counts the TV's own video delay.
+             "latencyMs": None if self.latency_ms is None else round(self.latency_ms),
++            "pcOutputMs": None if self.quantum is None else round(1.5 * self.quantum[0] / self.quantum[1] * 1000, 1),
++            "quantum": None if self.quantum is None else self.quantum[0],
++            "behindPcMs": (None if self.latency_ms is None or self.quantum is None else
++                           round(self.latency_ms - 1.5 * self.quantum[0] / self.quantum[1] * 1000)),
+             "leadMs": self.settings.lead_ms,
+             "gapMaxMs": round(self.gap_max_ms),
+             "chunkMs": CHUNK_MS,
+             "captureRequestMs": CAPTURE_LATENCY_MS,
++            "dscp": DSCP_ON,
++            "quietApps": self.quiet_apps,
++            "channelModes": list(CHANNEL_MODES),
+             "commitMaxMs": round(self.commit_max_ms),
+             "sync": self.sync_note,
+             "error": self.source_error,
+@@ -867,8 +1432,15 @@
+             app.settings.save()
+             if app.running:
+                 await app.start_stream()
++        elif action == "channel":
++            app.set_channel(key, str(body.get("channel", "")))
+         elif action == "lead":
+             app.set_lead(int(body["ms"]))
++        elif action == "config":
++            await app.set_transport(
++                None if body.get("chunkMs") is None else int(body["chunkMs"]),
++                None if body.get("captureMs") is None else int(body["captureMs"]),
++                None if body.get("dscp") is None else bool(body["dscp"]))
+         elif action == "refresh":
+             app.sources = await list_sources()
+         elif action == "start":
+@@ -893,8 +1465,14 @@
+     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+     ap.add_argument("--host", default="127.0.0.1", help="interface for the web page (default: this machine only)")
+     ap.add_argument("--port", type=int, default=8780)
++    ap.add_argument("--config-dir", type=Path,
++                    help="settings, server key and pairings (default ~/.config/sendspin-streamer;"
++                         " also SENDSPIN_STREAMER_CONFIG)")
+     ap.add_argument("-v", "--verbose", action="store_true")
+     args = ap.parse_args()
++    if args.config_dir:
++        global CONFIG_DIR
++        CONFIG_DIR = args.config_dir.expanduser().resolve()
+     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
+                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+ 
+@@ -904,6 +1482,7 @@
+     web_app["core"] = core
+     web_app.router.add_get("/", index)
+     web_app.router.add_get("/ws", ws_handler)
++    web_app.router.add_get("/api/state", lambda r: web.json_response(r.app["core"].snapshot()))
+     web_app.router.add_post("/api/{action}", api)
+     runner = web.AppRunner(web_app)
+     await runner.setup()
+--- a/index.html
++++ b/index.html
+@@ -110,6 +110,7 @@
+           <option value="90">90 ms</option>
+           <option value="80">80 ms (tested on Echoes)</option>
+           <option value="75">75 ms</option>
++          <option value="70">70 ms (not validated)</option>
+           <option value="50">50 ms</option>
+         </select>
+         <div class="hint" style="margin-top:6px">Less buffer means less delay and a bigger chance of dropouts on a weak Wi-Fi link.</div>

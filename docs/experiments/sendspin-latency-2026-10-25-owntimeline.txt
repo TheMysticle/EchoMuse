@@ -1,0 +1,533 @@
+# 2026-10-25, Radar Bedroom, firmware 20261025-0030-dev (124c763), streamer with OwnTimeline, lead 80 ms
+# Four stop/start and reselect cycles, 02:22-02:31 local
+02:22:14 stop/start streamer 81 | frames edian 81.2 min 78.9 ms | sent median 81.1 min 78.8 | echo ['02:23:26 [sendspin] arrival: n=6000 lead min=61ms median=79ms max=82ms', '02:23:42 [sendspin] playing: synced=true syncErr=158us buffered=37ms snaps=1 corrections=38 underruns=0 lateDrops=14 lastErr=-84us']
+02:24:29 stop/start streamer 81 | frames edian 81.5 min 79.0 ms | sent median 81.4 min 78.8 | echo ['02:25:43 [sendspin] playing: synced=true syncErr=121us buffered=33ms snaps=1 corrections=34 underruns=0 lateDrops=13 lastErr=-95us', '02:26:28 [sendspin] arrival: n=6000 lead min=56ms median=79ms max=82ms']
+02:26:43 reselect streamer 82 | frames edian 81.6 min 79.1 ms | sent median 81.5 min 78.9 | echo ['02:28:28 [sendspin] arrival: n=6000 lead min=56ms median=79ms max=82ms', '02:28:46 [sendspin] playing: synced=true syncErr=94us buffered=30ms snaps=1 corrections=57 underruns=0 lateDrops=0 lastErr=-82us']
+02:29:00 stop/start streamer 81 | frames edian 81.5 min 79.0 ms | sent median 81.4 min 78.9 | echo ['02:30:28 [sendspin] arrival: n=6000 lead min=54ms median=79ms max=82ms', '02:30:46 [sendspin] playing: synced=true syncErr=83us buffered=27ms snaps=1 corrections=42 underruns=0 lateDrops=13 lastErr=-89us']
+
+[exited with code 0]
+
+# 20-minute soak, 02:31-02:51 local: stop/start at minute 7, reselect at minute 14
+# columns: kernel mtk_pcm_I2S0dl1_pointer underflow count | last two player lines
+02:32:42 min 1 | 0 | 02:31:46 [sendspin] playing: synced=true syncErr=81us buffered=32ms snaps=1 corrections=47 underruns=0 lateDrops=13 lastErr=-100us | 02:32:28 [sendspin] arrival: n=6000 lead min=43ms median=79ms max=82ms
+02:33:42 min 2 | 0 | 02:32:46 [sendspin] playing: synced=true syncErr=79us buffered=36ms snaps=1 corrections=53 underruns=0 lateDrops=13 lastErr=-86us | 02:33:28 [sendspin] arrival: n=6000 lead min=40ms median=79ms max=82ms
+02:34:42 min 3 | 0 | 02:33:46 [sendspin] playing: synced=true syncErr=76us buffered=36ms snaps=1 corrections=59 underruns=0 lateDrops=13 lastErr=-79us | 02:34:28 [sendspin] arrival: n=6000 lead min=56ms median=79ms max=82ms
+02:35:42 min 4 | 0 | 02:34:46 [sendspin] playing: synced=true syncErr=75us buffered=36ms snaps=1 corrections=65 underruns=0 lateDrops=13 lastErr=-75us | 02:35:28 [sendspin] arrival: n=6001 lead min=45ms median=79ms max=82ms
+02:36:42 min 5 | 0 | 02:35:46 [sendspin] playing: synced=true syncErr=73us buffered=30ms snaps=1 corrections=70 underruns=0 lateDrops=13 lastErr=-102us | 02:36:28 [sendspin] arrival: n=6000 lead min=67ms median=79ms max=82ms
+02:37:42 min 6 | 0 | 02:36:46 [sendspin] playing: synced=true syncErr=70us buffered=34ms snaps=1 corrections=76 underruns=0 lateDrops=13 lastErr=-82us | 02:37:28 [sendspin] arrival: n=6000 lead min=57ms median=79ms max=82ms
+02:38:43 --- stop/start
+02:38:45 min 7 | 0 | 02:37:46 [sendspin] playing: synced=true syncErr=70us buffered=34ms snaps=1 corrections=81 underruns=0 lateDrops=13 lastErr=-81us | 02:38:28 [sendspin] arrival: n=6000 lead min=38ms median=78ms max=82ms
+02:39:42 min 8 | 0 | 02:38:46 [sendspin] playing: synced=true syncErr=68us buffered=38ms snaps=1 corrections=94 underruns=0 lateDrops=22 lastErr=-1579us | 02:39:28 [sendspin] arrival: n=5680 lead min=-111ms median=79ms max=82ms
+02:40:42 min 9 | 0 | 02:39:46 [sendspin] playing: synced=true syncErr=67us buffered=31ms snaps=3 corrections=180 underruns=2 lateDrops=39 lastErr=-86us | 02:40:28 [sendspin] arrival: n=6000 lead min=59ms median=80ms max=83ms
+02:41:42 min 10 | 0 | 02:40:46 [sendspin] playing: synced=true syncErr=67us buffered=32ms snaps=3 corrections=186 underruns=2 lateDrops=39 lastErr=-75us | 02:41:28 [sendspin] arrival: n=6000 lead min=56ms median=79ms max=83ms
+02:42:42 min 11 | 0 | 02:41:46 [sendspin] playing: synced=true syncErr=67us buffered=32ms snaps=3 corrections=191 underruns=2 lateDrops=39 lastErr=-105us | 02:42:28 [sendspin] arrival: n=6000 lead min=42ms median=79ms max=83ms
+02:43:42 min 12 | 0 | 02:42:46 [sendspin] playing: synced=true syncErr=67us buffered=32ms snaps=3 corrections=198 underruns=2 lateDrops=39 lastErr=-66us | 02:43:28 [sendspin] arrival: n=6000 lead min=58ms median=80ms max=83ms
+02:44:42 min 13 | 0 | 02:43:46 [sendspin] playing: synced=true syncErr=68us buffered=26ms snaps=3 corrections=203 underruns=2 lateDrops=39 lastErr=-81us | 02:44:28 [sendspin] arrival: n=6000 lead min=50ms median=79ms max=83ms
+02:45:45 --- reselect
+02:45:47 min 14 | 0 | 02:44:46 [sendspin] playing: synced=true syncErr=68us buffered=27ms snaps=3 corrections=209 underruns=2 lateDrops=39 lastErr=-103us | 02:45:28 [sendspin] arrival: n=6000 lead min=64ms median=79ms max=82ms
+02:46:42 min 15 | 0 | 02:45:47 [sendspin] playing: synced=true syncErr=68us buffered=40ms snaps=1 corrections=28 underruns=0 lateDrops=0 lastErr=-70us | 02:46:28 [sendspin] arrival: n=5499 lead min=56ms median=79ms max=82ms
+02:47:42 min 16 | 0 | 02:46:47 [sendspin] playing: synced=true syncErr=68us buffered=34ms snaps=1 corrections=33 underruns=0 lateDrops=0 lastErr=-88us | 02:47:28 [sendspin] arrival: n=6001 lead min=56ms median=79ms max=82ms
+02:48:42 min 17 | 0 | 02:47:47 [sendspin] playing: synced=true syncErr=67us buffered=28ms snaps=1 corrections=39 underruns=0 lateDrops=0 lastErr=-90us | 02:48:28 [sendspin] arrival: n=6000 lead min=37ms median=79ms max=82ms
+02:49:42 min 18 | 0 | 02:48:47 [sendspin] playing: synced=true syncErr=67us buffered=33ms snaps=1 corrections=45 underruns=0 lateDrops=0 lastErr=-74us | 02:49:28 [sendspin] arrival: n=6001 lead min=57ms median=79ms max=82ms
+02:50:42 min 19 | 0 | 02:49:47 [sendspin] playing: synced=true syncErr=66us buffered=36ms snaps=1 corrections=50 underruns=0 lateDrops=0 lastErr=-82us | 02:50:28 [sendspin] arrival: n=6000 lead min=59ms median=79ms max=82ms
+02:51:42 min 20 | 0 | 02:50:47 [sendspin] playing: synced=true syncErr=67us buffered=36ms snaps=1 corrections=56 underruns=0 lateDrops=0 lastErr=-96us | 02:51:28 [sendspin] arrival: n=6000 lead min=36ms median=79ms max=82ms
+2026-10-25 02:24:32,986 INFO streamer: stream settled -1.3ms off its lead; 0 silent chunk(s) dropped
+2026-10-25 02:26:50,255 INFO streamer: stream settled -1.9ms off its lead; 0 silent chunk(s) dropped
+2026-10-25 02:29:04,335 INFO streamer: stream settled -1.2ms off its lead; 0 silent chunk(s) dropped
+2026-10-25 02:38:44,523 INFO streamer: stream settled -1.2ms off its lead; 0 silent chunk(s) dropped
+2026-10-25 02:38:48,529 INFO streamer: lead steered 1 time(s), +2.0 ms in all; last +2.0 ms (was -3.9 off)
+2026-10-25 02:45:46,928 INFO streamer: stream settled -1.2ms off its lead; 0 silent chunk(s) dropped
+
+[exited with code 0]
+2026-10-25 02:38:04,827 INFO streamer: frame lead: queued median 81.1 min 78.5 ms | sent median 81.0 min 78.4 ms (n=1000)
+2026-10-25 02:38:14,838 INFO streamer: frame lead: queued median 80.8 min 78.4 ms | sent median 80.7 min 78.3 ms (n=1001)
+2026-10-25 02:38:24,838 INFO streamer: frame lead: queued median 81.1 min 78.4 ms | sent median 81.0 min 78.3 ms (n=1000)
+2026-10-25 02:38:34,838 INFO streamer: frame lead: queued median 81.0 min 78.4 ms | sent median 80.9 min 78.2 ms (n=1000)
+2026-10-25 02:38:44,523 INFO streamer: stream settled -1.2ms off its lead; 0 silent chunk(s) dropped
+2026-10-25 02:38:44,843 INFO streamer: frame lead: queued median 80.8 min 77.9 ms | sent median 80.7 min 77.9 ms (n=681)
+2026-10-25 02:38:48,529 INFO streamer: lead steered 1 time(s), +2.0 ms in all; last +2.0 ms (was -3.9 off)
+2026-10-25 02:38:54,849 INFO streamer: frame lead: queued median 79.4 min 73.0 ms | sent median 79.4 min 72.9 ms (n=1000)
+2026-10-25 02:39:04,859 INFO streamer: frame lead: queued median 81.7 min 79.0 ms | sent median 81.5 min 78.8 ms (n=1001)
+2026-10-25 02:39:14,870 INFO streamer: frame lead: queued median 81.6 min 79.3 ms | sent median 81.5 min 79.1 ms (n=1001)
+2026-10-25 02:39:24,880 INFO streamer: frame lead: queued median 81.7 min 79.4 ms | sent median 81.6 min 79.3 ms (n=1001)
+2026-10-25 02:39:34,881 INFO streamer: frame lead: queued median 82.0 min 79.4 ms | sent median 81.9 min 79.3 ms (n=1000)
+2026-10-25 02:39:44,881 INFO streamer: frame lead: queued median 81.8 min 78.9 ms | sent median 81.6 min 78.8 ms (n=1000)
+2026-10-25 02:39:54,891 INFO streamer: frame lead: queued median 81.7 min 79.3 ms | sent median 81.7 min 79.2 ms (n=1001)
+2026-10-25 02:40:04,891 INFO streamer: frame lead: queued median 81.7 min 79.4 ms | sent median 81.7 min 79.2 ms (n=1000)
+2026-10-25 02:40:14,902 INFO streamer: frame lead: queued median 81.7 min 79.3 ms | sent median 81.7 min 79.1 ms (n=1001)
+2026-10-25 02:40:24,902 INFO streamer: frame lead: queued median 82.0 min 79.5 ms | sent median 81.9 min 79.4 ms (n=1000)
+2026-10-25 02:40:34,902 INFO streamer: frame lead: queued median 82.1 min 79.4 ms | sent median 82.0 min 79.3 ms (n=1000)
+2026-10-25 02:40:44,907 INFO streamer: frame lead: queued median 82.0 min 79.3 ms | sent median 81.9 min 79.2 ms (n=1001)
+2026-10-25 02:40:54,907 INFO streamer: frame lead: queued median 82.1 min 79.5 ms | sent median 82.0 min 79.4 ms (n=1000)
+
+# A/B run 1, 2026-10-25 02:04-02:24 +01:00 (after the DST change): same firmware, streamer at 20 ms chunks, 10 ms capture request, DSCP off; same soak script
+02:05:10 min 1 | 0 | 02:04:28 [sendspin] arrival: n=5178 lead min=45ms median=81ms max=91ms | 02:04:49 [sendspin] playing: synced=true syncErr=230us buffered=32ms snaps=2 corrections=157 underruns=0 lateDrops=17 lastErr=-51us
+02:06:10 min 2 | 0 | 02:05:28 [sendspin] arrival: n=6001 lead min=60ms median=81ms max=91ms | 02:05:49 [sendspin] playing: synced=true syncErr=182us buffered=36ms snaps=2 corrections=162 underruns=0 lateDrops=17 lastErr=-70us
+02:07:10 min 3 | 0 | 02:06:28 [sendspin] arrival: n=6001 lead min=62ms median=82ms max=92ms | 02:06:49 [sendspin] playing: synced=true syncErr=144us buffered=40ms snaps=2 corrections=168 underruns=0 lateDrops=17 lastErr=-71us
+02:08:10 min 4 | 0 | 02:07:28 [sendspin] arrival: n=6000 lead min=59ms median=82ms max=92ms | 02:07:49 [sendspin] playing: synced=true syncErr=126us buffered=34ms snaps=2 corrections=174 underruns=0 lateDrops=17 lastErr=-64us
+02:09:10 min 5 | 0 | 02:08:28 [sendspin] arrival: n=6000 lead min=67ms median=82ms max=91ms | 02:08:49 [sendspin] playing: synced=true syncErr=112us buffered=34ms snaps=2 corrections=179 underruns=0 lateDrops=17 lastErr=-74us
+02:10:10 min 6 | 0 | 02:09:28 [sendspin] arrival: n=6002 lead min=41ms median=81ms max=91ms | 02:09:49 [sendspin] playing: synced=true syncErr=105us buffered=34ms snaps=2 corrections=185 underruns=0 lateDrops=17 lastErr=-62us
+02:11:12 --- stop/start
+02:11:14 min 7 | 0 | 02:10:28 [sendspin] arrival: n=6000 lead min=59ms median=82ms max=92ms | 02:10:49 [sendspin] playing: synced=true syncErr=99us buffered=39ms snaps=2 corrections=190 underruns=0 lateDrops=17 lastErr=-81us
+02:12:10 min 8 | 0 | 02:11:28 [sendspin] arrival: n=5678 lead min=58ms median=81ms max=91ms | 02:11:50 [sendspin] playing: synced=true syncErr=97us buffered=34ms snaps=2 corrections=148 underruns=0 lateDrops=12 lastErr=-95us
+02:13:10 min 9 | 0 | 02:12:28 [sendspin] arrival: n=6002 lead min=50ms median=82ms max=91ms | 02:12:50 [sendspin] playing: synced=true syncErr=91us buffered=23ms snaps=2 corrections=154 underruns=0 lateDrops=12 lastErr=-73us
+02:14:10 min 10 | 0 | 02:13:28 [sendspin] arrival: n=6000 lead min=39ms median=82ms max=92ms | 02:13:50 [sendspin] playing: synced=true syncErr=87us buffered=48ms snaps=2 corrections=159 underruns=0 lateDrops=12 lastErr=-107us
+02:15:10 min 11 | 0 | 02:14:28 [sendspin] arrival: n=6000 lead min=60ms median=81ms max=91ms | 02:14:50 [sendspin] playing: synced=true syncErr=82us buffered=48ms snaps=2 corrections=165 underruns=0 lateDrops=12 lastErr=-104us
+02:16:11 min 12 | 0 | 02:15:28 [sendspin] arrival: n=6000 lead min=57ms median=81ms max=91ms | 02:15:50 [sendspin] playing: synced=true syncErr=78us buffered=48ms snaps=2 corrections=171 underruns=0 lateDrops=12 lastErr=-68us
+02:17:10 min 13 | 0 | 02:16:28 [sendspin] arrival: n=6000 lead min=53ms median=82ms max=92ms | 02:16:50 [sendspin] playing: synced=true syncErr=77us buffered=48ms snaps=2 corrections=177 underruns=0 lateDrops=12 lastErr=-67us
+02:18:14 --- reselect
+02:18:16 min 14 | 0 | 02:17:28 [sendspin] arrival: n=6000 lead min=52ms median=81ms max=91ms | 02:17:50 [sendspin] playing: synced=true syncErr=74us buffered=49ms snaps=2 corrections=182 underruns=0 lateDrops=12 lastErr=-108us
+02:19:10 min 15 | 0 | 02:18:28 [sendspin] arrival: n=5500 lead min=55ms median=81ms max=91ms | 02:18:50 [sendspin] playing: synced=true syncErr=72us buffered=48ms snaps=1 corrections=31 underruns=0 lateDrops=0 lastErr=-99us
+02:20:10 min 16 | 0 | 02:19:28 [sendspin] arrival: n=6000 lead min=50ms median=81ms max=91ms | 02:19:50 [sendspin] playing: synced=true syncErr=71us buffered=39ms snaps=1 corrections=37 underruns=0 lateDrops=0 lastErr=-91us
+02:21:10 min 17 | 0 | 02:20:28 [sendspin] arrival: n=6000 lead min=59ms median=81ms max=91ms | 02:20:50 [sendspin] playing: synced=true syncErr=70us buffered=39ms snaps=1 corrections=43 underruns=0 lateDrops=0 lastErr=-96us
+02:22:10 min 18 | 0 | 02:21:28 [sendspin] arrival: n=6000 lead min=60ms median=81ms max=91ms | 02:21:50 [sendspin] playing: synced=true syncErr=69us buffered=39ms snaps=1 corrections=48 underruns=0 lateDrops=0 lastErr=-106us
+02:23:10 min 19 | 0 | 02:22:28 [sendspin] arrival: n=6000 lead min=43ms median=81ms max=91ms | 02:22:50 [sendspin] playing: synced=true syncErr=69us buffered=33ms snaps=1 corrections=54 underruns=0 lateDrops=0 lastErr=-90us
+02:24:10 min 20 | 0 | 02:23:28 [sendspin] arrival: n=6000 lead min=59ms median=81ms max=91ms | 02:23:50 [sendspin] playing: synced=true syncErr=69us buffered=34ms snaps=1 corrections=60 underruns=0 lateDrops=0 lastErr=-66us
+2026-10-25 02:03:53,686 INFO streamer: stream settled 0.3ms off its lead; 1 silent chunk(s) dropped
+2026-10-25 02:03:55,714 INFO streamer: lead steered 1 time(s), +2.0 ms in all; last +2.0 ms (was -3.2 off)
+2026-10-25 02:11:13,377 INFO streamer: stream settled 0.0ms off its lead; 1 silent chunk(s) dropped
+2026-10-25 02:11:17,405 INFO streamer: lead steered 1 time(s), +2.0 ms in all; last +2.0 ms (was -4.6 off)
+2026-10-25 02:18:15,842 INFO streamer: stream settled -1.2ms off its lead; 0 silent chunk(s) dropped
+
+[exited with code 0]
+
+# Run 2 of today's settings, 2026-10-25 02:27-02:47 +01:00: 10 ms chunks, 5 ms capture request, DSCP CS6; same soak script
+2026-10-25 02:26:04,948 INFO streamer: A/B config: 10 ms chunks, 5 ms capture request, DSCP CS6
+02:28:09 min 1 | 0 | 02:27:28 [sendspin] arrival: n=6000 lead min=34ms median=79ms max=82ms | 02:27:50 [sendspin] playing: synced=true syncErr=184us buffered=40ms snaps=2 corrections=19 underruns=0 lateDrops=18 lastErr=-80us
+02:29:09 min 2 | 0 | 02:28:28 [sendspin] arrival: n=6000 lead min=41ms median=79ms max=82ms | 02:28:50 [sendspin] playing: synced=true syncErr=154us buffered=41ms snaps=2 corrections=24 underruns=0 lateDrops=18 lastErr=-82us
+02:30:09 min 3 | 0 | 02:29:28 [sendspin] arrival: n=6000 lead min=37ms median=79ms max=82ms | 02:29:50 [sendspin] playing: synced=true syncErr=132us buffered=41ms snaps=2 corrections=30 underruns=0 lateDrops=18 lastErr=-97us
+02:31:09 min 4 | 0 | 02:30:28 [sendspin] arrival: n=6000 lead min=58ms median=79ms max=82ms | 02:30:50 [sendspin] playing: synced=true syncErr=116us buffered=34ms snaps=2 corrections=36 underruns=0 lateDrops=18 lastErr=-65us
+02:32:09 min 5 | 0 | 02:31:28 [sendspin] arrival: n=6000 lead min=61ms median=79ms max=82ms | 02:31:50 [sendspin] playing: synced=true syncErr=106us buffered=35ms snaps=2 corrections=42 underruns=0 lateDrops=18 lastErr=-70us
+02:33:09 min 6 | 0 | 02:32:28 [sendspin] arrival: n=6001 lead min=59ms median=79ms max=82ms | 02:32:50 [sendspin] playing: synced=true syncErr=99us buffered=35ms snaps=2 corrections=48 underruns=0 lateDrops=18 lastErr=-84us
+02:34:11 --- stop/start
+02:34:12 min 7 | 0 | 02:33:28 [sendspin] arrival: n=6000 lead min=59ms median=79ms max=82ms | 02:33:50 [sendspin] playing: synced=true syncErr=92us buffered=29ms snaps=2 corrections=54 underruns=0 lateDrops=18 lastErr=-82us
+02:35:09 min 8 | 0 | 02:34:28 [sendspin] arrival: n=5680 lead min=61ms median=79ms max=82ms | 02:34:50 [sendspin] playing: synced=true syncErr=87us buffered=35ms snaps=2 corrections=5 underruns=0 lateDrops=13 lastErr=-76us
+02:36:09 min 9 | 0 | 02:35:28 [sendspin] arrival: n=6000 lead min=63ms median=79ms max=82ms | 02:35:50 [sendspin] playing: synced=true syncErr=84us buffered=29ms snaps=2 corrections=10 underruns=0 lateDrops=13 lastErr=-102us
+02:37:09 min 10 | 0 | 02:36:28 [sendspin] arrival: n=6000 lead min=41ms median=79ms max=82ms | 02:36:50 [sendspin] playing: synced=true syncErr=81us buffered=29ms snaps=2 corrections=17 underruns=0 lateDrops=13 lastErr=-79us
+02:38:09 min 11 | 0 | 02:37:28 [sendspin] arrival: n=6000 lead min=33ms median=79ms max=82ms | 02:37:50 [sendspin] playing: synced=true syncErr=78us buffered=29ms snaps=2 corrections=23 underruns=0 lateDrops=13 lastErr=-78us
+02:39:09 min 12 | 0 | 02:38:28 [sendspin] arrival: n=6000 lead min=58ms median=79ms max=82ms | 02:38:50 [sendspin] playing: synced=true syncErr=76us buffered=33ms snaps=2 corrections=29 underruns=0 lateDrops=13 lastErr=-68us
+02:40:09 min 13 | 0 | 02:39:28 [sendspin] arrival: n=6000 lead min=58ms median=79ms max=82ms | 02:39:50 [sendspin] playing: synced=true syncErr=74us buffered=34ms snaps=2 corrections=34 underruns=0 lateDrops=13 lastErr=-89us
+02:41:13 --- reselect
+02:41:14 min 14 | 0 | 02:40:28 [sendspin] arrival: n=6000 lead min=57ms median=79ms max=82ms | 02:40:50 [sendspin] playing: synced=true syncErr=72us buffered=34ms snaps=2 corrections=40 underruns=0 lateDrops=13 lastErr=-83us
+02:42:09 min 15 | 0 | 02:41:28 [sendspin] arrival: n=5499 lead min=56ms median=79ms max=85ms | 02:41:50 [sendspin] playing: synced=true syncErr=70us buffered=35ms snaps=2 corrections=2 underruns=0 lateDrops=0 lastErr=-81us
+02:43:09 min 16 | 0 | 02:42:28 [sendspin] arrival: n=6000 lead min=63ms median=80ms max=83ms | 02:42:51 [sendspin] playing: synced=true syncErr=69us buffered=39ms snaps=2 corrections=8 underruns=0 lateDrops=0 lastErr=-72us
+02:44:09 min 17 | 0 | 02:43:28 [sendspin] arrival: n=6000 lead min=60ms median=79ms max=83ms | 02:43:51 [sendspin] playing: synced=true syncErr=69us buffered=40ms snaps=2 corrections=14 underruns=0 lateDrops=0 lastErr=-64us
+02:45:09 min 18 | 0 | 02:44:28 [sendspin] arrival: n=6000 lead min=60ms median=80ms max=83ms | 02:44:51 [sendspin] playing: synced=true syncErr=69us buffered=33ms snaps=2 corrections=19 underruns=0 lateDrops=0 lastErr=-94us
+02:46:09 min 19 | 0 | 02:45:28 [sendspin] arrival: n=6000 lead min=57ms median=79ms max=82ms | 02:45:51 [sendspin] playing: synced=true syncErr=68us buffered=33ms snaps=2 corrections=25 underruns=0 lateDrops=0 lastErr=-70us
+02:47:09 min 20 | 0 | 02:46:28 [sendspin] arrival: n=6000 lead min=57ms median=79ms max=83ms | 02:46:51 [sendspin] playing: synced=true syncErr=70us buffered=34ms snaps=2 corrections=31 underruns=0 lateDrops=0 lastErr=-69us
+2026-10-25 02:26:10,317 INFO streamer: stream settled -6.4ms off its lead; 0 silent chunk(s) dropped
+2026-10-25 02:34:12,002 INFO streamer: stream settled -6.6ms off its lead; 0 silent chunk(s) dropped
+2026-10-25 02:41:13,981 INFO streamer: stream settled 2.1ms off its lead; 1 silent chunk(s) dropped
+
+[exited with code 0]
+
+# 90-minute untouched soak, 2026-10-25 02:47-04:17 +01:00: 10 ms chunks, 5 ms capture request, DSCP CS6, lead 80 ms; one console read every 10 min, nothing else touched
+# ping -i 0.2 alongside: 27193 packets transmitted, 27193 received, 0% packet loss, time 5459810ms rtt min/avg/max/mdev = 1.101/1.924/60.837/2.697 ms 
+=== 02:57:37 after 10 min
+$ dmesg | busybox grep -c "mtk_pcm_I2S0dl1_pointer underflow"; busybox grep -E "\[sendspin\] (arrival|playing)|starved|thin" /tmp/server.log | busybox tail -24 | busybox cut -c12-200
+0
+02:45:51 [sendspin] playing: synced=true syncErr=68us buffered=33ms snaps=2 corrections=25 underruns=0 lateDrops=0 lastErr=-70us
+02:46:28 [sendspin] arrival: n=6000 lead min=57ms median=79ms max=83ms
+02:46:51 [sendspin] playing: synced=true syncErr=70us buffered=34ms snaps=2 corrections=31 underruns=0 lateDrops=0 lastErr=-69us
+02:47:28 [sendspin] arrival: n=6001 lead min=59ms median=79ms max=82ms
+02:47:51 [sendspin] playing: synced=true syncErr=69us buffered=34ms snaps=2 corrections=37 underruns=0 lateDrops=0 lastErr=-86us
+02:48:28 [sendspin] arrival: n=6000 lead min=60ms median=80ms max=83ms
+02:48:51 [sendspin] playing: synced=true syncErr=69us buffered=28ms snaps=2 corrections=43 underruns=0 lateDrops=0 lastErr=-72us
+02:49:28 [sendspin] arrival: n=6000 lead min=57ms median=79ms max=82ms
+02:49:51 [sendspin] playing: synced=true syncErr=69us buffered=28ms snaps=2 corrections=49 underruns=0 lateDrops=0 lastErr=-83us
+02:50:28 [sendspin] arrival: n=6000 lead min=49ms median=79ms max=82ms
+02:50:51 [sendspin] playing: synced=true syncErr=68us buffered=43ms snaps=2 corrections=54 underruns=0 lateDrops=0 lastErr=-99us
+02:51:28 [sendspin] arrival: n=6000 lead min=56ms median=79ms max=83ms
+02:51:51 [sendspin] playing: synced=true syncErr=68us buffered=36ms snaps=2 corrections=61 underruns=0 lateDrops=0 lastErr=-69us
+02:52:28 [sendspin] arrival: n=6000 lead min=57ms median=79ms max=82ms
+02:52:51 [sendspin] playing: synced=true syncErr=69us buffered=30ms snaps=2 corrections=66 underruns=0 lateDrops=0 lastErr=-83us
+02:53:28 [sendspin] arrival: n=6000 lead min=67ms median=79ms max=82ms
+02:53:51 [sendspin] playing: synced=true syncErr=69us buffered=31ms snaps=2 corrections=72 underruns=0 lateDrops=0 lastErr=-106us
+02:54:28 [sendspin] arrival: n=6000 lead min=58ms median=79ms max=82ms
+02:54:51 [sendspin] playing: synced=true syncErr=68us buffered=31ms snaps=2 corrections=78 underruns=0 lateDrops=0 lastErr=-80us
+02:55:28 [sendspin] arrival: n=6000 lead min=60ms median=79ms max=82ms
+02:55:51 [sendspin] playing: synced=true syncErr=68us buffered=24ms snaps=2 corrections=83 underruns=0 lateDrops=0 lastErr=-109us
+02:56:28 [sendspin] arrival: n=6001 lead min=65ms median=79ms max=82ms
+02:56:51 [sendspin] playing: synced=true syncErr=67us buffered=25ms snaps=2 corrections=90 underruns=0 lateDrops=0 lastErr=-61us
+02:57:28 [sendspin] arrival: n=6000 lead min=67ms median=79ms max=82ms
+
+=== 03:07:37 after 20 min
+$ dmesg | busybox grep -c "mtk_pcm_I2S0dl1_pointer underflow"; busybox grep -E "\[sendspin\] (arrival|playing)|starved|thin" /tmp/server.log | busybox tail -24 | busybox cut -c12-200
+0
+02:55:51 [sendspin] playing: synced=true syncErr=68us buffered=24ms snaps=2 corrections=83 underruns=0 lateDrops=0 lastErr=-109us
+02:56:28 [sendspin] arrival: n=6001 lead min=65ms median=79ms max=82ms
+02:56:51 [sendspin] playing: synced=true syncErr=67us buffered=25ms snaps=2 corrections=90 underruns=0 lateDrops=0 lastErr=-61us
+02:57:28 [sendspin] arrival: n=6000 lead min=67ms median=79ms max=82ms
+02:57:51 [sendspin] playing: synced=true syncErr=67us buffered=25ms snaps=2 corrections=95 underruns=0 lateDrops=0 lastErr=-59us
+02:58:28 [sendspin] arrival: n=6000 lead min=52ms median=79ms max=82ms
+02:58:51 [sendspin] playing: synced=true syncErr=67us buffered=25ms snaps=2 corrections=101 underruns=0 lateDrops=0 lastErr=-70us
+02:59:28 [sendspin] arrival: n=6000 lead min=57ms median=79ms max=82ms
+02:59:51 [sendspin] playing: synced=true syncErr=67us buffered=29ms snaps=2 corrections=107 underruns=0 lateDrops=0 lastErr=-82us
+03:00:28 [sendspin] arrival: n=6000 lead min=58ms median=79ms max=82ms
+03:00:51 [sendspin] playing: synced=true syncErr=67us buffered=30ms snaps=2 corrections=112 underruns=0 lateDrops=0 lastErr=-111us
+03:01:28 [sendspin] arrival: n=6000 lead min=56ms median=79ms max=82ms
+03:01:51 [sendspin] playing: synced=true syncErr=67us buffered=30ms snaps=2 corrections=118 underruns=0 lateDrops=0 lastErr=-94us
+03:02:28 [sendspin] arrival: n=6000 lead min=57ms median=79ms max=82ms
+03:02:51 [sendspin] playing: synced=true syncErr=67us buffered=30ms snaps=2 corrections=124 underruns=0 lateDrops=0 lastErr=-97us
+03:03:28 [sendspin] arrival: n=6000 lead min=37ms median=79ms max=82ms
+03:03:51 [sendspin] playing: synced=true syncErr=67us buffered=34ms snaps=2 corrections=130 underruns=0 lateDrops=0 lastErr=-94us
+03:04:28 [sendspin] arrival: n=6000 lead min=57ms median=79ms max=82ms
+03:04:51 [sendspin] playing: synced=true syncErr=67us buffered=28ms snaps=2 corrections=136 underruns=0 lateDrops=0 lastErr=-76us
+03:05:28 [sendspin] arrival: n=6000 lead min=58ms median=79ms max=82ms
+03:05:52 [sendspin] playing: synced=true syncErr=67us buffered=32ms snaps=2 corrections=141 underruns=0 lateDrops=0 lastErr=-113us
+03:06:28 [sendspin] arrival: n=6000 lead min=57ms median=79ms max=82ms
+03:06:52 [sendspin] playing: synced=true syncErr=67us buffered=32ms snaps=2 corrections=147 underruns=0 lateDrops=0 lastErr=-105us
+03:07:28 [sendspin] arrival: n=6000 lead min=66ms median=79ms max=82ms
+
+=== 03:17:37 after 30 min
+$ dmesg | busybox grep -c "mtk_pcm_I2S0dl1_pointer underflow"; busybox grep -E "\[sendspin\] (arrival|playing)|starved|thin" /tmp/server.log | busybox tail -24 | busybox cut -c12-200
+0
+03:05:52 [sendspin] playing: synced=true syncErr=67us buffered=32ms snaps=2 corrections=141 underruns=0 lateDrops=0 lastErr=-113us
+03:06:28 [sendspin] arrival: n=6000 lead min=57ms median=79ms max=82ms
+03:06:52 [sendspin] playing: synced=true syncErr=67us buffered=32ms snaps=2 corrections=147 underruns=0 lateDrops=0 lastErr=-105us
+03:07:28 [sendspin] arrival: n=6000 lead min=66ms median=79ms max=82ms
+03:07:52 [sendspin] playing: synced=true syncErr=67us buffered=37ms snaps=2 corrections=153 underruns=0 lateDrops=0 lastErr=-100us
+03:08:28 [sendspin] arrival: n=6000 lead min=58ms median=79ms max=82ms
+03:08:52 [sendspin] playing: synced=true syncErr=67us buffered=37ms snaps=2 corrections=160 underruns=0 lateDrops=0 lastErr=-49us
+03:09:28 [sendspin] arrival: n=6001 lead min=59ms median=79ms max=83ms
+03:09:52 [sendspin] playing: synced=true syncErr=67us buffered=32ms snaps=2 corrections=194 underruns=0 lateDrops=0 lastErr=-75us
+03:10:28 [sendspin] arrival: n=6000 lead min=53ms median=80ms max=83ms
+03:10:52 [sendspin] playing: synced=true syncErr=67us buffered=36ms snaps=2 corrections=200 underruns=0 lateDrops=0 lastErr=-93us
+03:11:28 [sendspin] arrival: n=6000 lead min=61ms median=80ms max=83ms
+03:11:52 [sendspin] playing: synced=true syncErr=68us buffered=36ms snaps=2 corrections=205 underruns=0 lateDrops=0 lastErr=-108us
+03:12:28 [sendspin] arrival: n=6000 lead min=60ms median=79ms max=82ms
+03:12:52 [sendspin] playing: synced=true syncErr=67us buffered=36ms snaps=2 corrections=211 underruns=0 lateDrops=0 lastErr=-110us
+03:13:28 [sendspin] arrival: n=6000 lead min=63ms median=80ms max=83ms
+03:13:52 [sendspin] playing: synced=true syncErr=67us buffered=30ms snaps=2 corrections=217 underruns=0 lateDrops=0 lastErr=-78us
+03:14:28 [sendspin] arrival: n=6000 lead min=53ms median=79ms max=82ms
+03:14:52 [sendspin] playing: synced=true syncErr=68us buffered=30ms snaps=2 corrections=223 underruns=0 lateDrops=0 lastErr=-103us
+03:15:28 [sendspin] arrival: n=6000 lead min=56ms median=79ms max=83ms
+03:15:52 [sendspin] playing: synced=true syncErr=68us buffered=34ms snaps=2 corrections=229 underruns=0 lateDrops=0 lastErr=-84us
+03:16:28 [sendspin] arrival: n=6000 lead min=60ms median=79ms max=82ms
+03:16:52 [sendspin] playing: synced=true syncErr=68us buffered=35ms snaps=2 corrections=235 underruns=0 lateDrops=0 lastErr=-86us
+03:17:28 [sendspin] arrival: n=6000 lead min=58ms median=79ms max=83ms
+
+=== 03:27:37 after 40 min
+$ dmesg | busybox grep -c "mtk_pcm_I2S0dl1_pointer underflow"; busybox grep -E "\[sendspin\] (arrival|playing)|starved|thin" /tmp/server.log | busybox tail -24 | busybox cut -c12-200
+0
+03:16:28 [sendspin] arrival: n=6000 lead min=60ms median=79ms max=82ms
+03:16:52 [sendspin] playing: synced=true syncErr=68us buffered=35ms snaps=2 corrections=235 underruns=0 lateDrops=0 lastErr=-86us
+03:17:28 [sendspin] arrival: n=6000 lead min=58ms median=79ms max=83ms
+03:17:52 [sendspin] playing: synced=true syncErr=68us buffered=35ms snaps=2 corrections=240 underruns=0 lateDrops=0 lastErr=-92us
+03:18:28 [sendspin] arrival: n=6001 lead min=56ms median=79ms max=82ms
+03:18:52 [sendspin] playing: synced=true syncErr=68us buffered=35ms snaps=2 corrections=246 underruns=0 lateDrops=0 lastErr=-90us
+03:19:28 [sendspin] arrival: n=6000 lead min=61ms median=79ms max=82ms
+03:19:52 [sendspin] playing: synced=true syncErr=68us buffered=39ms snaps=2 corrections=252 underruns=0 lateDrops=0 lastErr=-108us
+03:20:28 [sendspin] arrival: n=6001 lead min=56ms median=79ms max=82ms
+03:20:52 [sendspin] playing: synced=true syncErr=67us buffered=33ms snaps=2 corrections=258 underruns=0 lateDrops=0 lastErr=-78us
+03:21:28 [sendspin] arrival: n=6000 lead min=38ms median=79ms max=82ms
+03:21:52 [sendspin] playing: synced=true syncErr=67us buffered=33ms snaps=2 corrections=264 underruns=0 lateDrops=0 lastErr=-95us
+03:22:28 [sendspin] arrival: n=6000 lead min=58ms median=79ms max=82ms
+03:22:52 [sendspin] playing: synced=true syncErr=67us buffered=34ms snaps=2 corrections=270 underruns=0 lateDrops=0 lastErr=-56us
+03:23:28 [sendspin] arrival: n=6001 lead min=58ms median=79ms max=82ms
+03:23:36 [speaker] ALSA buffer thin — 1120 frames queued (23.3ms), lowest seen >=928 (a bound, not the minimum — see AlsaMargin), 23 period(s) under 1152 since boot; this is where a cli
+03:23:52 [sendspin] playing: synced=true syncErr=67us buffered=34ms snaps=2 corrections=276 underruns=0 lateDrops=0 lastErr=-52us
+03:24:28 [sendspin] arrival: n=6000 lead min=20ms median=79ms max=82ms
+03:24:52 [sendspin] playing: synced=true syncErr=67us buffered=34ms snaps=2 corrections=281 underruns=0 lateDrops=0 lastErr=-85us
+03:25:28 [sendspin] arrival: n=6001 lead min=58ms median=79ms max=82ms
+03:25:52 [sendspin] playing: synced=true syncErr=67us buffered=28ms snaps=2 corrections=287 underruns=0 lateDrops=0 lastErr=-84us
+03:26:28 [sendspin] arrival: n=6000 lead min=59ms median=79ms max=82ms
+03:26:52 [sendspin] playing: synced=true syncErr=67us buffered=42ms snaps=2 corrections=293 underruns=0 lateDrops=0 lastErr=-77us
+03:27:28 [sendspin] arrival: n=6000 lead min=60ms median=79ms max=82ms
+
+=== 03:37:37 after 50 min
+$ dmesg | busybox grep -c "mtk_pcm_I2S0dl1_pointer underflow"; busybox grep -E "\[sendspin\] (arrival|playing)|starved|thin" /tmp/server.log | busybox tail -24 | busybox cut -c12-200
+0
+03:25:52 [sendspin] playing: synced=true syncErr=67us buffered=28ms snaps=2 corrections=287 underruns=0 lateDrops=0 lastErr=-84us
+03:26:28 [sendspin] arrival: n=6000 lead min=59ms median=79ms max=82ms
+03:26:52 [sendspin] playing: synced=true syncErr=67us buffered=42ms snaps=2 corrections=293 underruns=0 lateDrops=0 lastErr=-77us
+03:27:28 [sendspin] arrival: n=6000 lead min=60ms median=79ms max=82ms
+03:27:52 [sendspin] playing: synced=true syncErr=66us buffered=43ms snaps=2 corrections=299 underruns=0 lateDrops=0 lastErr=-110us
+03:28:28 [sendspin] arrival: n=6000 lead min=62ms median=79ms max=82ms
+03:28:53 [sendspin] playing: synced=true syncErr=66us buffered=36ms snaps=2 corrections=304 underruns=0 lateDrops=0 lastErr=-99us
+03:29:28 [sendspin] arrival: n=6000 lead min=61ms median=79ms max=82ms
+03:29:53 [sendspin] playing: synced=true syncErr=66us buffered=31ms snaps=2 corrections=310 underruns=0 lateDrops=0 lastErr=-77us
+03:30:28 [sendspin] arrival: n=6000 lead min=64ms median=79ms max=82ms
+03:30:53 [sendspin] playing: synced=true syncErr=66us buffered=31ms snaps=2 corrections=315 underruns=0 lateDrops=0 lastErr=-103us
+03:31:28 [sendspin] arrival: n=6001 lead min=62ms median=79ms max=82ms
+03:31:53 [sendspin] playing: synced=true syncErr=66us buffered=31ms snaps=2 corrections=322 underruns=0 lateDrops=0 lastErr=-92us
+03:32:28 [sendspin] arrival: n=6000 lead min=60ms median=79ms max=82ms
+03:32:53 [sendspin] playing: synced=true syncErr=67us buffered=31ms snaps=2 corrections=327 underruns=0 lateDrops=0 lastErr=-94us
+03:33:28 [sendspin] arrival: n=6000 lead min=69ms median=79ms max=82ms
+03:33:53 [sendspin] playing: synced=true syncErr=67us buffered=25ms snaps=2 corrections=334 underruns=0 lateDrops=0 lastErr=-57us
+03:34:28 [sendspin] arrival: n=6000 lead min=60ms median=79ms max=82ms
+03:34:53 [sendspin] playing: synced=true syncErr=66us buffered=25ms snaps=2 corrections=339 underruns=0 lateDrops=0 lastErr=-92us
+03:35:28 [sendspin] arrival: n=6001 lead min=58ms median=79ms max=82ms
+03:35:53 [sendspin] playing: synced=true syncErr=67us buffered=29ms snaps=2 corrections=345 underruns=0 lateDrops=0 lastErr=-95us
+03:36:28 [sendspin] arrival: n=6000 lead min=38ms median=79ms max=82ms
+03:36:53 [sendspin] playing: synced=true syncErr=67us buffered=30ms snaps=2 corrections=351 underruns=0 lateDrops=0 lastErr=-77us
+03:37:28 [sendspin] arrival: n=6000 lead min=60ms median=78ms max=81ms
+
+=== 03:47:37 after 60 min
+$ dmesg | busybox grep -c "mtk_pcm_I2S0dl1_pointer underflow"; busybox grep -E "\[sendspin\] (arrival|playing)|starved|thin" /tmp/server.log | busybox tail -24 | busybox cut -c12-200
+0
+03:35:53 [sendspin] playing: synced=true syncErr=67us buffered=29ms snaps=2 corrections=345 underruns=0 lateDrops=0 lastErr=-95us
+03:36:28 [sendspin] arrival: n=6000 lead min=38ms median=79ms max=82ms
+03:36:53 [sendspin] playing: synced=true syncErr=67us buffered=30ms snaps=2 corrections=351 underruns=0 lateDrops=0 lastErr=-77us
+03:37:28 [sendspin] arrival: n=6000 lead min=60ms median=78ms max=81ms
+03:37:53 [sendspin] playing: synced=true syncErr=67us buffered=34ms snaps=2 corrections=357 underruns=0 lateDrops=0 lastErr=-64us
+03:38:28 [sendspin] arrival: n=6000 lead min=55ms median=78ms max=82ms
+03:38:53 [sendspin] playing: synced=true syncErr=67us buffered=27ms snaps=2 corrections=363 underruns=0 lateDrops=0 lastErr=-78us
+03:39:28 [sendspin] arrival: n=6000 lead min=58ms median=78ms max=82ms
+03:39:53 [sendspin] playing: synced=true syncErr=68us buffered=32ms snaps=2 corrections=369 underruns=0 lateDrops=0 lastErr=-90us
+03:40:28 [sendspin] arrival: n=6000 lead min=66ms median=78ms max=82ms
+03:40:53 [sendspin] playing: synced=true syncErr=69us buffered=36ms snaps=2 corrections=375 underruns=0 lateDrops=0 lastErr=-80us
+03:41:28 [sendspin] arrival: n=6001 lead min=57ms median=78ms max=81ms
+03:41:53 [sendspin] playing: synced=true syncErr=69us buffered=29ms snaps=2 corrections=380 underruns=0 lateDrops=0 lastErr=-81us
+03:42:28 [sendspin] arrival: n=6000 lead min=45ms median=78ms max=81ms
+03:42:53 [sendspin] playing: synced=true syncErr=68us buffered=30ms snaps=2 corrections=386 underruns=0 lateDrops=0 lastErr=-70us
+03:43:28 [sendspin] arrival: n=6000 lead min=60ms median=79ms max=82ms
+03:43:53 [sendspin] playing: synced=true syncErr=69us buffered=35ms snaps=2 corrections=417 underruns=0 lateDrops=0 lastErr=-65us
+03:44:28 [sendspin] arrival: n=6000 lead min=63ms median=79ms max=82ms
+03:44:53 [sendspin] playing: synced=true syncErr=68us buffered=35ms snaps=2 corrections=422 underruns=0 lateDrops=0 lastErr=-77us
+03:45:28 [sendspin] arrival: n=6001 lead min=41ms median=79ms max=82ms
+03:45:54 [sendspin] playing: synced=true syncErr=68us buffered=29ms snaps=2 corrections=428 underruns=0 lateDrops=0 lastErr=-91us
+03:46:28 [sendspin] arrival: n=6000 lead min=58ms median=79ms max=82ms
+03:46:54 [sendspin] playing: synced=true syncErr=68us buffered=29ms snaps=2 corrections=434 underruns=0 lateDrops=0 lastErr=-63us
+03:47:28 [sendspin] arrival: n=6000 lead min=57ms median=79ms max=83ms
+
+=== 03:57:37 after 70 min
+$ dmesg | busybox grep -c "mtk_pcm_I2S0dl1_pointer underflow"; busybox grep -E "\[sendspin\] (arrival|playing)|starved|thin" /tmp/server.log | busybox tail -24 | busybox cut -c12-200
+0
+03:45:54 [sendspin] playing: synced=true syncErr=68us buffered=29ms snaps=2 corrections=428 underruns=0 lateDrops=0 lastErr=-91us
+03:46:28 [sendspin] arrival: n=6000 lead min=58ms median=79ms max=82ms
+03:46:54 [sendspin] playing: synced=true syncErr=68us buffered=29ms snaps=2 corrections=434 underruns=0 lateDrops=0 lastErr=-63us
+03:47:28 [sendspin] arrival: n=6000 lead min=57ms median=79ms max=83ms
+03:47:54 [sendspin] playing: synced=true syncErr=68us buffered=29ms snaps=2 corrections=440 underruns=0 lateDrops=0 lastErr=-75us
+03:48:28 [sendspin] arrival: n=6000 lead min=50ms median=79ms max=82ms
+03:48:54 [sendspin] playing: synced=true syncErr=67us buffered=33ms snaps=2 corrections=445 underruns=0 lateDrops=0 lastErr=-93us
+03:49:28 [sendspin] arrival: n=6001 lead min=57ms median=79ms max=82ms
+03:49:54 [sendspin] playing: synced=true syncErr=68us buffered=34ms snaps=2 corrections=451 underruns=0 lateDrops=0 lastErr=-85us
+03:50:28 [sendspin] arrival: n=6000 lead min=38ms median=79ms max=82ms
+03:50:54 [sendspin] playing: synced=true syncErr=67us buffered=34ms snaps=2 corrections=457 underruns=0 lateDrops=0 lastErr=-74us
+03:51:28 [sendspin] arrival: n=6000 lead min=59ms median=79ms max=82ms
+03:51:54 [sendspin] playing: synced=true syncErr=67us buffered=34ms snaps=2 corrections=463 underruns=0 lateDrops=0 lastErr=-86us
+03:52:28 [sendspin] arrival: n=6000 lead min=52ms median=79ms max=82ms
+03:52:54 [sendspin] playing: synced=true syncErr=67us buffered=38ms snaps=2 corrections=468 underruns=0 lateDrops=0 lastErr=-104us
+03:53:28 [sendspin] arrival: n=6001 lead min=56ms median=79ms max=82ms
+03:53:54 [sendspin] playing: synced=true syncErr=67us buffered=39ms snaps=2 corrections=474 underruns=0 lateDrops=0 lastErr=-80us
+03:54:28 [sendspin] arrival: n=6000 lead min=58ms median=79ms max=82ms
+03:54:54 [sendspin] playing: synced=true syncErr=67us buffered=39ms snaps=2 corrections=480 underruns=0 lateDrops=0 lastErr=-72us
+03:55:28 [sendspin] arrival: n=6000 lead min=60ms median=79ms max=82ms
+03:55:54 [sendspin] playing: synced=true syncErr=67us buffered=33ms snaps=2 corrections=486 underruns=0 lateDrops=0 lastErr=-78us
+03:56:28 [sendspin] arrival: n=6000 lead min=59ms median=79ms max=82ms
+03:56:54 [sendspin] playing: synced=true syncErr=67us buffered=33ms snaps=2 corrections=492 underruns=0 lateDrops=0 lastErr=-81us
+03:57:28 [sendspin] arrival: n=6000 lead min=60ms median=79ms max=82ms
+
+=== 04:07:37 after 80 min
+$ dmesg | busybox grep -c "mtk_pcm_I2S0dl1_pointer underflow"; busybox grep -E "\[sendspin\] (arrival|playing)|starved|thin" /tmp/server.log | busybox tail -24 | busybox cut -c12-200
+0
+03:55:54 [sendspin] playing: synced=true syncErr=67us buffered=33ms snaps=2 corrections=486 underruns=0 lateDrops=0 lastErr=-78us
+03:56:28 [sendspin] arrival: n=6000 lead min=59ms median=79ms max=82ms
+03:56:54 [sendspin] playing: synced=true syncErr=67us buffered=33ms snaps=2 corrections=492 underruns=0 lateDrops=0 lastErr=-81us
+03:57:28 [sendspin] arrival: n=6000 lead min=60ms median=79ms max=82ms
+03:57:54 [sendspin] playing: synced=true syncErr=67us buffered=27ms snaps=2 corrections=498 underruns=0 lateDrops=0 lastErr=-81us
+03:58:28 [sendspin] arrival: n=6000 lead min=58ms median=78ms max=82ms
+03:58:54 [sendspin] playing: synced=true syncErr=68us buffered=31ms snaps=2 corrections=503 underruns=0 lateDrops=0 lastErr=-110us
+03:59:28 [sendspin] arrival: n=6000 lead min=58ms median=78ms max=81ms
+03:59:54 [sendspin] playing: synced=true syncErr=69us buffered=32ms snaps=2 corrections=510 underruns=0 lateDrops=0 lastErr=-82us
+04:00:28 [sendspin] arrival: n=6000 lead min=37ms median=78ms max=82ms
+04:00:54 [sendspin] playing: synced=true syncErr=69us buffered=35ms snaps=2 corrections=515 underruns=0 lateDrops=0 lastErr=-98us
+04:01:28 [sendspin] arrival: n=6000 lead min=59ms median=78ms max=82ms
+04:01:54 [sendspin] playing: synced=true syncErr=70us buffered=35ms snaps=2 corrections=522 underruns=0 lateDrops=0 lastErr=-73us
+04:02:28 [sendspin] arrival: n=6000 lead min=57ms median=78ms max=81ms
+04:02:54 [sendspin] playing: synced=true syncErr=69us buffered=30ms snaps=2 corrections=527 underruns=0 lateDrops=0 lastErr=-110us
+04:03:28 [sendspin] arrival: n=6000 lead min=45ms median=78ms max=81ms
+04:03:54 [sendspin] playing: synced=true syncErr=69us buffered=30ms snaps=2 corrections=533 underruns=0 lateDrops=0 lastErr=-92us
+04:04:28 [sendspin] arrival: n=6000 lead min=45ms median=78ms max=81ms
+04:04:54 [sendspin] playing: synced=true syncErr=69us buffered=30ms snaps=2 corrections=538 underruns=0 lateDrops=0 lastErr=-101us
+04:05:28 [sendspin] arrival: n=6001 lead min=60ms median=78ms max=82ms
+04:05:54 [sendspin] playing: synced=true syncErr=68us buffered=24ms snaps=2 corrections=544 underruns=0 lateDrops=0 lastErr=-93us
+04:06:28 [sendspin] arrival: n=6000 lead min=59ms median=79ms max=82ms
+04:06:54 [sendspin] playing: synced=true syncErr=68us buffered=24ms snaps=2 corrections=550 underruns=0 lateDrops=0 lastErr=-90us
+04:07:28 [sendspin] arrival: n=6000 lead min=56ms median=79ms max=82ms
+
+=== 04:17:37 after 90 min
+$ dmesg | busybox grep -c "mtk_pcm_I2S0dl1_pointer underflow"; busybox grep -E "\[sendspin\] (arrival|playing)|starved|thin" /tmp/server.log | busybox tail -24 | busybox cut -c12-200
+0
+04:05:54 [sendspin] playing: synced=true syncErr=68us buffered=24ms snaps=2 corrections=544 underruns=0 lateDrops=0 lastErr=-93us
+04:06:28 [sendspin] arrival: n=6000 lead min=59ms median=79ms max=82ms
+04:06:54 [sendspin] playing: synced=true syncErr=68us buffered=24ms snaps=2 corrections=550 underruns=0 lateDrops=0 lastErr=-90us
+04:07:28 [sendspin] arrival: n=6000 lead min=56ms median=79ms max=82ms
+04:07:54 [sendspin] playing: synced=true syncErr=67us buffered=29ms snaps=2 corrections=580 underruns=0 lateDrops=0 lastErr=-81us
+04:08:28 [sendspin] arrival: n=6000 lead min=59ms median=79ms max=82ms
+04:08:55 [sendspin] playing: synced=true syncErr=67us buffered=33ms snaps=2 corrections=587 underruns=0 lateDrops=0 lastErr=-72us
+04:09:28 [sendspin] arrival: n=6001 lead min=58ms median=79ms max=82ms
+04:09:55 [sendspin] playing: synced=true syncErr=67us buffered=34ms snaps=2 corrections=592 underruns=0 lateDrops=0 lastErr=-82us
+04:10:28 [sendspin] arrival: n=6000 lead min=57ms median=79ms max=82ms
+04:10:55 [sendspin] playing: synced=true syncErr=67us buffered=27ms snaps=2 corrections=597 underruns=0 lateDrops=0 lastErr=-106us
+04:11:28 [sendspin] arrival: n=6000 lead min=58ms median=79ms max=82ms
+04:11:55 [sendspin] playing: synced=true syncErr=68us buffered=27ms snaps=2 corrections=603 underruns=0 lateDrops=0 lastErr=-111us
+04:12:28 [sendspin] arrival: n=6000 lead min=54ms median=79ms max=82ms
+04:12:55 [sendspin] playing: synced=true syncErr=68us buffered=32ms snaps=2 corrections=610 underruns=0 lateDrops=0 lastErr=-69us
+04:13:28 [sendspin] arrival: n=6000 lead min=56ms median=79ms max=82ms
+04:13:55 [sendspin] playing: synced=true syncErr=68us buffered=32ms snaps=2 corrections=615 underruns=0 lateDrops=0 lastErr=-79us
+04:14:29 [sendspin] arrival: n=6001 lead min=68ms median=79ms max=82ms
+04:14:55 [sendspin] playing: synced=true syncErr=67us buffered=36ms snaps=2 corrections=621 underruns=0 lateDrops=0 lastErr=-86us
+04:15:29 [sendspin] arrival: n=6000 lead min=57ms median=79ms max=82ms
+04:15:55 [sendspin] playing: synced=true syncErr=68us buffered=30ms snaps=2 corrections=626 underruns=0 lateDrops=0 lastErr=-114us
+04:16:29 [sendspin] arrival: n=6000 lead min=58ms median=79ms max=82ms
+04:16:55 [sendspin] playing: synced=true syncErr=68us buffered=30ms snaps=2 corrections=632 underruns=0 lateDrops=0 lastErr=-111us
+04:17:29 [sendspin] arrival: n=6000 lead min=61ms median=79ms max=82ms
+
+
+# Automated A/B with interaction, 2026-10-25 11:14-13:14 +01:00, settings switched through POST /api/config; 10 ms chunks, 5 ms capture, lead 80 ms
+# A = DSCP off (11:14-12:14), B = DSCP CS6 (12:14-13:14); stop/start at minutes 5/25/45, reselect at 15/35/55; Echo read every minute
+# ping A: rtt min/avg/max/mdev = 1.132/1.785/39.505/1.918 ms
+# ping B: rtt min/avg/max/mdev = 1.101/1.876/50.009/2.571 ms
+11:13:29 streamer up: {'running': False, 'chunkMs': 20, 'captureRequestMs': 10, 'dscp': False, 'leadMs': 80, 'source': 'alsa_output.pci-0000_0f_00.4.analog-stereo.monitor'}
+11:13:59 ===== run A-dscp-off: config {'chunkMs': 10, 'captureMs': 5, 'dscp': False} -> {"ok": true}
+11:13:59 state: {'running': True, 'chunkMs': 10, 'captureRequestMs': 5, 'dscp': False, 'leadMs': 80}
+11:15:00 A-dscp-off min 1 | lat 83 gap 11 commit 1 | 0 | 11:13:55 [speaker] music source starved — 831 period(s) since boot it had audio for and could not fill; a brief click is this | 11:14:43 [sendspin] arrival: n=5992 lead min=56ms median=80ms max=91ms | 11:14:43 [sendspin] playing: synced=true syncErr=222us buffered=35ms snaps=1 corrections=177 underruns=0 lateDrops=14 lastErr=-86us
+11:16:01 A-dscp-off min 2 | lat 82 gap 11 commit 1 | 0 | 11:14:43 [sendspin] playing: synced=true syncErr=222us buffered=35ms snaps=1 corrections=177 underruns=0 lateDrops=14 lastErr=-86us | 11:15:43 [sendspin] arrival: n=6000 lead min=66ms median=80ms max=83ms | 11:15:43 [sendspin] playing: synced=true syncErr=175us buffered=29ms snaps=1 corrections=184 underruns=0 lateDrops=14 lastErr=-88us
+11:17:01 A-dscp-off min 3 | lat 82 gap 11 commit 1 | 0 | 11:15:43 [sendspin] playing: synced=true syncErr=175us buffered=29ms snaps=1 corrections=184 underruns=0 lateDrops=14 lastErr=-88us | 11:16:43 [sendspin] arrival: n=6000 lead min=37ms median=80ms max=83ms | 11:16:43 [sendspin] playing: synced=true syncErr=149us buffered=29ms snaps=1 corrections=189 underruns=0 lateDrops=14 lastErr=-78us
+11:18:01 A-dscp-off min 4 | lat 82 gap 11 commit 0 | 0 | 11:16:43 [sendspin] playing: synced=true syncErr=149us buffered=29ms snaps=1 corrections=189 underruns=0 lateDrops=14 lastErr=-78us | 11:17:43 [sendspin] arrival: n=6000 lead min=60ms median=80ms max=83ms | 11:17:43 [sendspin] playing: synced=true syncErr=126us buffered=33ms snaps=1 corrections=195 underruns=0 lateDrops=14 lastErr=-84us
+11:19:01 before action | 0 | 11:17:43 [sendspin] playing: synced=true syncErr=126us buffered=33ms snaps=1 corrections=195 underruns=0 lateDrops=14 lastErr=-84us | 11:18:43 [sendspin] arrival: n=6001 lead min=40ms median=80ms max=83ms | 11:18:43 [sendspin] playing: synced=true syncErr=112us buffered=33ms snaps=1 corrections=200 underruns=0 lateDrops=14 lastErr=-92us
+11:19:04 --- stop/start
+11:19:05 A-dscp-off min 5 | lat 81 gap 11 commit 2 | 0 | 11:17:43 [sendspin] playing: synced=true syncErr=126us buffered=33ms snaps=1 corrections=195 underruns=0 lateDrops=14 lastErr=-84us | 11:18:43 [sendspin] arrival: n=6001 lead min=40ms median=80ms max=83ms | 11:18:43 [sendspin] playing: synced=true syncErr=112us buffered=33ms snaps=1 corrections=200 underruns=0 lateDrops=14 lastErr=-92us
+11:20:01 A-dscp-off min 6 | lat 82 gap 11 commit 1 | 0 | 11:18:43 [sendspin] playing: synced=true syncErr=112us buffered=33ms snaps=1 corrections=200 underruns=0 lateDrops=14 lastErr=-92us | 11:19:43 [sendspin] arrival: n=5693 lead min=63ms median=79ms max=83ms | 11:19:43 [sendspin] playing: synced=true syncErr=106us buffered=31ms snaps=1 corrections=177 underruns=0 lateDrops=13 lastErr=-102us
+11:21:01 A-dscp-off min 7 | lat 82 gap 11 commit 1 | 0 | 11:19:43 [sendspin] playing: synced=true syncErr=106us buffered=31ms snaps=1 corrections=177 underruns=0 lateDrops=13 lastErr=-102us | 11:20:43 [sendspin] arrival: n=6001 lead min=64ms median=80ms max=83ms | 11:20:43 [sendspin] playing: synced=true syncErr=97us buffered=24ms snaps=1 corrections=184 underruns=0 lateDrops=13 lastErr=-78us
+11:22:01 A-dscp-off min 8 | lat 82 gap 11 commit 1 | 0 | 11:20:43 [sendspin] playing: synced=true syncErr=97us buffered=24ms snaps=1 corrections=184 underruns=0 lateDrops=13 lastErr=-78us | 11:21:43 [sendspin] arrival: n=6000 lead min=68ms median=80ms max=83ms | 11:21:43 [sendspin] playing: synced=true syncErr=90us buffered=39ms snaps=1 corrections=189 underruns=0 lateDrops=13 lastErr=-79us
+11:23:01 A-dscp-off min 9 | lat 82 gap 11 commit 1 | 0 | 11:21:43 [sendspin] playing: synced=true syncErr=90us buffered=39ms snaps=1 corrections=189 underruns=0 lateDrops=13 lastErr=-79us | 11:22:43 [sendspin] arrival: n=6000 lead min=56ms median=80ms max=83ms | 11:22:43 [sendspin] playing: synced=true syncErr=84us buffered=39ms snaps=1 corrections=195 underruns=0 lateDrops=13 lastErr=-49us
+11:24:01 A-dscp-off min 10 | lat 82 gap 11 commit 1 | 0 | 11:22:43 [sendspin] playing: synced=true syncErr=84us buffered=39ms snaps=1 corrections=195 underruns=0 lateDrops=13 lastErr=-49us | 11:23:43 [sendspin] arrival: n=6000 lead min=49ms median=79ms max=83ms | 11:23:43 [sendspin] playing: synced=true syncErr=81us buffered=39ms snaps=1 corrections=200 underruns=0 lateDrops=13 lastErr=-110us
+11:25:01 A-dscp-off min 11 | lat 82 gap 11 commit 1 | 0 | 11:23:43 [sendspin] playing: synced=true syncErr=81us buffered=39ms snaps=1 corrections=200 underruns=0 lateDrops=13 lastErr=-110us | 11:24:43 [sendspin] arrival: n=6001 lead min=63ms median=80ms max=83ms | 11:24:43 [sendspin] playing: synced=true syncErr=79us buffered=33ms snaps=1 corrections=206 underruns=0 lateDrops=13 lastErr=-92us
+11:26:01 A-dscp-off min 12 | lat 82 gap 11 commit 1 | 0 | 11:24:43 [sendspin] playing: synced=true syncErr=79us buffered=33ms snaps=1 corrections=206 underruns=0 lateDrops=13 lastErr=-92us | 11:25:43 [sendspin] arrival: n=6000 lead min=57ms median=80ms max=83ms | 11:25:43 [sendspin] playing: synced=true syncErr=77us buffered=34ms snaps=1 corrections=212 underruns=0 lateDrops=13 lastErr=-99us
+11:27:01 A-dscp-off min 13 | lat 82 gap 11 commit 1 | 0 | 11:25:43 [sendspin] playing: synced=true syncErr=77us buffered=34ms snaps=1 corrections=212 underruns=0 lateDrops=13 lastErr=-99us | 11:26:43 [sendspin] arrival: n=6000 lead min=63ms median=80ms max=83ms | 11:26:43 [sendspin] playing: synced=true syncErr=75us buffered=34ms snaps=1 corrections=217 underruns=0 lateDrops=13 lastErr=-89us
+11:28:01 A-dscp-off min 14 | lat 82 gap 11 commit 2 | 0 | 11:26:43 [sendspin] playing: synced=true syncErr=75us buffered=34ms snaps=1 corrections=217 underruns=0 lateDrops=13 lastErr=-89us | 11:27:43 [sendspin] arrival: n=6000 lead min=60ms median=79ms max=83ms | 11:27:43 [sendspin] playing: synced=true syncErr=73us buffered=27ms snaps=1 corrections=223 underruns=0 lateDrops=13 lastErr=-93us
+11:29:01 before action | 0 | 11:27:43 [sendspin] playing: synced=true syncErr=73us buffered=27ms snaps=1 corrections=223 underruns=0 lateDrops=13 lastErr=-93us | 11:28:43 [sendspin] arrival: n=6000 lead min=59ms median=79ms max=82ms | 11:28:43 [sendspin] playing: synced=true syncErr=72us buffered=28ms snaps=1 corrections=229 underruns=0 lateDrops=13 lastErr=-84us
+11:29:06 --- reselect
+11:29:07 A-dscp-off min 15 | lat 82 gap 11 commit 2 | 0 | 11:28:43 [sendspin] playing: synced=true syncErr=72us buffered=28ms snaps=1 corrections=229 underruns=0 lateDrops=13 lastErr=-84us | 11:28:57 [speaker] ALSA buffer thin — 928 frames queued (19.3ms), lowest seen >=928 (a bound, not the minimum — see AlsaMargin), 26 period(s) under 1152 since boot; this is where a clic | 11:28:57 [speaker] music source starved — 832 period(s) since boot it had audio for and could not fill; a brief click is this
+11:30:01 A-dscp-off min 16 | lat 82 gap 11 commit 1 | 0 | 11:28:57 [speaker] music source starved — 832 period(s) since boot it had audio for and could not fill; a brief click is this | 11:29:43 [sendspin] arrival: n=5500 lead min=61ms median=79ms max=82ms | 11:29:44 [sendspin] playing: synced=true syncErr=70us buffered=32ms snaps=1 corrections=15 underruns=0 lateDrops=0 lastErr=-96us
+11:31:01 A-dscp-off min 17 | lat 81 gap 11 commit 1 | 0 | 11:29:44 [sendspin] playing: synced=true syncErr=70us buffered=32ms snaps=1 corrections=15 underruns=0 lateDrops=0 lastErr=-96us | 11:30:43 [sendspin] arrival: n=6000 lead min=59ms median=79ms max=82ms | 11:30:44 [sendspin] playing: synced=true syncErr=69us buffered=32ms snaps=1 corrections=21 underruns=0 lateDrops=0 lastErr=-76us
+11:32:01 A-dscp-off min 18 | lat 81 gap 11 commit 1 | 0 | 11:30:44 [sendspin] playing: synced=true syncErr=69us buffered=32ms snaps=1 corrections=21 underruns=0 lateDrops=0 lastErr=-76us | 11:31:43 [sendspin] arrival: n=6000 lead min=69ms median=79ms max=82ms | 11:31:44 [sendspin] playing: synced=true syncErr=69us buffered=36ms snaps=1 corrections=27 underruns=0 lateDrops=0 lastErr=-73us
+11:33:01 A-dscp-off min 19 | lat 81 gap 11 commit 1 | 0 | 11:31:44 [sendspin] playing: synced=true syncErr=69us buffered=36ms snaps=1 corrections=27 underruns=0 lateDrops=0 lastErr=-73us | 11:32:43 [sendspin] arrival: n=6000 lead min=38ms median=79ms max=82ms | 11:32:44 [sendspin] playing: synced=true syncErr=67us buffered=36ms snaps=1 corrections=32 underruns=0 lateDrops=0 lastErr=-90us
+11:34:00 A-dscp-off min 20 | lat 81 gap 11 commit 1 | 0 | 11:32:44 [sendspin] playing: synced=true syncErr=67us buffered=36ms snaps=1 corrections=32 underruns=0 lateDrops=0 lastErr=-90us | 11:33:43 [sendspin] arrival: n=6000 lead min=69ms median=79ms max=82ms | 11:33:44 [sendspin] playing: synced=true syncErr=67us buffered=30ms snaps=1 corrections=38 underruns=0 lateDrops=0 lastErr=-98us
+11:35:01 A-dscp-off min 21 | lat 81 gap 11 commit 1 | 0 | 11:33:44 [sendspin] playing: synced=true syncErr=67us buffered=30ms snaps=1 corrections=38 underruns=0 lateDrops=0 lastErr=-98us | 11:34:43 [sendspin] arrival: n=6000 lead min=68ms median=79ms max=82ms | 11:34:44 [sendspin] playing: synced=true syncErr=67us buffered=30ms snaps=1 corrections=44 underruns=0 lateDrops=0 lastErr=-70us
+11:36:00 A-dscp-off min 22 | lat 81 gap 11 commit 1 | 0 | 11:34:44 [sendspin] playing: synced=true syncErr=67us buffered=30ms snaps=1 corrections=44 underruns=0 lateDrops=0 lastErr=-70us | 11:35:43 [sendspin] arrival: n=6000 lead min=39ms median=79ms max=82ms | 11:35:44 [sendspin] playing: synced=true syncErr=67us buffered=30ms snaps=1 corrections=49 underruns=0 lateDrops=0 lastErr=-113us
+11:37:01 A-dscp-off min 23 | lat 81 gap 11 commit 1 | 0 | 11:35:44 [sendspin] playing: synced=true syncErr=67us buffered=30ms snaps=1 corrections=49 underruns=0 lateDrops=0 lastErr=-113us | 11:36:43 [sendspin] arrival: n=6000 lead min=41ms median=79ms max=82ms | 11:36:44 [sendspin] playing: synced=true syncErr=67us buffered=35ms snaps=1 corrections=55 underruns=0 lateDrops=0 lastErr=-98us
+11:38:01 A-dscp-off min 24 | lat 81 gap 11 commit 1 | 0 | 11:36:44 [sendspin] playing: synced=true syncErr=67us buffered=35ms snaps=1 corrections=55 underruns=0 lateDrops=0 lastErr=-98us | 11:37:43 [sendspin] arrival: n=6000 lead min=60ms median=79ms max=82ms | 11:37:44 [sendspin] playing: synced=true syncErr=67us buffered=28ms snaps=1 corrections=60 underruns=0 lateDrops=0 lastErr=-110us
+11:39:01 before action | 0 | 11:37:44 [sendspin] playing: synced=true syncErr=67us buffered=28ms snaps=1 corrections=60 underruns=0 lateDrops=0 lastErr=-110us | 11:38:43 [sendspin] arrival: n=6000 lead min=60ms median=79ms max=82ms | 11:38:44 [sendspin] playing: synced=true syncErr=67us buffered=32ms snaps=1 corrections=67 underruns=0 lateDrops=0 lastErr=-77us
+11:39:04 --- stop/start
+11:39:05 A-dscp-off min 25 | lat 77 gap 11 commit 2 | 0 | 11:37:44 [sendspin] playing: synced=true syncErr=67us buffered=28ms snaps=1 corrections=60 underruns=0 lateDrops=0 lastErr=-110us | 11:38:43 [sendspin] arrival: n=6000 lead min=60ms median=79ms max=82ms | 11:38:44 [sendspin] playing: synced=true syncErr=67us buffered=32ms snaps=1 corrections=67 underruns=0 lateDrops=0 lastErr=-77us
+11:40:01 A-dscp-off min 26 | lat 83 gap 11 commit 1 | 0 | 11:38:44 [sendspin] playing: synced=true syncErr=67us buffered=32ms snaps=1 corrections=67 underruns=0 lateDrops=0 lastErr=-77us | 11:39:43 [sendspin] arrival: n=5692 lead min=66ms median=79ms max=83ms | 11:39:44 [sendspin] playing: synced=true syncErr=67us buffered=34ms snaps=1 corrections=189 underruns=0 lateDrops=14 lastErr=-72us
+11:41:01 A-dscp-off min 27 | lat 83 gap 11 commit 1 | 0 | 11:39:44 [sendspin] playing: synced=true syncErr=67us buffered=34ms snaps=1 corrections=189 underruns=0 lateDrops=14 lastErr=-72us | 11:40:43 [sendspin] arrival: n=6000 lead min=56ms median=80ms max=83ms | 11:40:44 [sendspin] playing: synced=true syncErr=68us buffered=28ms snaps=1 corrections=195 underruns=0 lateDrops=14 lastErr=-98us
+11:42:01 A-dscp-off min 28 | lat 82 gap 11 commit 1 | 0 | 11:40:44 [sendspin] playing: synced=true syncErr=68us buffered=28ms snaps=1 corrections=195 underruns=0 lateDrops=14 lastErr=-98us | 11:41:43 [sendspin] arrival: n=6000 lead min=57ms median=80ms max=83ms | 11:41:44 [sendspin] playing: synced=true syncErr=69us buffered=32ms snaps=1 corrections=200 underruns=0 lateDrops=14 lastErr=-103us
+11:43:01 A-dscp-off min 29 | lat 82 gap 11 commit 1 | 0 | 11:41:44 [sendspin] playing: synced=true syncErr=69us buffered=32ms snaps=1 corrections=200 underruns=0 lateDrops=14 lastErr=-103us | 11:42:43 [sendspin] arrival: n=6000 lead min=61ms median=80ms max=83ms | 11:42:44 [sendspin] playing: synced=true syncErr=68us buffered=36ms snaps=1 corrections=206 underruns=0 lateDrops=14 lastErr=-84us
+11:44:01 A-dscp-off min 30 | lat 82 gap 11 commit 1 | 0 | 11:42:44 [sendspin] playing: synced=true syncErr=68us buffered=36ms snaps=1 corrections=206 underruns=0 lateDrops=14 lastErr=-84us | 11:43:43 [sendspin] arrival: n=6000 lead min=62ms median=80ms max=83ms | 11:43:44 [sendspin] playing: synced=true syncErr=68us buffered=36ms snaps=1 corrections=212 underruns=0 lateDrops=14 lastErr=-83us
+11:45:01 A-dscp-off min 31 | lat 82 gap 11 commit 1 | 0 | 11:43:44 [sendspin] playing: synced=true syncErr=68us buffered=36ms snaps=1 corrections=212 underruns=0 lateDrops=14 lastErr=-83us | 11:44:43 [sendspin] arrival: n=6000 lead min=58ms median=80ms max=83ms | 11:44:44 [sendspin] playing: synced=true syncErr=70us buffered=37ms snaps=1 corrections=217 underruns=0 lateDrops=14 lastErr=-104us
+11:46:01 A-dscp-off min 32 | lat 82 gap 11 commit 1 | 0 | 11:44:44 [sendspin] playing: synced=true syncErr=70us buffered=37ms snaps=1 corrections=217 underruns=0 lateDrops=14 lastErr=-104us | 11:45:43 [sendspin] arrival: n=6000 lead min=56ms median=80ms max=83ms | 11:45:44 [sendspin] playing: synced=true syncErr=71us buffered=37ms snaps=1 corrections=224 underruns=0 lateDrops=14 lastErr=-70us
+11:47:01 A-dscp-off min 33 | lat 82 gap 11 commit 1 | 0 | 11:45:44 [sendspin] playing: synced=true syncErr=71us buffered=37ms snaps=1 corrections=224 underruns=0 lateDrops=14 lastErr=-70us | 11:46:43 [sendspin] arrival: n=6000 lead min=59ms median=80ms max=83ms | 11:46:44 [sendspin] playing: synced=true syncErr=70us buffered=41ms snaps=1 corrections=229 underruns=0 lateDrops=14 lastErr=-100us
+11:48:01 A-dscp-off min 34 | lat 82 gap 11 commit 1 | 0 | 11:46:44 [sendspin] playing: synced=true syncErr=70us buffered=41ms snaps=1 corrections=229 underruns=0 lateDrops=14 lastErr=-100us | 11:47:43 [sendspin] arrival: n=6000 lead min=47ms median=80ms max=83ms | 11:47:45 [sendspin] playing: synced=true syncErr=70us buffered=25ms snaps=1 corrections=235 underruns=0 lateDrops=14 lastErr=-96us
+11:49:01 before action | 0 | 11:47:45 [sendspin] playing: synced=true syncErr=70us buffered=25ms snaps=1 corrections=235 underruns=0 lateDrops=14 lastErr=-96us | 11:48:43 [sendspin] arrival: n=6000 lead min=67ms median=80ms max=83ms | 11:48:45 [sendspin] playing: synced=true syncErr=70us buffered=39ms snaps=1 corrections=241 underruns=0 lateDrops=14 lastErr=-87us
+11:49:06 --- reselect
+11:49:07 A-dscp-off min 35 | lat 82 gap 11 commit 2 | 0 | 11:48:45 [sendspin] playing: synced=true syncErr=70us buffered=39ms snaps=1 corrections=241 underruns=0 lateDrops=14 lastErr=-87us | 11:48:58 [speaker] ALSA buffer thin — 944 frames queued (19.7ms), lowest seen >=928 (a bound, not the minimum — see AlsaMargin), 28 period(s) under 1152 since boot; this is where a clic | 11:48:58 [speaker] music source starved — 925 period(s) since boot it had audio for and could not fill; a brief click is this
+11:50:01 A-dscp-off min 36 | lat 82 gap 11 commit 1 | 0 | 11:48:58 [speaker] music source starved — 925 period(s) since boot it had audio for and could not fill; a brief click is this | 11:49:43 [sendspin] arrival: n=5500 lead min=64ms median=79ms max=83ms | 11:49:45 [sendspin] playing: synced=true syncErr=69us buffered=32ms snaps=1 corrections=30 underruns=0 lateDrops=0 lastErr=-106us
+11:51:01 A-dscp-off min 37 | lat 81 gap 11 commit 1 | 0 | 11:49:45 [sendspin] playing: synced=true syncErr=69us buffered=32ms snaps=1 corrections=30 underruns=0 lateDrops=0 lastErr=-106us | 11:50:43 [sendspin] arrival: n=6000 lead min=37ms median=79ms max=82ms | 11:50:45 [sendspin] playing: synced=true syncErr=69us buffered=26ms snaps=1 corrections=36 underruns=0 lateDrops=0 lastErr=-102us
+11:52:01 A-dscp-off min 38 | lat 81 gap 11 commit 1 | 0 | 11:50:45 [sendspin] playing: synced=true syncErr=69us buffered=26ms snaps=1 corrections=36 underruns=0 lateDrops=0 lastErr=-102us | 11:51:43 [sendspin] arrival: n=6000 lead min=59ms median=79ms max=82ms | 11:51:45 [sendspin] playing: synced=true syncErr=69us buffered=26ms snaps=1 corrections=42 underruns=0 lateDrops=0 lastErr=-71us
+11:53:01 A-dscp-off min 39 | lat 81 gap 11 commit 0 | 0 | 11:51:45 [sendspin] playing: synced=true syncErr=69us buffered=26ms snaps=1 corrections=42 underruns=0 lateDrops=0 lastErr=-71us | 11:52:43 [sendspin] arrival: n=6000 lead min=60ms median=79ms max=82ms | 11:52:45 [sendspin] playing: synced=true syncErr=68us buffered=27ms snaps=1 corrections=48 underruns=0 lateDrops=0 lastErr=-81us
+11:54:01 A-dscp-off min 40 | lat 81 gap 11 commit 1 | 0 | 11:52:45 [sendspin] playing: synced=true syncErr=68us buffered=27ms snaps=1 corrections=48 underruns=0 lateDrops=0 lastErr=-81us | 11:53:43 [sendspin] arrival: n=6000 lead min=60ms median=79ms max=82ms | 11:53:45 [sendspin] playing: synced=true syncErr=67us buffered=41ms snaps=1 corrections=54 underruns=0 lateDrops=0 lastErr=-73us
+11:55:01 A-dscp-off min 41 | lat 81 gap 11 commit 1 | 0 | 11:53:45 [sendspin] playing: synced=true syncErr=67us buffered=41ms snaps=1 corrections=54 underruns=0 lateDrops=0 lastErr=-73us | 11:54:43 [sendspin] arrival: n=6000 lead min=56ms median=79ms max=82ms | 11:54:45 [sendspin] playing: synced=true syncErr=67us buffered=41ms snaps=1 corrections=59 underruns=0 lateDrops=0 lastErr=-95us
+11:56:01 A-dscp-off min 42 | lat 81 gap 11 commit 1 | 0 | 11:54:45 [sendspin] playing: synced=true syncErr=67us buffered=41ms snaps=1 corrections=59 underruns=0 lateDrops=0 lastErr=-95us | 11:55:43 [sendspin] arrival: n=6000 lead min=67ms median=79ms max=82ms | 11:55:45 [sendspin] playing: synced=true syncErr=68us buffered=35ms snaps=1 corrections=65 underruns=0 lateDrops=0 lastErr=-107us
+11:57:01 A-dscp-off min 43 | lat 81 gap 11 commit 1 | 0 | 11:55:45 [sendspin] playing: synced=true syncErr=68us buffered=35ms snaps=1 corrections=65 underruns=0 lateDrops=0 lastErr=-107us | 11:56:43 [sendspin] arrival: n=6001 lead min=70ms median=79ms max=82ms | 11:56:45 [sendspin] playing: synced=true syncErr=68us buffered=29ms snaps=1 corrections=70 underruns=0 lateDrops=0 lastErr=-104us
+11:58:00 A-dscp-off min 44 | lat 81 gap 11 commit 1 | 0 | 11:56:45 [sendspin] playing: synced=true syncErr=68us buffered=29ms snaps=1 corrections=70 underruns=0 lateDrops=0 lastErr=-104us | 11:57:43 [sendspin] arrival: n=6000 lead min=59ms median=79ms max=82ms | 11:57:45 [sendspin] playing: synced=true syncErr=67us buffered=33ms snaps=1 corrections=77 underruns=0 lateDrops=0 lastErr=-69us
+11:59:01 before action | 0 | 11:57:45 [sendspin] playing: synced=true syncErr=67us buffered=33ms snaps=1 corrections=77 underruns=0 lateDrops=0 lastErr=-69us | 11:58:43 [sendspin] arrival: n=6000 lead min=62ms median=79ms max=82ms | 11:58:45 [sendspin] playing: synced=true syncErr=68us buffered=33ms snaps=1 corrections=82 underruns=0 lateDrops=0 lastErr=-97us
+11:59:04 --- stop/start
+11:59:05 A-dscp-off min 45 | lat 79 gap 11 commit 2 | 0 | 11:57:45 [sendspin] playing: synced=true syncErr=67us buffered=33ms snaps=1 corrections=77 underruns=0 lateDrops=0 lastErr=-69us | 11:58:43 [sendspin] arrival: n=6000 lead min=62ms median=79ms max=82ms | 11:58:45 [sendspin] playing: synced=true syncErr=68us buffered=33ms snaps=1 corrections=82 underruns=0 lateDrops=0 lastErr=-97us
+12:00:01 A-dscp-off min 46 | lat 82 gap 11 commit 1 | 0 | 11:58:45 [sendspin] playing: synced=true syncErr=68us buffered=33ms snaps=1 corrections=82 underruns=0 lateDrops=0 lastErr=-97us | 11:59:43 [sendspin] arrival: n=5693 lead min=61ms median=79ms max=82ms | 11:59:45 [sendspin] playing: synced=true syncErr=67us buffered=33ms snaps=1 corrections=177 underruns=0 lateDrops=14 lastErr=-77us
+12:01:01 A-dscp-off min 47 | lat 82 gap 11 commit 1 | 0 | 11:59:45 [sendspin] playing: synced=true syncErr=67us buffered=33ms snaps=1 corrections=177 underruns=0 lateDrops=14 lastErr=-77us | 12:00:43 [sendspin] arrival: n=6000 lead min=63ms median=80ms max=83ms | 12:00:45 [sendspin] playing: synced=true syncErr=67us buffered=33ms snaps=1 corrections=183 underruns=0 lateDrops=14 lastErr=-107us
+12:02:01 A-dscp-off min 48 | lat 82 gap 11 commit 1 | 0 | 12:00:45 [sendspin] playing: synced=true syncErr=67us buffered=33ms snaps=1 corrections=183 underruns=0 lateDrops=14 lastErr=-107us | 12:01:43 [sendspin] arrival: n=6000 lead min=61ms median=79ms max=83ms | 12:01:45 [sendspin] playing: synced=true syncErr=68us buffered=33ms snaps=1 corrections=189 underruns=0 lateDrops=14 lastErr=-77us
+12:03:01 A-dscp-off min 49 | lat 82 gap 11 commit 1 | 0 | 12:01:45 [sendspin] playing: synced=true syncErr=68us buffered=33ms snaps=1 corrections=189 underruns=0 lateDrops=14 lastErr=-77us | 12:02:43 [sendspin] arrival: n=6000 lead min=57ms median=79ms max=83ms | 12:02:45 [sendspin] playing: synced=true syncErr=68us buffered=33ms snaps=1 corrections=195 underruns=0 lateDrops=14 lastErr=-79us
+12:04:01 A-dscp-off min 50 | lat 82 gap 11 commit 1 | 0 | 12:02:45 [sendspin] playing: synced=true syncErr=68us buffered=33ms snaps=1 corrections=195 underruns=0 lateDrops=14 lastErr=-79us | 12:03:43 [sendspin] arrival: n=6000 lead min=61ms median=79ms max=83ms | 12:03:45 [sendspin] playing: synced=true syncErr=68us buffered=38ms snaps=1 corrections=201 underruns=0 lateDrops=14 lastErr=-76us
+12:05:01 A-dscp-off min 51 | lat 82 gap 11 commit 1 | 0 | 12:03:45 [sendspin] playing: synced=true syncErr=68us buffered=38ms snaps=1 corrections=201 underruns=0 lateDrops=14 lastErr=-76us | 12:04:43 [sendspin] arrival: n=6000 lead min=49ms median=80ms max=83ms | 12:04:45 [sendspin] playing: synced=true syncErr=67us buffered=38ms snaps=1 corrections=207 underruns=0 lateDrops=14 lastErr=-79us
+12:06:01 A-dscp-off min 52 | lat 82 gap 11 commit 1 | 0 | 12:04:45 [sendspin] playing: synced=true syncErr=67us buffered=38ms snaps=1 corrections=207 underruns=0 lateDrops=14 lastErr=-79us | 12:05:43 [sendspin] arrival: n=6001 lead min=61ms median=79ms max=83ms | 12:05:46 [sendspin] playing: synced=true syncErr=67us buffered=42ms snaps=1 corrections=212 underruns=0 lateDrops=14 lastErr=-93us
+12:07:01 A-dscp-off min 53 | lat 82 gap 11 commit 1 | 0 | 12:05:46 [sendspin] playing: synced=true syncErr=67us buffered=42ms snaps=1 corrections=212 underruns=0 lateDrops=14 lastErr=-93us | 12:06:43 [sendspin] arrival: n=6000 lead min=60ms median=79ms max=82ms | 12:06:46 [sendspin] playing: synced=true syncErr=68us buffered=32ms snaps=1 corrections=218 underruns=0 lateDrops=14 lastErr=-84us
+12:08:01 A-dscp-off min 54 | lat 82 gap 11 commit 1 | 0 | 12:06:46 [sendspin] playing: synced=true syncErr=68us buffered=32ms snaps=1 corrections=218 underruns=0 lateDrops=14 lastErr=-84us | 12:07:43 [sendspin] arrival: n=6000 lead min=46ms median=79ms max=83ms | 12:07:46 [sendspin] playing: synced=true syncErr=67us buffered=32ms snaps=1 corrections=224 underruns=0 lateDrops=14 lastErr=-80us
+12:09:01 before action | 0 | 12:07:46 [sendspin] playing: synced=true syncErr=67us buffered=32ms snaps=1 corrections=224 underruns=0 lateDrops=14 lastErr=-80us | 12:08:43 [sendspin] arrival: n=6000 lead min=57ms median=79ms max=82ms | 12:08:46 [sendspin] playing: synced=true syncErr=67us buffered=26ms snaps=1 corrections=230 underruns=0 lateDrops=14 lastErr=-69us
+12:09:06 --- reselect
+12:09:07 A-dscp-off min 55 | lat 82 gap 11 commit 2 | 0 | 12:08:46 [sendspin] playing: synced=true syncErr=67us buffered=26ms snaps=1 corrections=230 underruns=0 lateDrops=14 lastErr=-69us | 12:08:57 [speaker] ALSA buffer thin — 944 frames queued (19.7ms), lowest seen >=928 (a bound, not the minimum — see AlsaMargin), 30 period(s) under 1152 since boot; this is where a clic | 12:08:57 [speaker] music source starved — 1018 period(s) since boot it had audio for and could not fill; a brief click is this
+12:10:01 A-dscp-off min 56 | lat 82 gap 12 commit 1 | 0 | 12:08:57 [speaker] music source starved — 1018 period(s) since boot it had audio for and could not fill; a brief click is this | 12:09:43 [sendspin] arrival: n=5499 lead min=63ms median=79ms max=83ms | 12:09:46 [sendspin] playing: synced=true syncErr=66us buffered=26ms snaps=2 corrections=2 underruns=0 lateDrops=0 lastErr=-90us
+12:11:01 A-dscp-off min 57 | lat 82 gap 11 commit 1 | 0 | 12:09:46 [sendspin] playing: synced=true syncErr=66us buffered=26ms snaps=2 corrections=2 underruns=0 lateDrops=0 lastErr=-90us | 12:10:43 [sendspin] arrival: n=6000 lead min=57ms median=79ms max=83ms | 12:10:46 [sendspin] playing: synced=true syncErr=66us buffered=27ms snaps=2 corrections=8 underruns=0 lateDrops=0 lastErr=-93us
+12:12:01 A-dscp-off min 58 | lat 82 gap 11 commit 1 | 0 | 12:10:46 [sendspin] playing: synced=true syncErr=66us buffered=27ms snaps=2 corrections=8 underruns=0 lateDrops=0 lastErr=-93us | 12:11:43 [sendspin] arrival: n=6000 lead min=68ms median=79ms max=82ms | 12:11:46 [sendspin] playing: synced=true syncErr=66us buffered=41ms snaps=2 corrections=13 underruns=0 lateDrops=0 lastErr=-85us
+12:13:01 A-dscp-off min 59 | lat 81 gap 11 commit 1 | 0 | 12:11:46 [sendspin] playing: synced=true syncErr=66us buffered=41ms snaps=2 corrections=13 underruns=0 lateDrops=0 lastErr=-85us | 12:12:43 [sendspin] arrival: n=6000 lead min=61ms median=79ms max=82ms | 12:12:46 [sendspin] playing: synced=true syncErr=66us buffered=34ms snaps=2 corrections=19 underruns=0 lateDrops=0 lastErr=-71us
+12:14:01 A-dscp-off min 60 | lat 81 gap 11 commit 1 | 0 | 12:12:46 [sendspin] playing: synced=true syncErr=66us buffered=34ms snaps=2 corrections=19 underruns=0 lateDrops=0 lastErr=-71us | 12:13:43 [sendspin] arrival: n=6000 lead min=62ms median=79ms max=82ms | 12:13:46 [sendspin] playing: synced=true syncErr=67us buffered=35ms snaps=2 corrections=25 underruns=0 lateDrops=0 lastErr=-88us
+12:14:01 ===== run A-dscp-off done
+12:14:01 ===== run B-dscp-cs6: config {'chunkMs': 10, 'captureMs': 5, 'dscp': True} -> {"ok": true}
+12:14:01 state: {'running': True, 'chunkMs': 10, 'captureRequestMs': 5, 'dscp': True, 'leadMs': 80}
+12:15:02 B-dscp-cs6 min 1 | lat 81 gap 11 commit 1 | 0 | 12:13:46 [sendspin] playing: synced=true syncErr=67us buffered=35ms snaps=2 corrections=25 underruns=0 lateDrops=0 lastErr=-88us | 12:14:43 [sendspin] arrival: n=6000 lead min=58ms median=79ms max=82ms | 12:14:46 [sendspin] playing: synced=true syncErr=68us buffered=35ms snaps=2 corrections=31 underruns=0 lateDrops=0 lastErr=-101us
+12:16:02 B-dscp-cs6 min 2 | lat 81 gap 11 commit 1 | 0 | 12:14:46 [sendspin] playing: synced=true syncErr=68us buffered=35ms snaps=2 corrections=31 underruns=0 lateDrops=0 lastErr=-101us | 12:15:43 [sendspin] arrival: n=6000 lead min=60ms median=79ms max=82ms | 12:15:46 [sendspin] playing: synced=true syncErr=67us buffered=29ms snaps=2 corrections=37 underruns=0 lateDrops=0 lastErr=-73us
+12:17:02 B-dscp-cs6 min 3 | lat 81 gap 11 commit 1 | 0 | 12:15:46 [sendspin] playing: synced=true syncErr=67us buffered=29ms snaps=2 corrections=37 underruns=0 lateDrops=0 lastErr=-73us | 12:16:43 [sendspin] arrival: n=6000 lead min=63ms median=79ms max=82ms | 12:16:46 [sendspin] playing: synced=true syncErr=67us buffered=29ms snaps=2 corrections=43 underruns=0 lateDrops=0 lastErr=-71us
+12:18:02 B-dscp-cs6 min 4 | lat 81 gap 11 commit 1 | 0 | 12:16:46 [sendspin] playing: synced=true syncErr=67us buffered=29ms snaps=2 corrections=43 underruns=0 lateDrops=0 lastErr=-71us | 12:17:43 [sendspin] arrival: n=6000 lead min=58ms median=79ms max=82ms | 12:17:46 [sendspin] playing: synced=true syncErr=67us buffered=34ms snaps=2 corrections=48 underruns=0 lateDrops=0 lastErr=-102us
+12:19:02 before action | 0 | 12:17:46 [sendspin] playing: synced=true syncErr=67us buffered=34ms snaps=2 corrections=48 underruns=0 lateDrops=0 lastErr=-102us | 12:18:43 [sendspin] arrival: n=6000 lead min=58ms median=79ms max=82ms | 12:18:46 [sendspin] playing: synced=true syncErr=67us buffered=34ms snaps=2 corrections=54 underruns=0 lateDrops=0 lastErr=-87us
+12:19:05 --- stop/start
+12:19:07 B-dscp-cs6 min 5 | lat 76 gap 11 commit 2 | 0 | 12:17:46 [sendspin] playing: synced=true syncErr=67us buffered=34ms snaps=2 corrections=48 underruns=0 lateDrops=0 lastErr=-102us | 12:18:43 [sendspin] arrival: n=6000 lead min=58ms median=79ms max=82ms | 12:18:46 [sendspin] playing: synced=true syncErr=67us buffered=34ms snaps=2 corrections=54 underruns=0 lateDrops=0 lastErr=-87us
+12:20:02 B-dscp-cs6 min 6 | lat 82 gap 11 commit 1 | 0 | 12:18:46 [sendspin] playing: synced=true syncErr=67us buffered=34ms snaps=2 corrections=54 underruns=0 lateDrops=0 lastErr=-87us | 12:19:43 [sendspin] arrival: n=5692 lead min=58ms median=79ms max=83ms | 12:19:46 [sendspin] playing: synced=true syncErr=66us buffered=34ms snaps=1 corrections=178 underruns=0 lateDrops=14 lastErr=-88us
+12:21:02 B-dscp-cs6 min 7 | lat 82 gap 11 commit 1 | 0 | 12:19:46 [sendspin] playing: synced=true syncErr=66us buffered=34ms snaps=1 corrections=178 underruns=0 lateDrops=14 lastErr=-88us | 12:20:43 [sendspin] arrival: n=6000 lead min=58ms median=80ms max=83ms | 12:20:46 [sendspin] playing: synced=true syncErr=67us buffered=34ms snaps=1 corrections=184 underruns=0 lateDrops=14 lastErr=-95us
+12:22:02 B-dscp-cs6 min 8 | lat 82 gap 11 commit 1 | 0 | 12:20:46 [sendspin] playing: synced=true syncErr=67us buffered=34ms snaps=1 corrections=184 underruns=0 lateDrops=14 lastErr=-95us | 12:21:43 [sendspin] arrival: n=6000 lead min=52ms median=79ms max=83ms | 12:21:46 [sendspin] playing: synced=true syncErr=67us buffered=38ms snaps=1 corrections=190 underruns=0 lateDrops=14 lastErr=-67us
+12:23:02 B-dscp-cs6 min 9 | lat 82 gap 11 commit 1 | 0 | 12:21:46 [sendspin] playing: synced=true syncErr=67us buffered=38ms snaps=1 corrections=190 underruns=0 lateDrops=14 lastErr=-67us | 12:22:43 [sendspin] arrival: n=6000 lead min=61ms median=79ms max=83ms | 12:22:46 [sendspin] playing: synced=true syncErr=68us buffered=38ms snaps=1 corrections=195 underruns=0 lateDrops=14 lastErr=-80us
+12:24:02 B-dscp-cs6 min 10 | lat 82 gap 11 commit 1 | 0 | 12:22:46 [sendspin] playing: synced=true syncErr=68us buffered=38ms snaps=1 corrections=195 underruns=0 lateDrops=14 lastErr=-80us | 12:23:43 [sendspin] arrival: n=6000 lead min=58ms median=80ms max=83ms | 12:23:46 [sendspin] playing: synced=true syncErr=68us buffered=39ms snaps=1 corrections=201 underruns=0 lateDrops=14 lastErr=-77us
+12:25:02 B-dscp-cs6 min 11 | lat 82 gap 11 commit 1 | 0 | 12:23:46 [sendspin] playing: synced=true syncErr=68us buffered=39ms snaps=1 corrections=201 underruns=0 lateDrops=14 lastErr=-77us | 12:24:43 [sendspin] arrival: n=6001 lead min=61ms median=79ms max=83ms | 12:24:46 [sendspin] playing: synced=true syncErr=67us buffered=43ms snaps=1 corrections=207 underruns=0 lateDrops=14 lastErr=-84us
+12:26:02 B-dscp-cs6 min 12 | lat 82 gap 11 commit 1 | 0 | 12:24:46 [sendspin] playing: synced=true syncErr=67us buffered=43ms snaps=1 corrections=207 underruns=0 lateDrops=14 lastErr=-84us | 12:25:43 [sendspin] arrival: n=6000 lead min=60ms median=79ms max=83ms | 12:25:46 [sendspin] playing: synced=true syncErr=67us buffered=27ms snaps=1 corrections=213 underruns=0 lateDrops=14 lastErr=-80us
+12:27:02 B-dscp-cs6 min 13 | lat 82 gap 11 commit 1 | 0 | 12:25:46 [sendspin] playing: synced=true syncErr=67us buffered=27ms snaps=1 corrections=213 underruns=0 lateDrops=14 lastErr=-80us | 12:26:43 [sendspin] arrival: n=6000 lead min=62ms median=79ms max=83ms | 12:26:46 [sendspin] playing: synced=true syncErr=66us buffered=27ms snaps=1 corrections=218 underruns=0 lateDrops=14 lastErr=-97us
+12:28:02 B-dscp-cs6 min 14 | lat 82 gap 11 commit 1 | 0 | 12:26:46 [sendspin] playing: synced=true syncErr=66us buffered=27ms snaps=1 corrections=218 underruns=0 lateDrops=14 lastErr=-97us | 12:27:43 [sendspin] arrival: n=6000 lead min=60ms median=79ms max=82ms | 12:27:46 [sendspin] playing: synced=true syncErr=66us buffered=27ms snaps=1 corrections=225 underruns=0 lateDrops=14 lastErr=-70us
+12:29:02 before action | 0 | 12:27:46 [sendspin] playing: synced=true syncErr=66us buffered=27ms snaps=1 corrections=225 underruns=0 lateDrops=14 lastErr=-70us | 12:28:43 [sendspin] arrival: n=6000 lead min=39ms median=79ms max=82ms | 12:28:47 [sendspin] playing: synced=true syncErr=66us buffered=41ms snaps=1 corrections=230 underruns=0 lateDrops=14 lastErr=-113us
+12:29:07 --- reselect
+12:29:09 B-dscp-cs6 min 15 | lat 82 gap 11 commit 2 | 0 | 12:28:47 [sendspin] playing: synced=true syncErr=66us buffered=41ms snaps=1 corrections=230 underruns=0 lateDrops=14 lastErr=-113us | 12:28:59 [speaker] ALSA buffer thin — 944 frames queued (19.7ms), lowest seen >=928 (a bound, not the minimum — see AlsaMargin), 32 period(s) under 1152 since boot; this is where a clic | 12:28:59 [speaker] music source starved — 1111 period(s) since boot it had audio for and could not fill; a brief click is this
+12:30:02 B-dscp-cs6 min 16 | lat 82 gap 11 commit 1 | 0 | 12:28:59 [speaker] music source starved — 1111 period(s) since boot it had audio for and could not fill; a brief click is this | 12:29:43 [sendspin] arrival: n=5499 lead min=60ms median=79ms max=83ms | 12:29:47 [sendspin] playing: synced=true syncErr=67us buffered=35ms snaps=2 corrections=2 underruns=0 lateDrops=0 lastErr=-83us
+12:31:02 B-dscp-cs6 min 17 | lat 82 gap 11 commit 1 | 0 | 12:29:47 [sendspin] playing: synced=true syncErr=67us buffered=35ms snaps=2 corrections=2 underruns=0 lateDrops=0 lastErr=-83us | 12:30:43 [sendspin] arrival: n=6000 lead min=61ms median=79ms max=82ms | 12:30:47 [sendspin] playing: synced=true syncErr=67us buffered=35ms snaps=2 corrections=8 underruns=0 lateDrops=0 lastErr=-94us
+12:32:02 B-dscp-cs6 min 18 | lat 81 gap 11 commit 1 | 0 | 12:30:47 [sendspin] playing: synced=true syncErr=67us buffered=35ms snaps=2 corrections=8 underruns=0 lateDrops=0 lastErr=-94us | 12:31:43 [sendspin] arrival: n=6000 lead min=57ms median=79ms max=82ms | 12:31:47 [sendspin] playing: synced=true syncErr=68us buffered=35ms snaps=2 corrections=13 underruns=0 lateDrops=0 lastErr=-103us
+12:33:02 B-dscp-cs6 min 19 | lat 81 gap 11 commit 1 | 0 | 12:31:47 [sendspin] playing: synced=true syncErr=68us buffered=35ms snaps=2 corrections=13 underruns=0 lateDrops=0 lastErr=-103us | 12:32:43 [sendspin] arrival: n=6000 lead min=58ms median=79ms max=82ms | 12:32:47 [sendspin] playing: synced=true syncErr=68us buffered=29ms snaps=2 corrections=18 underruns=0 lateDrops=0 lastErr=-95us
+12:34:02 B-dscp-cs6 min 20 | lat 81 gap 11 commit 1 | 0 | 12:32:47 [sendspin] playing: synced=true syncErr=68us buffered=29ms snaps=2 corrections=18 underruns=0 lateDrops=0 lastErr=-95us | 12:33:43 [sendspin] arrival: n=6000 lead min=57ms median=79ms max=82ms | 12:33:47 [sendspin] playing: synced=true syncErr=69us buffered=30ms snaps=2 corrections=25 underruns=0 lateDrops=0 lastErr=-77us
+12:35:02 B-dscp-cs6 min 21 | lat 81 gap 11 commit 1 | 0 | 12:33:47 [sendspin] playing: synced=true syncErr=69us buffered=30ms snaps=2 corrections=25 underruns=0 lateDrops=0 lastErr=-77us | 12:34:43 [sendspin] arrival: n=6000 lead min=63ms median=79ms max=82ms | 12:34:47 [sendspin] playing: synced=true syncErr=69us buffered=34ms snaps=2 corrections=31 underruns=0 lateDrops=0 lastErr=-95us
+12:36:02 B-dscp-cs6 min 22 | lat 81 gap 11 commit 1 | 0 | 12:34:47 [sendspin] playing: synced=true syncErr=69us buffered=34ms snaps=2 corrections=31 underruns=0 lateDrops=0 lastErr=-95us | 12:35:43 [sendspin] arrival: n=6000 lead min=38ms median=79ms max=82ms | 12:35:47 [sendspin] playing: synced=true syncErr=69us buffered=34ms snaps=2 corrections=37 underruns=0 lateDrops=0 lastErr=-67us
+12:37:02 B-dscp-cs6 min 23 | lat 81 gap 11 commit 1 | 0 | 12:35:47 [sendspin] playing: synced=true syncErr=69us buffered=34ms snaps=2 corrections=37 underruns=0 lateDrops=0 lastErr=-67us | 12:36:43 [sendspin] arrival: n=6000 lead min=58ms median=79ms max=82ms | 12:36:47 [sendspin] playing: synced=true syncErr=70us buffered=38ms snaps=2 corrections=42 underruns=0 lateDrops=0 lastErr=-72us
+12:38:02 B-dscp-cs6 min 24 | lat 81 gap 11 commit 1 | 0 | 12:36:47 [sendspin] playing: synced=true syncErr=70us buffered=38ms snaps=2 corrections=42 underruns=0 lateDrops=0 lastErr=-72us | 12:37:43 [sendspin] arrival: n=6000 lead min=54ms median=79ms max=82ms | 12:37:47 [sendspin] playing: synced=true syncErr=69us buffered=32ms snaps=2 corrections=48 underruns=0 lateDrops=0 lastErr=-82us
+12:39:02 before action | 0 | 12:37:47 [sendspin] playing: synced=true syncErr=69us buffered=32ms snaps=2 corrections=48 underruns=0 lateDrops=0 lastErr=-82us | 12:38:43 [sendspin] arrival: n=6000 lead min=62ms median=79ms max=82ms | 12:38:47 [sendspin] playing: synced=true syncErr=69us buffered=32ms snaps=2 corrections=54 underruns=0 lateDrops=0 lastErr=-106us
+12:39:05 --- stop/start
+12:39:07 B-dscp-cs6 min 25 | lat 81 gap 16 commit 2 | 0 | 12:37:47 [sendspin] playing: synced=true syncErr=69us buffered=32ms snaps=2 corrections=48 underruns=0 lateDrops=0 lastErr=-82us | 12:38:43 [sendspin] arrival: n=6000 lead min=62ms median=79ms max=82ms | 12:38:47 [sendspin] playing: synced=true syncErr=69us buffered=32ms snaps=2 corrections=54 underruns=0 lateDrops=0 lastErr=-106us
+12:40:02 B-dscp-cs6 min 26 | lat 82 gap 11 commit 1 | 0 | 12:38:47 [sendspin] playing: synced=true syncErr=69us buffered=32ms snaps=2 corrections=54 underruns=0 lateDrops=0 lastErr=-106us | 12:39:43 [sendspin] arrival: n=5692 lead min=56ms median=79ms max=82ms | 12:39:47 [sendspin] playing: synced=true syncErr=69us buffered=33ms snaps=2 corrections=4 underruns=0 lateDrops=14 lastErr=-71us
+12:41:02 B-dscp-cs6 min 27 | lat 82 gap 11 commit 0 | 0 | 12:39:47 [sendspin] playing: synced=true syncErr=69us buffered=33ms snaps=2 corrections=4 underruns=0 lateDrops=14 lastErr=-71us | 12:40:43 [sendspin] arrival: n=6000 lead min=59ms median=79ms max=82ms | 12:40:47 [sendspin] playing: synced=true syncErr=69us buffered=26ms snaps=2 corrections=9 underruns=0 lateDrops=14 lastErr=-93us
+12:42:02 B-dscp-cs6 min 28 | lat 82 gap 11 commit 1 | 0 | 12:40:47 [sendspin] playing: synced=true syncErr=69us buffered=26ms snaps=2 corrections=9 underruns=0 lateDrops=14 lastErr=-93us | 12:41:43 [sendspin] arrival: n=6000 lead min=59ms median=79ms max=82ms | 12:41:47 [sendspin] playing: synced=true syncErr=70us buffered=27ms snaps=2 corrections=15 underruns=0 lateDrops=14 lastErr=-91us
+12:43:02 B-dscp-cs6 min 29 | lat 81 gap 11 commit 1 | 0 | 12:41:47 [sendspin] playing: synced=true syncErr=70us buffered=27ms snaps=2 corrections=15 underruns=0 lateDrops=14 lastErr=-91us | 12:42:43 [sendspin] arrival: n=6000 lead min=41ms median=79ms max=82ms | 12:42:47 [sendspin] playing: synced=true syncErr=69us buffered=31ms snaps=2 corrections=20 underruns=0 lateDrops=14 lastErr=-109us
+12:44:02 B-dscp-cs6 min 30 | lat 81 gap 11 commit 1 | 0 | 12:42:47 [sendspin] playing: synced=true syncErr=69us buffered=31ms snaps=2 corrections=20 underruns=0 lateDrops=14 lastErr=-109us | 12:43:43 [sendspin] arrival: n=6000 lead min=66ms median=79ms max=82ms | 12:43:47 [sendspin] playing: synced=true syncErr=68us buffered=31ms snaps=2 corrections=26 underruns=0 lateDrops=14 lastErr=-95us
+12:45:02 B-dscp-cs6 min 31 | lat 81 gap 11 commit 0 | 0 | 12:43:47 [sendspin] playing: synced=true syncErr=68us buffered=31ms snaps=2 corrections=26 underruns=0 lateDrops=14 lastErr=-95us | 12:44:43 [sendspin] arrival: n=6000 lead min=58ms median=79ms max=82ms | 12:44:47 [sendspin] playing: synced=true syncErr=67us buffered=31ms snaps=2 corrections=33 underruns=0 lateDrops=14 lastErr=-81us
+12:46:02 B-dscp-cs6 min 32 | lat 81 gap 11 commit 1 | 0 | 12:44:47 [sendspin] playing: synced=true syncErr=67us buffered=31ms snaps=2 corrections=33 underruns=0 lateDrops=14 lastErr=-81us | 12:45:43 [sendspin] arrival: n=6001 lead min=57ms median=79ms max=82ms | 12:45:47 [sendspin] playing: synced=true syncErr=67us buffered=36ms snaps=2 corrections=38 underruns=0 lateDrops=14 lastErr=-83us
+12:47:02 B-dscp-cs6 min 33 | lat 81 gap 11 commit 1 | 0 | 12:45:47 [sendspin] playing: synced=true syncErr=67us buffered=36ms snaps=2 corrections=38 underruns=0 lateDrops=14 lastErr=-83us | 12:46:43 [sendspin] arrival: n=6000 lead min=60ms median=79ms max=82ms | 12:46:47 [sendspin] playing: synced=true syncErr=68us buffered=29ms snaps=2 corrections=44 underruns=0 lateDrops=14 lastErr=-96us
+12:48:02 B-dscp-cs6 min 34 | lat 81 gap 11 commit 1 | 0 | 12:46:47 [sendspin] playing: synced=true syncErr=68us buffered=29ms snaps=2 corrections=44 underruns=0 lateDrops=14 lastErr=-96us | 12:47:43 [sendspin] arrival: n=6000 lead min=68ms median=79ms max=82ms | 12:47:48 [sendspin] playing: synced=true syncErr=68us buffered=33ms snaps=2 corrections=50 underruns=0 lateDrops=14 lastErr=-78us
+12:49:02 before action | 0 | 12:48:33 [speaker] music source starved — 1204 period(s) since boot it had audio for and could not fill; a brief click is this | 12:48:43 [sendspin] arrival: n=6000 lead min=11ms median=79ms max=82ms | 12:48:48 [sendspin] playing: synced=true syncErr=68us buffered=34ms snaps=3 corrections=55 underruns=1 lateDrops=15 lastErr=-55us
+12:49:07 --- reselect
+12:49:09 B-dscp-cs6 min 35 | lat 82 gap 11 commit 2 | 0 | 12:48:48 [sendspin] playing: synced=true syncErr=68us buffered=34ms snaps=3 corrections=55 underruns=1 lateDrops=15 lastErr=-55us | 12:48:59 [speaker] ALSA buffer thin — 960 frames queued (20.0ms), lowest seen >=928 (a bound, not the minimum — see AlsaMargin), 36 period(s) under 1152 since boot; this is where a clic | 12:48:59 [speaker] music source starved — 1205 period(s) since boot it had audio for and could not fill; a brief click is this
+12:50:02 B-dscp-cs6 min 36 | lat 82 gap 11 commit 1 | 0 | 12:48:59 [speaker] music source starved — 1205 period(s) since boot it had audio for and could not fill; a brief click is this | 12:49:43 [sendspin] arrival: n=5499 lead min=60ms median=80ms max=85ms | 12:49:48 [sendspin] playing: synced=true syncErr=68us buffered=29ms snaps=2 corrections=2 underruns=0 lateDrops=0 lastErr=-96us
+12:51:02 B-dscp-cs6 min 37 | lat 82 gap 11 commit 1 | 0 | 12:49:48 [sendspin] playing: synced=true syncErr=68us buffered=29ms snaps=2 corrections=2 underruns=0 lateDrops=0 lastErr=-96us | 12:50:43 [sendspin] arrival: n=6000 lead min=58ms median=80ms max=83ms | 12:50:48 [sendspin] playing: synced=true syncErr=67us buffered=39ms snaps=2 corrections=8 underruns=0 lateDrops=0 lastErr=-100us
+12:52:02 B-dscp-cs6 min 38 | lat 82 gap 11 commit 1 | 0 | 12:50:48 [sendspin] playing: synced=true syncErr=67us buffered=39ms snaps=2 corrections=8 underruns=0 lateDrops=0 lastErr=-100us | 12:51:43 [sendspin] arrival: n=6000 lead min=59ms median=80ms max=83ms | 12:51:48 [sendspin] playing: synced=true syncErr=67us buffered=39ms snaps=2 corrections=14 underruns=0 lateDrops=0 lastErr=-90us
+12:53:02 B-dscp-cs6 min 39 | lat 82 gap 11 commit 1 | 0 | 12:51:48 [sendspin] playing: synced=true syncErr=67us buffered=39ms snaps=2 corrections=14 underruns=0 lateDrops=0 lastErr=-90us | 12:52:43 [sendspin] arrival: n=6000 lead min=40ms median=80ms max=83ms | 12:52:48 [sendspin] playing: synced=true syncErr=67us buffered=33ms snaps=2 corrections=19 underruns=0 lateDrops=0 lastErr=-100us
+12:54:03 B-dscp-cs6 min 40 | lat 82 gap 11 commit 1 | 0 | 12:52:48 [sendspin] playing: synced=true syncErr=67us buffered=33ms snaps=2 corrections=19 underruns=0 lateDrops=0 lastErr=-100us | 12:53:43 [sendspin] arrival: n=6000 lead min=59ms median=80ms max=83ms | 12:53:48 [sendspin] playing: synced=true syncErr=67us buffered=33ms snaps=2 corrections=26 underruns=0 lateDrops=0 lastErr=-90us
+12:55:02 B-dscp-cs6 min 41 | lat 82 gap 11 commit 1 | 0 | 12:53:48 [sendspin] playing: synced=true syncErr=67us buffered=33ms snaps=2 corrections=26 underruns=0 lateDrops=0 lastErr=-90us | 12:54:43 [sendspin] arrival: n=6000 lead min=61ms median=79ms max=83ms | 12:54:48 [sendspin] playing: synced=true syncErr=67us buffered=34ms snaps=2 corrections=31 underruns=0 lateDrops=0 lastErr=-112us
+12:56:02 B-dscp-cs6 min 42 | lat 82 gap 11 commit 1 | 0 | 12:54:48 [sendspin] playing: synced=true syncErr=67us buffered=34ms snaps=2 corrections=31 underruns=0 lateDrops=0 lastErr=-112us | 12:55:43 [sendspin] arrival: n=6000 lead min=69ms median=79ms max=83ms | 12:55:48 [sendspin] playing: synced=true syncErr=67us buffered=38ms snaps=2 corrections=38 underruns=0 lateDrops=0 lastErr=-68us
+12:57:02 B-dscp-cs6 min 43 | lat 82 gap 11 commit 1 | 0 | 12:55:48 [sendspin] playing: synced=true syncErr=67us buffered=38ms snaps=2 corrections=38 underruns=0 lateDrops=0 lastErr=-68us | 12:56:43 [sendspin] arrival: n=6000 lead min=60ms median=79ms max=83ms | 12:56:48 [sendspin] playing: synced=true syncErr=68us buffered=31ms snaps=2 corrections=44 underruns=0 lateDrops=0 lastErr=-72us
+12:58:02 B-dscp-cs6 min 44 | lat 82 gap 11 commit 1 | 0 | 12:56:48 [sendspin] playing: synced=true syncErr=68us buffered=31ms snaps=2 corrections=44 underruns=0 lateDrops=0 lastErr=-72us | 12:57:43 [sendspin] arrival: n=6000 lead min=48ms median=79ms max=83ms | 12:57:48 [sendspin] playing: synced=true syncErr=68us buffered=36ms snaps=2 corrections=49 underruns=0 lateDrops=0 lastErr=-113us
+12:59:03 before action | 0 | 12:57:48 [sendspin] playing: synced=true syncErr=68us buffered=36ms snaps=2 corrections=49 underruns=0 lateDrops=0 lastErr=-113us | 12:58:43 [sendspin] arrival: n=6000 lead min=61ms median=80ms max=83ms | 12:58:48 [sendspin] playing: synced=true syncErr=67us buffered=30ms snaps=2 corrections=55 underruns=0 lateDrops=0 lastErr=-85us
+12:59:06 --- stop/start
+12:59:07 B-dscp-cs6 min 45 | lat 81 gap 11 commit 2 | 0 | 12:57:48 [sendspin] playing: synced=true syncErr=68us buffered=36ms snaps=2 corrections=49 underruns=0 lateDrops=0 lastErr=-113us | 12:58:43 [sendspin] arrival: n=6000 lead min=61ms median=80ms max=83ms | 12:58:48 [sendspin] playing: synced=true syncErr=67us buffered=30ms snaps=2 corrections=55 underruns=0 lateDrops=0 lastErr=-85us
+13:00:02 B-dscp-cs6 min 46 | lat 82 gap 11 commit 1 | 0 | 12:58:48 [sendspin] playing: synced=true syncErr=67us buffered=30ms snaps=2 corrections=55 underruns=0 lateDrops=0 lastErr=-85us | 12:59:43 [sendspin] arrival: n=5692 lead min=47ms median=79ms max=83ms | 12:59:48 [sendspin] playing: synced=true syncErr=67us buffered=27ms snaps=1 corrections=179 underruns=0 lateDrops=14 lastErr=-46us
+13:01:02 B-dscp-cs6 min 47 | lat 82 gap 11 commit 1 | 0 | 12:59:48 [sendspin] playing: synced=true syncErr=67us buffered=27ms snaps=1 corrections=179 underruns=0 lateDrops=14 lastErr=-46us | 13:00:43 [sendspin] arrival: n=6000 lead min=58ms median=80ms max=83ms | 13:00:48 [sendspin] playing: synced=true syncErr=67us buffered=31ms snaps=1 corrections=185 underruns=0 lateDrops=14 lastErr=-69us
+13:02:02 B-dscp-cs6 min 48 | lat 82 gap 11 commit 1 | 0 | 13:00:48 [sendspin] playing: synced=true syncErr=67us buffered=31ms snaps=1 corrections=185 underruns=0 lateDrops=14 lastErr=-69us | 13:01:43 [sendspin] arrival: n=6000 lead min=64ms median=80ms max=83ms | 13:01:48 [sendspin] playing: synced=true syncErr=67us buffered=32ms snaps=1 corrections=190 underruns=0 lateDrops=14 lastErr=-101us
+13:03:02 B-dscp-cs6 min 49 | lat 82 gap 11 commit 1 | 0 | 13:01:48 [sendspin] playing: synced=true syncErr=67us buffered=32ms snaps=1 corrections=190 underruns=0 lateDrops=14 lastErr=-101us | 13:02:43 [sendspin] arrival: n=6001 lead min=57ms median=80ms max=83ms | 13:02:48 [sendspin] playing: synced=true syncErr=67us buffered=36ms snaps=1 corrections=196 underruns=0 lateDrops=14 lastErr=-64us
+13:04:02 B-dscp-cs6 min 50 | lat 81 gap 11 commit 1 | 0 | 13:02:48 [sendspin] playing: synced=true syncErr=67us buffered=36ms snaps=1 corrections=196 underruns=0 lateDrops=14 lastErr=-64us | 13:03:43 [sendspin] arrival: n=6000 lead min=60ms median=80ms max=83ms | 13:03:48 [sendspin] playing: synced=true syncErr=66us buffered=36ms snaps=1 corrections=202 underruns=0 lateDrops=14 lastErr=-72us
+13:05:02 B-dscp-cs6 min 51 | lat 81 gap 11 commit 1 | 0 | 13:03:48 [sendspin] playing: synced=true syncErr=66us buffered=36ms snaps=1 corrections=202 underruns=0 lateDrops=14 lastErr=-72us | 13:04:43 [sendspin] arrival: n=6000 lead min=63ms median=80ms max=83ms | 13:04:49 [sendspin] playing: synced=true syncErr=66us buffered=30ms snaps=1 corrections=207 underruns=0 lateDrops=14 lastErr=-98us
+13:06:02 B-dscp-cs6 min 52 | lat 81 gap 11 commit 1 | 0 | 13:04:49 [sendspin] playing: synced=true syncErr=66us buffered=30ms snaps=1 corrections=207 underruns=0 lateDrops=14 lastErr=-98us | 13:05:43 [sendspin] arrival: n=6001 lead min=66ms median=80ms max=83ms | 13:05:49 [sendspin] playing: synced=true syncErr=66us buffered=30ms snaps=1 corrections=213 underruns=0 lateDrops=14 lastErr=-100us
+13:07:02 B-dscp-cs6 min 53 | lat 81 gap 11 commit 1 | 0 | 13:05:49 [sendspin] playing: synced=true syncErr=66us buffered=30ms snaps=1 corrections=213 underruns=0 lateDrops=14 lastErr=-100us | 13:06:43 [sendspin] arrival: n=6000 lead min=38ms median=79ms max=83ms | 13:06:49 [sendspin] playing: synced=true syncErr=66us buffered=34ms snaps=1 corrections=219 underruns=0 lateDrops=14 lastErr=-82us
+13:08:02 B-dscp-cs6 min 54 | lat 81 gap 11 commit 1 | 0 | 13:06:49 [sendspin] playing: synced=true syncErr=66us buffered=34ms snaps=1 corrections=219 underruns=0 lateDrops=14 lastErr=-82us | 13:07:43 [sendspin] arrival: n=6000 lead min=57ms median=79ms max=82ms | 13:07:49 [sendspin] playing: synced=true syncErr=66us buffered=34ms snaps=1 corrections=225 underruns=0 lateDrops=14 lastErr=-76us
+13:09:02 before action | 0 | 13:07:49 [sendspin] playing: synced=true syncErr=66us buffered=34ms snaps=1 corrections=225 underruns=0 lateDrops=14 lastErr=-76us | 13:08:43 [sendspin] arrival: n=6000 lead min=61ms median=79ms max=82ms | 13:08:49 [sendspin] playing: synced=true syncErr=66us buffered=35ms snaps=1 corrections=230 underruns=0 lateDrops=14 lastErr=-96us
+13:09:07 --- reselect
+13:09:09 B-dscp-cs6 min 55 | lat 82 gap 11 commit 2 | 0 | 13:08:49 [sendspin] playing: synced=true syncErr=66us buffered=35ms snaps=1 corrections=230 underruns=0 lateDrops=14 lastErr=-96us | 13:09:00 [speaker] ALSA buffer thin — 928 frames queued (19.3ms), lowest seen >=928 (a bound, not the minimum — see AlsaMargin), 38 period(s) under 1152 since boot; this is where a clic | 13:09:00 [speaker] music source starved — 1298 period(s) since boot it had audio for and could not fill; a brief click is this
+13:10:02 B-dscp-cs6 min 56 | lat 82 gap 11 commit 1 | 0 | 13:09:00 [speaker] music source starved — 1298 period(s) since boot it had audio for and could not fill; a brief click is this | 13:09:43 [sendspin] arrival: n=5500 lead min=59ms median=80ms max=85ms | 13:09:49 [sendspin] playing: synced=true syncErr=66us buffered=35ms snaps=2 corrections=2 underruns=0 lateDrops=0 lastErr=-95us
+13:11:02 B-dscp-cs6 min 57 | lat 82 gap 11 commit 1 | 0 | 13:09:49 [sendspin] playing: synced=true syncErr=66us buffered=35ms snaps=2 corrections=2 underruns=0 lateDrops=0 lastErr=-95us | 13:10:43 [sendspin] arrival: n=6000 lead min=53ms median=80ms max=83ms | 13:10:49 [sendspin] playing: synced=true syncErr=66us buffered=29ms snaps=2 corrections=8 underruns=0 lateDrops=0 lastErr=-73us
+13:12:02 B-dscp-cs6 min 58 | lat 82 gap 11 commit 1 | 0 | 13:10:49 [sendspin] playing: synced=true syncErr=66us buffered=29ms snaps=2 corrections=8 underruns=0 lateDrops=0 lastErr=-73us | 13:11:43 [sendspin] arrival: n=6000 lead min=56ms median=80ms max=83ms | 13:11:49 [sendspin] playing: synced=true syncErr=67us buffered=29ms snaps=2 corrections=14 underruns=0 lateDrops=0 lastErr=-66us
+13:13:02 B-dscp-cs6 min 59 | lat 82 gap 11 commit 1 | 0 | 13:11:49 [sendspin] playing: synced=true syncErr=67us buffered=29ms snaps=2 corrections=14 underruns=0 lateDrops=0 lastErr=-66us | 13:12:43 [sendspin] arrival: n=6000 lead min=64ms median=80ms max=83ms | 13:12:49 [sendspin] playing: synced=true syncErr=67us buffered=33ms snaps=2 corrections=19 underruns=0 lateDrops=0 lastErr=-112us
+13:14:03 B-dscp-cs6 min 60 | lat 82 gap 11 commit 1 | 0 | 13:12:49 [sendspin] playing: synced=true syncErr=67us buffered=33ms snaps=2 corrections=19 underruns=0 lateDrops=0 lastErr=-112us | 13:13:43 [sendspin] arrival: n=6000 lead min=63ms median=79ms max=83ms | 13:13:49 [sendspin] playing: synced=true syncErr=67us buffered=34ms snaps=2 corrections=25 underruns=0 lateDrops=0 lastErr=-100us
+13:14:03 ===== run B-dscp-cs6 done

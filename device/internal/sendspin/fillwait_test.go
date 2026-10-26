@@ -8,11 +8,11 @@ import (
 func TestFillWaitDeadlinePreservesHardwareReserve(t *testing.T) {
 	now := time.Now()
 	for _, tc := range []struct{ lead, uncertainty, want time.Duration }{
-		{48 * time.Millisecond, 0, 32 * time.Millisecond},
-		{48 * time.Millisecond, 3 * time.Millisecond, 29 * time.Millisecond},
-		{2 * time.Second, 0, 32 * time.Millisecond},
-		{12 * time.Millisecond, 0, -4 * time.Millisecond},
-		{48 * time.Millisecond, -time.Second, 32 * time.Millisecond},
+		{48 * time.Millisecond, 0, 40 * time.Millisecond},
+		{48 * time.Millisecond, 3 * time.Millisecond, 37 * time.Millisecond},
+		{2 * time.Second, 0, 40 * time.Millisecond},
+		{4 * time.Millisecond, 0, -4 * time.Millisecond},
+		{48 * time.Millisecond, -time.Second, 40 * time.Millisecond},
 	} {
 		if got := fillWaitDeadline(now, now.Add(tc.lead), tc.uncertainty).Sub(now); got != tc.want {
 			t.Fatalf("lead %v uncertainty %v: %v, want %v", tc.lead, tc.uncertainty, got, tc.want)
@@ -71,7 +71,7 @@ func TestFillWaitRecoversLateDataWithoutMovingPlaybackTime(t *testing.T) {
 	}
 }
 
-// A period that turns up after the old 24/24 budget would have given up, and
+// A period that turns up after the old 16/32 budget would have given up, and
 // inside the current one, is counted: it is an underrun the wider budget saved.
 func TestFillWaitCountsRecoveriesPastTheTightBudget(t *testing.T) {
 	for _, tc := range []struct {
