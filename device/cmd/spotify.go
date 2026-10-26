@@ -348,10 +348,17 @@ func spotifyPoll(spk *speaker.PcmSpeaker, cc *client.ControlClient, vol deviceVo
 	sp.mu.Unlock()
 	if pause {
 		p.Send("pause", nil)
-		p.Discard()
 		if first {
 			log.Printf("[spotify] paused: the music plane is taken")
 		}
+	}
+	// Discarded on every tick the plane is taken, not only with the pause:
+	// the engine's sink still flushes what it had decoded after the pause
+	// lands, and that tail waited in the ring and played the moment the other
+	// source let go — a second of the song when a TV stream ended (Radar,
+	// 2026-10-26).
+	if taken {
+		p.Discard()
 	}
 }
 
