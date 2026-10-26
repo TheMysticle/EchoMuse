@@ -592,6 +592,78 @@ func TestPlayerThatGoesBusyIsLeftAloneAndComesBack(t *testing.T) {
 	waitFor(t, "ready again", 5*time.Second, func() bool { return memberState(l, "a") == StateReady })
 }
 
+// A server pointed at the Echo by hand takes it from the group and keeps it;
+// the group comes back once that server lets go. At equal rank the two took
+// the Echo from each other every 5s.
+func TestAManualServerTakesAMemberFromTheGroupAndGivesItBack(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real time")
+	}
+	c, port := startPlayer(t, "p")
+	group := newTestLeader(t)
+	share(t, group, c)
+	m := []Member{{ID: "a", ClientID: c.ClientID(), Host: "127.0.0.1", Port: port}}
+	group.SetMembers("G", ChannelMono, m)
+	waitFor(t, "the group to hold the player", 8*time.Second, func() bool { return memberState(group, "a") == StateReady })
+
+	tv := newTestLeader(t)
+	tv.plainServer = true
+	share(t, tv, c)
+	tv.SetMembers("TV", ChannelMono, m)
+	waitFor(t, "the manual server to take it", 8*time.Second, func() bool {
+		return memberState(tv, "a") == StateReady && memberState(group, "a") == StateBusy
+	})
+	// Past the group's 5s retry: it must not take the player back.
+	time.Sleep(busyBackoff + 2*time.Second)
+	if memberState(tv, "a") != StateReady || memberState(group, "a") != StateBusy {
+		t.Fatalf("after the group's retry: manual %q, group %q", memberState(tv, "a"), memberState(group, "a"))
+	}
+
+	tv.SetMembers("TV", ChannelMono, nil) // the TV disconnects
+	waitFor(t, "the group to come back", busyBackoff+5*time.Second, func() bool { return memberState(group, "a") == StateReady })
+}
+
+// The other way round: a group's leader arriving finds the player held by a
+// manual server and stays out.
+func TestAGroupDoesNotTakeAMemberFromAManualServer(t *testing.T) {
+	c, port := startPlayer(t, "p")
+	m := []Member{{ID: "a", ClientID: c.ClientID(), Host: "127.0.0.1", Port: port}}
+	tv := newTestLeader(t)
+	tv.plainServer = true
+	share(t, tv, c)
+	tv.SetMembers("TV", ChannelMono, m)
+	waitFor(t, "the manual server to hold the player", 8*time.Second, func() bool { return memberState(tv, "a") == StateReady })
+
+	group := newTestLeader(t)
+	share(t, group, c)
+	group.SetMembers("G", ChannelMono, m)
+	waitFor(t, "the group turned away", 8*time.Second, func() bool { return memberState(group, "a") == StateBusy })
+	if memberState(tv, "a") != StateReady {
+		t.Fatalf("the group displaced the manual server: %q", memberState(tv, "a"))
+	}
+}
+
+// The Echo's own Spotify keeps a group out (someone picked that Echo by
+// itself) but not a manual server, which the music mux lets take over.
+func TestOwnSpotifyTurnsAwayAGroupButNotAManualServer(t *testing.T) {
+	c, port := startPlayer(t, "p")
+	c.SetOwnMusic(true)
+	m := []Member{{ID: "a", ClientID: c.ClientID(), Host: "127.0.0.1", Port: port}}
+	group := newTestLeader(t)
+	share(t, group, c)
+	group.SetMembers("G", ChannelMono, m)
+	waitFor(t, "the group to see the Echo busy", 8*time.Second, func() bool { return memberState(group, "a") == StateBusy })
+
+	group.SetMembers("G", ChannelMono, nil)
+	tv := newTestLeader(t)
+	tv.plainServer = true
+	share(t, tv, c)
+	tv.SetMembers("TV", ChannelMono, m)
+	waitFor(t, "the manual server admitted and told it may play", 8*time.Second, func() bool {
+		return memberState(tv, "a") == StateReady && c.Status().State != "busy"
+	})
+}
+
 func TestVolumeReachesThePlayerOnceAndOnJoining(t *testing.T) {
 	c, port := startPlayer(t, "p")
 	var mu sync.Mutex

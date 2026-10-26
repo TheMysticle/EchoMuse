@@ -36,6 +36,25 @@ stamp says, against a clock it keeps matched to the leader's.
 - If no other Echo is reachable, the leader plays alone, exactly as it does
   without a group.
 
+## When something else plays on a group's Echo
+
+A Sendspin server you point at an Echo yourself, such as a TV streamer or
+Music Assistant, takes that Echo from the group, including the Echo that
+leads it.
+
+- On the leader, Spotify pauses, and the group stops with it.
+- The other Echoes leave the group and play the TV. The dashboard shows them
+  as playing something else.
+- When the TV disconnects, each Echo rejoins the group within about five
+  seconds. Spotify stays paused until you press play.
+
+An Echo that is playing its own Spotify, chosen by itself in Spotify, is not
+taken by the group. Home Assistant's own media player still wins over all of
+these.
+
+This needs the updated firmware on every Echo in the group. With older
+firmware on either side, the group and the TV take the Echo from each other.
+
 ## Security
 
 The controller makes a random secret for each leader and member pair and gives

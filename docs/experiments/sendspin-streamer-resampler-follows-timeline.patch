@@ -829,3 +829,36 @@
            <option value="50">50 ms</option>
          </select>
          <div class="hint" style="margin-top:6px">Less buffer means less delay and a bigger chance of dropouts on a weak Wi-Fi link.</div>
+
+# 2026-10-26: end the dial task when a connection disconnects itself (queue overflow), so the streamer redials an Echo that comes back.
+--- a/streamer.py
++++ b/streamer.py
+@@ -203,6 +203,28 @@
+ _conn.SendspinConnection.send_binary = _send_binary_logged
+ _conn.SendspinConnection._send_binary_data = _send_data_logged
+ 
++# A connection that disconnects ITSELF never ends. disconnect() cancels the
++# message loop, and a cancelled loop does not set _connection_done, so
++# handle_client waits on it for good: the dial task stays alive, every
++# connect_to_client() after it only pokes that task's retry event, and the
++# Echo is never dialled again until the streamer restarts. Hit on a Radar
++# (2026-10-26): the Echo unreachable for 40 s, "Role queue full ... client too
++# slow - disconnecting" 22 s after the Echo had already dropped the dead
++# socket, and no connection attempt in the 10 minutes after it came back.
++# The same path follows every queue overflow, which is any Echo that stops
++# taking audio for a while: a reboot, an update, a Wi-Fi drop.
++_conn_disconnect = _conn.SendspinConnection.disconnect
++
++
++async def _disconnect_and_end(self, *, retry_connection: bool = True) -> None:
++    try:
++        await _conn_disconnect(self, retry_connection=retry_connection)
++    finally:
++        self._connection_done.set()
++
++
++_conn.SendspinConnection.disconnect = _disconnect_and_end
++
+ log = logging.getLogger("streamer")
+ 
+ HERE = Path(__file__).resolve().parent

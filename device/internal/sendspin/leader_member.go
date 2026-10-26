@@ -457,7 +457,7 @@ func (m *member) serve(ctx context.Context, cfg Member, psk []byte) (end leaderE
 	}
 
 	// Only the transport is encrypted from here.
-	if err := c.sendJSON("server/hello", serverHello{Name: m.l.groupName()}); err != nil {
+	if err := c.sendJSON("server/hello", serverHello{Name: m.l.groupName(), Group: !m.l.plainServer}); err != nil {
 		return leaderEnd{state: StateUnreachable, detail: "connection lost"}
 	}
 	ws.SetReadDeadline(time.Now().Add(handshakeTimeout))
@@ -613,7 +613,7 @@ func goodbyeEnd(reason string) leaderEnd {
 	case "restart", "user_request", "shutdown":
 		return leaderEnd{state: StateUnreachable, detail: "this Echo is restarting its player"}
 	case "another_server", "concurrent_attempt":
-		return leaderEnd{state: StateBusy, detail: "another server is using this Echo", wait: busyBackoff}
+		return leaderEnd{state: StateBusy, detail: "another Sendspin server is playing on this Echo; it rejoins the group when that stops", wait: busyBackoff}
 	}
 	return leaderEnd{state: StateError, detail: "this Echo refused: " + reason, wait: busyBackoff}
 }

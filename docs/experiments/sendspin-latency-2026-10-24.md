@@ -758,3 +758,17 @@ packets 14 and 18 ms early), the 8 ms reserve took both depths that had cost
 an underrun without one and without an XRUN. Its only underrun was a freeze no
 setting covers. One two-hour run is not the pass bar: it needs repeating, and
 the freeze needs explaining.
+
+### The streamer stopped redialling after an Echo went away (2026-10-26)
+
+Blocking the PC on the Echo for 40-50 s (iptables INPUT drop on the Echo)
+reproduced "the streamer only comes back after a restart". The Echo was
+fine: it dropped the dead socket at its 30 s read deadline and was free
+again. aiosendspin 9.1.1 then logged "Role queue full for player
+(4096/4096), client too slow - disconnecting" and never dialled again.
+`disconnect()` cancels the message loop, a cancelled loop does not set
+`_connection_done`, so `handle_client` waits on it forever; the dial task
+stays alive and every `connect_to_client()` only pokes its retry event.
+The streamer now sets the event after `disconnect()` (patch file). Same
+test after the fix: overflow at 01:40:32, unblocked 01:40:45, connected and
+in sync at 01:40:54 with no restart.

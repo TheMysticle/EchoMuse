@@ -49,7 +49,12 @@ func spotifyPlayer() *spotify.Player {
 
 // musicMux gives the speaker's single music slot to one producer at a time.
 // The owner is sticky until it goes quiet, so a second source starting
-// mid-song cannot cut the first off.
+// mid-song cannot cut the first off, with one exception: Sendspin audio
+// takes the slot from Spotify. Only a server someone pointed at this Echo
+// (a TV's streamer, Music Assistant) gets audio through while Spotify plays
+// here, since a speaker group's leader is turned away (SetOwnMusic), and
+// that is a deliberate act that should win. spotifyPoll then pauses Spotify
+// and does not resume it: on a group's leader that pauses the group too.
 type musicMux struct {
 	mu    sync.Mutex
 	owner int
@@ -84,7 +89,7 @@ func (m *musicMux) Active() bool {
 			return true
 		}
 	case ownSpotify:
-		if spActive() {
+		if spActive() && !(ss != nil && ss.Active()) {
 			return true
 		}
 	}

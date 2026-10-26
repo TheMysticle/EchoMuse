@@ -119,6 +119,9 @@ type LeaderConfig struct {
 type Leader struct {
 	cfg   LeaderConfig
 	store *leaderStore
+	// plainServer dials without the group mark in server/hello, as any other
+	// Sendspin server would: tests use it to stand in for a TV's streamer.
+	plainServer bool
 
 	local *player
 	oc    atomic.Pointer[OutputClock]

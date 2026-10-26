@@ -188,7 +188,8 @@ func sendspinPoll(spk *speaker.PcmSpeaker) {
 	sendspinCores(time.Now(), c != nil && c.LowLatency())
 	if c != nil {
 		plane, spot := spk.MusicPlaneBusy(), mux.ownerNow() == ownSpotify
-		c.SetExternal(plane || spot)
+		c.SetExternal(plane)
+		c.SetOwnMusic(spot)
 		if reason := externalReason(plane, spot); reason != sendspinExternalWas {
 			sendspinExternalWas = reason
 			log.Printf("[sendspin] reports %s", reason)

@@ -114,6 +114,12 @@ type pairAbort struct {
 
 type serverHello struct {
 	Name string `json:"name"`
+	// Group says the server is an EchoMuse speaker group's leader. It only
+	// LOWERS the server's standing (a player lets any other playback server
+	// displace it, see rank), so it needs no proof: a server that claims it
+	// falsely only gives way more readily. Unknown to every other server and
+	// to older players, which ignore it and admit as before.
+	Group bool `json:"echomuse_group,omitempty"`
 }
 
 type activatePairing struct {

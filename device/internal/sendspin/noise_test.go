@@ -194,7 +194,8 @@ func TestActivitySetsAllowedPerPSK(t *testing.T) {
 			t.Errorf("%s %v unpaired=%v: got %v", c.cat, actKey(c.acts), c.unpaired, got)
 		}
 	}
-	if rank(set(actPlayback, actPairing)) <= rank(set(actPairing)) || rank(set(actPairing)) <= rank(set()) {
-		t.Error("admission must rank playback over pairing over nothing")
+	if rank(set(actPlayback, actPairing), false) <= rank(set(actPlayback), true) ||
+		rank(set(actPlayback), true) <= rank(set(actPairing), false) || rank(set(actPairing), false) <= rank(set(), false) {
+		t.Error("admission must rank playback over a group's playback over pairing over nothing")
 	}
 }

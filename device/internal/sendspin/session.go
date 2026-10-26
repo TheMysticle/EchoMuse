@@ -58,6 +58,7 @@ type session struct {
 	pairingIndex int
 	stagedPSK    []byte
 	awaitHello   bool // re-keyed; 9.1.1 re-sends server/hello next
+	groupLed     bool // a speaker group's leader (server/hello), see rank
 	dec          *decoder
 	streaming    bool
 
@@ -97,6 +98,7 @@ func (s *session) run() {
 	}
 	var sh serverHello
 	json.Unmarshal(body, &sh)
+	s.groupLed = sh.Group
 	if sh.Name != "" {
 		s.mu.Lock()
 		s.serverName = sh.Name
@@ -269,11 +271,24 @@ func withPlayback(acts map[string]bool) map[string]bool {
 	return m
 }
 
-// rank orders connections for admission: playback over pairing over nothing.
-func rank(acts map[string]bool) int {
+// rank orders connections for admission: playback over a speaker group's
+// playback over pairing over nothing.
+//
+// A group's leader ranks under every other playback server, so a server
+// someone pointed at this Echo by hand (a TV's streamer, Music Assistant)
+// takes it from the group and keeps it: the leader is turned away with
+// concurrent_attempt and asks again every few seconds, and the first ask
+// after the other server lets go puts the group back. At equal rank the
+// newcomer wins, so the two used to take the Echo from each other every 5s,
+// and a streamer that gives up after another_server stayed out (2026-10-26).
+// The leader's Spotify is not resumed by any of this: it was paused when the
+// other server took the leader's own speaker.
+func rank(acts map[string]bool, group bool) int {
 	switch {
-	case acts[actPlayback]:
+	case acts[actPlayback] && group:
 		return 2
+	case acts[actPlayback]:
+		return 3
 	case acts[actPairing]:
 		return 1
 	}
@@ -313,13 +328,20 @@ func (s *session) onActivate(a serverActivate) error {
 	}
 
 	if !s.activated {
-		if !s.c.admit(s, rank(acts)) {
+		if !s.c.admit(s, rank(acts, s.groupLed)) {
+			if s.groupLed {
+				// The leader asks again every few seconds for as long as
+				// another server plays here; a line per refusal would be
+				// the whole log.
+				s.sendJSON("client/goodbye", clientGoodbye{Reason: "concurrent_attempt"}, true)
+				return errGoodbye
+			}
 			return s.goodbye("concurrent_attempt")
 		}
 		s.activated = true
 		s.ws.SetReadDeadline(time.Now().Add(idleTimeout))
 	} else {
-		s.c.rerank(s, rank(acts))
+		s.c.rerank(s, rank(acts, s.groupLed))
 	}
 	s.activities = acts
 	if acts[actPlayback] {
@@ -399,12 +421,13 @@ func (s *session) isAdmitted() bool { return s.c.isAdmitted(s) }
 // ── player ──────────────────────────────────────────────────────────────────
 
 // available is what client/state reports. It means only "Home Assistant
-// has not taken the music plane": 9.1.1 reads false as an external source
+// has not taken the music plane" (and, to a group's leader, "this Echo's own
+// Spotify is not playing"): 9.1.1 reads false as an external source
 // and moves the device out of its group, so it must never be sent merely
 // because the clock is still converging. The spec's rule — never true before
 // the clock has converged — is kept by holding the first report until it
 // has (sendState), about 0.4s after activation against 9.1.1's 5s allowance.
-func (s *session) available() bool { return !s.c.external() }
+func (s *session) available() bool { return !s.c.externalFor(s) }
 
 // sendState reports availability and the player's state: on activation, on
 // a command, when HA takes or releases the music plane. Held while the clock
@@ -498,8 +521,8 @@ func (s *session) endStream() {
 
 func (s *session) onAudio(msg []byte) {
 	// Audio for a connection that is not the admitted one, or while HA has
-	// the music plane, is discarded — valid, and never a reason to close.
-	if s.dec == nil || !s.isAdmitted() || s.c.external() {
+	// the music plane (or, for a group's leader, this Echo's Spotify), is discarded — valid, and never a reason to close.
+	if s.dec == nil || !s.isAdmitted() || s.c.externalFor(s) {
 		return
 	}
 	ts, payload, err := chunkPayload(msg, s.dec.f.Codec)

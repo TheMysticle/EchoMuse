@@ -57,6 +57,7 @@ type Client struct {
 	rankOf     map[*session]int
 	sessions   map[*session]bool
 	extBusy    bool
+	ownBusy    bool // this Echo's own Spotify plays; turns away a group only
 	unpaired   bool
 	onChange   func()
 	onSettings func(playerSettings)
@@ -261,10 +262,35 @@ func (c *Client) SetExternal(busy bool) {
 	c.changed()
 }
 
-func (c *Client) external() bool {
+// SetOwnMusic is set while this Echo's own Spotify plays. Unlike Home
+// Assistant it holds the speaker against a speaker group's leader only: an
+// Echo someone picked by itself in Spotify is not taken by the group, while
+// any other server (a TV's streamer) takes it, and the music mux pauses
+// Spotify for it (cmd/spotify.go). Users asked for that order, 2026-10-26.
+func (c *Client) SetOwnMusic(busy bool) {
+	c.mu.Lock()
+	if c.ownBusy == busy {
+		c.mu.Unlock()
+		return
+	}
+	c.ownBusy = busy
+	s := c.admitted
+	c.mu.Unlock()
+	if s == nil || !s.groupLed {
+		return
+	}
+	if busy {
+		c.player.clear()
+	}
+	s.sendState()
+	c.changed()
+}
+
+// externalFor reports whether something else holds the speaker against s.
+func (c *Client) externalFor(s *session) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.extBusy
+	return c.extBusy || (c.ownBusy && s != nil && s.groupLed)
 }
 
 // OnSettings is told when a server changes volume, mute or delay, so the
@@ -528,7 +554,7 @@ func (c *Client) Status() Status {
 		Player:     c.player.stats(),
 	}
 	c.mu.Lock()
-	s, busy := c.admitted, c.extBusy
+	s, busy := c.admitted, c.extBusy || (c.ownBusy && c.admitted != nil && c.admitted.groupLed)
 	c.mu.Unlock()
 	if s != nil {
 		st.State = "connected"
