@@ -653,6 +653,10 @@ func (p *PcmSpeaker) silenceLoop() {
 		}
 	}()
 	var meter writeLoopMeter // bench builds only; empty otherwise
+	// The rest of a voice period being played in low-latency slices (see
+	// voiceSlice). A flush drops what is queued, not this: at most 32ms of a
+	// cancelled reply still plays.
+	var voiceRest []byte
 	for {
 		select {
 		case <-p.stopCh:
@@ -661,8 +665,16 @@ func (p *PcmSpeaker) silenceLoop() {
 		}
 
 		var voice, music []byte
-		if p.voice.ready(int(p.voicePrime.Load())) {
+		sliced := len(voiceRest) > 0
+		pullFree := !p.music.playing && !p.music.isActive() && len(p.music.ch) == 0
+		if len(voiceRest) > 0 {
+			voice, voiceRest = voiceSlice(voiceRest)
+		} else if p.voice.ready(int(p.voicePrime.Load())) {
 			voice = p.voice.take()
+			if pullFree && p.sourceLowLatency() {
+				voice, voiceRest = voiceSlice(voice)
+				sliced = true
+			}
 		} else if p.voice.playing {
 			p.report(p.voice.drained(), "voice")
 		}
@@ -671,18 +683,23 @@ func (p *PcmSpeaker) silenceLoop() {
 		} else if p.music.playing {
 			p.report(p.music.drained(), "music")
 		}
-		// The source period is a quarter of the loop's when a low-latency Sendspin
-		// stream is the only thing playing: the source must have audio for
-		// the period it is asked to build, so a shorter one lowers the lead
-		// the stream needs by the difference (32ms).
+		// The source period is a quarter of the loop's when a low-latency
+		// Sendspin stream is playing: the source must have audio for the
+		// period it is asked to build, so a shorter one lowers the lead the
+		// stream needs by the difference (32ms). A voice period is sliced to
+		// match rather than pulling a whole one under it.
 		sourceBytes := periodBytes
 		if music == nil && !p.music.playing && !p.music.isActive() {
-			sourceBytes = sourcePeriodBytes(voice != nil, p.sourceLowLatency())
+			if sliced {
+				sourceBytes = len(voice)
+			} else {
+				sourceBytes = sourcePeriodBytes(voice != nil, p.sourceLowLatency())
+			}
 			music = p.pullSource(sourceBytes)
 		}
 		slices := 1
-		if voice == nil && sourceBytes < periodBytes {
-			slices = periodBytes / sourceBytes
+		if sourceBytes < periodBytes {
+			slices = max(1, periodBytes/sourceBytes)
 		}
 		p.mixer.SetSlices(slices)
 		p.alert.SetSlices(slices)

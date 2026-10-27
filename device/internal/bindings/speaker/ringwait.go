@@ -48,3 +48,20 @@ func sourcePeriodBytes(voiceReady, lowLatency bool) int {
 	}
 	return loopPeriodFrames * 4
 }
+
+// voiceSlice splits the next low-latency slice off a voice period.
+//
+// A voice period is a whole loop period (2048 frames), and building one under
+// a low-latency source asks that source for 2048 frames due 48ms out: at a
+// 50ms lead the end of that period has not arrived, so the fill wait spends
+// the ring down to its 8ms reserve and the 2048-frame build and write then
+// run it dry. On Radar that XRUN restarts the PCM (prepare + start, twice per
+// reply), and the restarted DMA plays a period later than ALSA's delay
+// reports, so one Echo of a group stayed 42.7ms behind the other until the
+// firmware restarted (2026-10-27, measured off the DL1 tap with dac_probe).
+// Played in the same 512-frame slices as music alone, voice keeps the ring
+// shallow and the music under it.
+func voiceSlice(v []byte) (slice, rest []byte) {
+	n := min(len(v), lowLatencyPeriodFrames*4)
+	return v[:n], v[n:]
+}

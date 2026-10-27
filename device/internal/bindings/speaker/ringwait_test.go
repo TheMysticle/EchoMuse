@@ -135,3 +135,22 @@ func TestQuarterPeriodsKeepDuckRate(t *testing.T) {
 		}
 	}
 }
+
+func TestVoiceSliceCoversThePeriodInLowLatencySlices(t *testing.T) {
+	v := make([]byte, loopPeriodFrames*4+100)
+	for i := range v {
+		v[i] = byte(i)
+	}
+	var got []byte
+	for rest := v; len(rest) > 0; {
+		var s []byte
+		s, rest = voiceSlice(rest)
+		if len(s) > lowLatencyPeriodFrames*4 {
+			t.Fatalf("slice of %d bytes, want at most %d", len(s), lowLatencyPeriodFrames*4)
+		}
+		got = append(got, s...)
+	}
+	if string(got) != string(v) {
+		t.Fatal("slices do not reassemble the period")
+	}
+}
