@@ -591,7 +591,15 @@ func (l *Leader) resetTimeline(src AudioSource, keep bool) {
 			unplayed += leaderChunkUs
 		}
 	}
-	log.Printf("[group] stop: %dms of audio had been sent ahead (keep=%v)", unplayed/1000, keep)
+	// Only a stop that cut something is worth a line. While another server
+	// holds the music slot spotifyPoll discards the engine's ring on every
+	// tick, each discard reads here as a skip, and with nothing in flight
+	// the line was the whole effect: ten a second, 595 a minute on Living
+	// Room under a TV stream (2026-10-27), which rotated everything else
+	// out of the log.
+	if len(l.hist) > 0 || l.local.active() {
+		log.Printf("[group] stop: %dms of audio had been sent ahead (keep=%v)", unplayed/1000, keep)
+	}
 	l.local.clear()
 	for _, m := range l.members {
 		m.clearQueue()
