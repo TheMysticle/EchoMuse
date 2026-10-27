@@ -22,17 +22,17 @@ KIND = {"type": "string", "enum": ["timer", "alarm", "reminder"]}
 TOOLS = [
     {"name": "EchoMuseList", "description": "Read persistent schedules on this originating speaker and the current UTC time. Use before resolving calendar times or selecting an item to change. Each item carries `due_local`, its due time in its own timezone. For a question about a particular day (\"reminders for today\"), pass `date` so the speaker filters; do not work the day out from `due`. These are speaker-owned alerts, not HA timers.",
      "inputSchema": _schema({"kind": KIND, "date": {"type": "string", "description": "Only items due on this local day: `today`, `tomorrow` or YYYY-MM-DD."}})},
-    {"name": "EchoMuseCreate", "description": "Save a persistent timer, alarm or reminder on this speaker. Provide duration_seconds OR an explicit RFC3339 when with UTC offset, plus an IANA timezone. Ask the user about ambiguous dates or AM/PM, and about the reminder text only if they have not said it. A reminder REQUIRES `message`, the words to remind the user of (for example 'take out the trash'); `label` is only a short name. Only confirm success if this tool confirms device acknowledgment. Reminder speech may use the configured sound fallback.",
+    {"name": "EchoMuseCreate", "description": "Save a persistent timer, alarm or reminder on this speaker. Provide duration_seconds OR `when`, plus an IANA timezone. Write `when` as the clock time the user said; the offset may be left off and the household zone's is used. Ask the user about ambiguous dates or AM/PM, and about the reminder text only if they have not said it. A reminder REQUIRES `message`, the words to remind the user of (for example 'take out the trash'); `label` is only a short name. Only confirm success if this tool confirms device acknowledgment. Reminder speech may use the configured sound fallback.",
      "inputSchema": _schema({"kind": KIND, "label": {"type": "string"}, "message": {"type": "string"},
         "duration_seconds": {"type": "integer", "minimum": 1, "maximum": 315360000},
-        "when": {"type": "string", "description": "RFC3339 date/time with explicit offset"},
+        "when": {"type": "string", "description": "Local date/time, e.g. 2026-10-27T12:00:00; an offset is optional"},
         "timezone": {"type": "string", "description": "IANA timezone, e.g. Europe/Warsaw"},
         "repeat_days": {"type": "array", "items": {"type": "integer", "minimum": 0, "maximum": 6}, "description": "Weekdays: Monday=1 through Sunday=0"},
         "repeat_seconds": {"type": "integer", "minimum": 1, "maximum": 315360000}}, ("kind", "timezone"))},
-    {"name": "EchoMuseAction", "description": "Change a persistent schedule on this speaker, using the exact item id returned by EchoMuseList. Supports cancel, dismiss, snooze, pause, resume, adjust, enable, disable and edit. `edit` changes a reminder's `message` and/or moves a reminder or alarm to a new RFC3339 `when` with UTC offset (a repeating one keeps its days and takes only the new clock time); a timer is changed with adjust. Never substitute a different speaker or HA timer.",
+    {"name": "EchoMuseAction", "description": "Change a persistent schedule on this speaker, using the exact item id returned by EchoMuseList. Supports cancel, dismiss, snooze, pause, resume, adjust, enable, disable and edit. `edit` changes a reminder's `message` and/or moves a reminder or alarm to a new `when`, the local clock time (offset optional) (a repeating one keeps its days and takes only the new clock time); a timer is changed with adjust. Never substitute a different speaker or HA timer.",
      "inputSchema": _schema({"action": {"type": "string", "enum": ["cancel", "dismiss", "snooze", "pause", "resume", "adjust", "enable", "disable", "edit"]},
          "id": {"type": "string"}, "seconds": {"type": "integer", "minimum": -315360000, "maximum": 315360000},
-         "message": {"type": "string"}, "when": {"type": "string", "description": "edit only: RFC3339 date/time with explicit offset"}}, ("action", "id"))},
+         "message": {"type": "string"}, "when": {"type": "string", "description": "edit only: local date/time, e.g. 2026-10-27T12:00:00; an offset is optional"}}, ("action", "id"))},
 ]
 STOP_TOOL = {
     "name": "EchoMuseStop",
@@ -193,7 +193,9 @@ def edited_item(items, args, now):
         try:
             due = datetime.fromisoformat(when.replace("Z", "+00:00"))
         except ValueError:
-            raise ValueError("`when` must be an RFC3339 date/time with a UTC offset")
+            raise ValueError("`when` must be a date/time such as 2026-10-27T12:00:00")
+        if due.tzinfo is None and local_zone():
+            due = due.replace(tzinfo=zone)       # the clock time the user said
         if due.tzinfo is None:
             raise ValueError("Date/time requires an explicit UTC offset")
         if local_zone():
@@ -258,6 +260,8 @@ def command(name, args, now, items=()):
         message = label
     due = now + duration if duration else datetime.fromisoformat(when.replace("Z", "+00:00"))
     if isinstance(due, datetime):
+        if due.tzinfo is None and forced:
+            due = due.replace(tzinfo=zone)       # the clock time the user said; no offset to guess
         if due.tzinfo is None:
             raise ValueError("Date/time requires an explicit UTC offset")
         # Reject inconsistent offsets and nonexistent local times. Against the

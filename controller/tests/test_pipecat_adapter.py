@@ -591,3 +591,16 @@ def test_a_reconnect_does_not_resend_old_tool_results_as_live_responses():
         ran.append(set(service._completed_tool_calls))
     asyncio.run(adapter.keep_connection(service, run, object()))
     assert ran==[{'fc_old'}]
+
+
+def test_the_model_is_told_the_households_zone_and_never_a_time():
+    # A session resumes for hours, so a time in its instructions goes stale
+    # across a clock change; the zone's name does not.
+    settings = adapter.options({'x-echomuse-barge-in': 'balanced', 'x-echomuse-timezone': 'Europe/Warsaw'}, authenticated=True)
+    rule = adapter.timezone_rule(settings)
+    assert 'Europe/Warsaw' in rule and 'without an offset' in rule
+    assert not any(ch.isdigit() for ch in rule)
+    assert rule in adapter.composed_instructions(settings, 'en')
+    assert 'Ask' in adapter.timezone_rule({}) and 'Ask' in adapter.composed_instructions({}, 'en')
+    package = (ROOT/'tools/pipecat_echomuse/package.py').read_text(encoding='utf-8')
+    assert 'echomuse.timezone_rule(session_body["echomuse"])' in package

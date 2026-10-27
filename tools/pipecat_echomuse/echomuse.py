@@ -42,7 +42,7 @@ def composed_instructions(settings, language):
             "Use EchoMuse scheduler tools for timers/alarms/reminders; confirm saves only after device acknowledgment. "
             "Bare snooze: inspect EchoMuseList; snooze only the ringing alert.")
     rules.extend([
-        "Ask if the timezone for a calendar alarm/reminder is unknown.",
+        timezone_rule(settings),
         "Bare play/resume/continue without a title: unpause this speaker's own player; never search for generic music or call play_media. "
         "For specific music, call play_media directly with plain title/artist. Success means playback started: no search first, "
         "verification or repeat call. Never invent Spotify URIs/playlist IDs; reuse only search-returned IDs.",
@@ -51,6 +51,19 @@ def composed_instructions(settings, language):
         "Volume numbers are percentages: volume 10 means volume_level 10, never multiply by ten.",
     ])
     return "\n" + "\n".join(rules)
+
+
+def timezone_rule(settings):
+    """The household's zone by NAME, never a time or an offset.
+
+    A Gemini Live session resumes for hours, so a time written into its
+    instructions goes stale, across a clock change included. A zone name does
+    not, and with it known the controller applies the offset itself.
+    """
+    zone = settings.get("timezone")
+    if not zone:
+        return "Ask if the timezone for a calendar alarm/reminder is unknown."
+    return f"Household time zone: {zone}. Give alarm/reminder times as the local clock time, without an offset."
 
 
 def options(headers, authenticated):

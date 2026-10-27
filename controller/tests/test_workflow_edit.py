@@ -81,7 +81,7 @@ def test_a_finished_item_is_not_brought_back(state):
     ({}, "Say what to change"),
     ({"message": "   "}, "Say what to change"),
     ({"when": "2026-10-21T09:00:00"}, "explicit UTC offset"),
-    ({"when": "tomorrow at nine"}, "RFC3339"),
+    ({"when": "tomorrow at nine"}, "date/time"),
     ({"when": "2026-10-19T09:00:00+02:00"}, "future"),
 ])
 def test_bad_edits_are_refused_with_a_sentence(args, match):
@@ -251,3 +251,20 @@ def test_moving_an_item_saved_in_utc_brings_it_into_the_households_zone(monkeypa
     with pytest.raises(ValueError, match="household"):
         edit([reminder(timezone="UTC")], when=TOMORROW_9.replace("+02:00", "+00:00"))
     assert edit([reminder(timezone="UTC")], message="y")["item"]["timezone"] == "UTC"      # a reword is not a move
+
+
+def test_a_clock_time_without_an_offset_is_read_on_the_households_clock(monkeypatch):
+    monkeypatch.setenv("TZ", "Europe/Warsaw")
+    now = int(datetime(2026, 10, 27, 0, 47, tzinfo=timezone.utc).timestamp())
+    item = create({"kind": "alarm", "timezone": "UTC", "when": "2026-10-27T12:00:00"}, now)
+    assert item["due"] == int(datetime(2026, 10, 27, 11, tzinfo=timezone.utc).timestamp())    # +01:00 after the change
+    summer = create({"kind": "alarm", "timezone": "UTC", "when": "2026-10-21T12:00:00"})
+    assert summer["due"] == int(datetime(2026, 10, 21, 10, tzinfo=timezone.utc).timestamp())   # +02:00 before it
+    moved = edit([reminder(timezone="UTC")], when="2026-10-21T09:00:00")["item"]
+    assert moved["due"] == int(datetime(2026, 10, 21, 7, tzinfo=timezone.utc).timestamp())
+
+
+def test_without_a_known_zone_a_clock_time_still_needs_its_offset(monkeypatch):
+    monkeypatch.delenv("TZ", raising=False)
+    with pytest.raises(ValueError, match="offset"):
+        create({"timezone": "Europe/Warsaw", "when": "2026-10-21T09:00:00"})
