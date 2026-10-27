@@ -1,0 +1,41 @@
+--- a/streamer.py	2026-10-27 18:37:09.729949341 +0100
++++ b/streamer.py	2026-10-27 18:39:39.037227940 +0100
+@@ -919,6 +919,7 @@
+         self.source_error = ""
+         self.sync_note = ""
+         self.restart_stream = False       # re-anchor the stream at the next chunk
++        self._ready_ids: set[str] = set()  # ready players at the last grouping pass
+         self._applied_lead = 0
+         self.gap_max_ms = 0.0             # worst spacing between captured chunks, last ~10 s
+         self.commit_max_ms = 0.0         # worst time to encode and send one chunk, last ~10 s
+@@ -1137,7 +1138,22 @@
+                     for c in ready:
+                         if c.group is not group:
+                             await group.add_client(c)
++                    # aiosendspin's late join (on_role_join) did not always
++                    # start an Echo that came back from a restart: when the
++                    # one that dropped had been the stream's leader, the
++                    # stream restarted without it and it then sat connected
++                    # and silent until something else restarted the stream
++                    # (Living Room, 2026-10-27, 90 s until a lead change).
++                    # aiosendspin can keep a reconnecting client in the group,
++                    # so "not in the group" does not catch it; a player that
++                    # was not ready a second ago does. Restarting is a few ms
++                    # of gap for everyone and always brings the joiner in.
+                     ids = {c.client_id for c in ready}
++                    if (ids - self._ready_ids and group is self.stream_group
++                            and self._ready_ids):
++                        log.info("a player joined the running stream; restarting it")
++                        self.restart_stream = True
++                    self._ready_ids = ids
+                     for other in list(group.clients):
+                         if other.client_id not in ids and self._is_ours(other):
+                             await other.ungroup()
+@@ -1145,6 +1161,7 @@
+                 else:
+                     self.leader = None
+                     self.sync_note = ""
++                    self._ready_ids = set()
+             except Exception as e:  # keep the loop alive
+                 log.warning("grouping: %s", e)
+             await asyncio.sleep(1)
