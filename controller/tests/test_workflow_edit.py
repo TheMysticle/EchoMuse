@@ -5,6 +5,7 @@ swaps the whole item out, keeps state only if due/duration/zone/rule are
 unchanged, and otherwise resets the item to scheduled, finished ones included.
 """
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -196,15 +197,37 @@ def create(args, now=NOW):
 
 def test_a_model_that_says_utc_still_saves_in_the_households_zone(monkeypatch):
     monkeypatch.setenv("TZ", "Europe/Warsaw")
-    item = create({"timezone": "UTC", "when": "2026-10-21T20:00:00+00:00"})
+    item = create({"timezone": "UTC", "when": "2026-10-21T20:00:00+02:00"})
     assert item["timezone"] == "Europe/Warsaw"
-    assert item["due"] == int(datetime(2026, 10, 21, 20, tzinfo=timezone.utc).timestamp())    # the instant is untouched
+    assert item["due"] == int(datetime(2026, 10, 21, 18, tzinfo=timezone.utc).timestamp())
+
+
+def test_a_clock_time_written_with_a_guessed_offset_is_refused_with_the_right_one(monkeypatch):
+    # Gemini Live, 2026-10-27 01:47 in Warsaw, two days after summer time ended:
+    # "12 PM" became 12:00 at UTC's offset, and the alarm went off at 13:00.
+    monkeypatch.setenv("TZ", "Europe/Warsaw")
+    now = int(datetime(2026, 10, 27, 0, 47, tzinfo=timezone.utc).timestamp())
+    for when in ("2026-10-27T12:00:00Z", "2026-10-27T12:00:00+00:00", "2026-10-27T12:00:00+02:00"):
+        with pytest.raises(ValueError, match=r"when=2026-10-27T12:00:00\+01:00"):
+            create({"kind": "alarm", "timezone": "UTC", "when": when}, now)
+    item = create({"kind": "alarm", "timezone": "UTC", "when": "2026-10-27T12:00:00+01:00"}, now)
+    assert datetime.fromtimestamp(item["due"], ZoneInfo("Europe/Warsaw")).hour == 12
+
+
+def test_both_offsets_are_accepted_in_the_hour_the_clocks_go_back(monkeypatch):
+    monkeypatch.setenv("TZ", "Europe/Warsaw")
+    now = int(datetime(2026, 10, 24, tzinfo=timezone.utc).timestamp())
+    first = create({"timezone": "UTC", "when": "2026-10-25T02:30:00+02:00"}, now)["due"]
+    second = create({"timezone": "UTC", "when": "2026-10-25T02:30:00+01:00"}, now)["due"]
+    assert second - first == 3600
 
 
 def test_a_repeat_is_read_on_the_households_clock(monkeypatch):
     monkeypatch.setenv("TZ", "Europe/Warsaw")
-    item = create({"kind": "alarm", "timezone": "UTC", "when": "2026-10-21T06:00:00+00:00", "repeat_days": [1]})
-    assert item["rule"]["hour"] == 8 and item["timezone"] == "Europe/Warsaw"     # 06:00 UTC is 08:00 there
+    item = create({"kind": "alarm", "timezone": "UTC", "when": "2026-10-21T08:00:00+02:00", "repeat_days": [1]})
+    assert item["rule"]["hour"] == 8 and item["timezone"] == "Europe/Warsaw"
+    with pytest.raises(ValueError, match="household"):
+        create({"kind": "alarm", "timezone": "UTC", "when": "2026-10-21T06:00:00+00:00", "repeat_days": [1]})
 
 
 def test_without_a_known_zone_the_models_is_used_and_checked_as_before(monkeypatch):
@@ -225,4 +248,6 @@ def test_moving_an_item_saved_in_utc_brings_it_into_the_households_zone(monkeypa
     monkeypatch.setenv("TZ", "Europe/Warsaw")
     item = edit([reminder(timezone="UTC")], when=TOMORROW_9)["item"]
     assert item["timezone"] == "Europe/Warsaw"
+    with pytest.raises(ValueError, match="household"):
+        edit([reminder(timezone="UTC")], when=TOMORROW_9.replace("+02:00", "+00:00"))
     assert edit([reminder(timezone="UTC")], message="y")["item"]["timezone"] == "UTC"      # a reword is not a move

@@ -131,6 +131,26 @@ def local_zone():
     return name
 
 
+def check_household_offset(due, zone):
+    """Refuse a `when` whose offset is not the household's own on that date.
+
+    A person says a clock time ("12 PM") and means it on the household's
+    clock; the model writes that clock time with an offset it guessed. Read as
+    an instant, a guess is silently wrong by the difference: Gemini Live wrote
+    12:00 with UTC's offset just after Warsaw left summer time and the alarm
+    was set for 13:00. The refusal names the offset to use, so the call is
+    simply repeated with it.
+    """
+    wall = due.replace(tzinfo=None)
+    expected = wall.replace(tzinfo=zone)
+    if due.utcoffset() in (expected.utcoffset(), expected.replace(fold=1).utcoffset()):
+        return                        # either one in the hour the clocks go back
+    offset = expected.isoformat()[-6:]
+    raise ValueError(
+        f"`when` must use the household's time zone, {zone.key}, which is UTC{offset} on that date. "
+        f"If the user said {wall:%H:%M}, call again with when={expected.isoformat()}")
+
+
 FINISHED = ("completed", "canceled", "missed")
 _MIRROR_ID = re.compile(r"^sh-[0-9a-f]{8}-[0-9a-f]{24}\Z")
 
@@ -176,6 +196,8 @@ def edited_item(items, args, now):
             raise ValueError("`when` must be an RFC3339 date/time with a UTC offset")
         if due.tzinfo is None:
             raise ValueError("Date/time requires an explicit UTC offset")
+        if local_zone():
+            check_household_offset(due, zone)
         local = due.astimezone(zone)
         rule = item.get("rule")
         if rule:
@@ -238,10 +260,13 @@ def command(name, args, now, items=()):
     if isinstance(due, datetime):
         if due.tzinfo is None:
             raise ValueError("Date/time requires an explicit UTC offset")
-        # Reject inconsistent offsets and nonexistent local times.
-        # An offset is a definite instant. It only has to agree with a zone the
-        # model chose itself; the household's zone is applied to it, not asserted.
-        if not forced and due.utcoffset() != due.astimezone(zone).utcoffset():
+        # Reject inconsistent offsets and nonexistent local times. Against the
+        # household's zone the offset is checked on the clock time written,
+        # since that is what the user said; against a zone the model chose, on
+        # the instant, as before.
+        if forced:
+            check_household_offset(due, zone)
+        elif due.utcoffset() != due.astimezone(zone).utcoffset():
             raise ValueError("Date/time offset does not match timezone")
         due = int(due.timestamp())
     if due <= now:
