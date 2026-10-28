@@ -1,0 +1,675 @@
+diff -ruN a/Dockerfile b/Dockerfile
+--- a/Dockerfile	2026-10-28 17:56:56.716822400 +0100
++++ b/Dockerfile	2026-10-28 19:22:38.817868993 +0100
+@@ -14,7 +14,7 @@
+ WORKDIR /app
+ COPY requirements.txt constraints.txt ./
+ RUN pip install --no-cache-dir -r requirements.txt -c constraints.txt
+-COPY streamer.py index.html ./
++COPY streamer.py tvdsp.py index.html ./
+ COPY docker/entrypoint.sh ./
+ 
+ # The defaults are the ICUSBAUDIO7D's optical input. EM_SOURCE only applies
+diff -ruN a/constraints.txt b/constraints.txt
+--- a/constraints.txt	2026-10-28 17:56:56.716857960 +0100
++++ b/constraints.txt	2026-10-28 19:22:38.817933833 +0100
+@@ -21,3 +21,4 @@
+ typing_extensions==4.16.0
+ yarl==1.25.1
+ zeroconf==0.151.5
++scipy==1.18.1
+diff -ruN a/index.html b/index.html
+--- a/index.html	2026-10-28 17:56:56.716792880 +0100
++++ b/index.html	2026-10-28 19:22:38.817830233 +0100
+@@ -120,6 +120,13 @@
+         <div class="hint" style="margin-top:6px">Less buffer means less delay and a bigger chance of dropouts on a weak Wi-Fi link.</div>
+       </div>
+       <div>
++        <div><label class="switch"><input type="checkbox" id="tvOn"> <b>TV mode</b></label> <span class="hint" id="tvStat"></span></div>
++        <label>Dialogue lift <input type="range" id="tvDlg" min="0" max="9" step="1"> <span id="tvDlgV"></span></label><br>
++        <label>Bass trim <input type="range" id="tvBass" min="-12" max="0" step="1"> <span id="tvBassV"></span></label><br>
++        <label>Loudness <select id="tvDyn"><option value="off">off</option><option value="normal">level out (TV auto volume)</option><option value="night">night mode (strong)</option><option value="game">fast (gaming)</option></select></label>
++        <div class="hint" style="margin-top:6px">Applied to the TV audio here, before it is sent; adds no delay. Dialogue lift raises 2 kHz in the centre only, where speech is mixed. Bass trim takes back some of the Echo's own bass boost. Loudness rides quiet and loud scenes toward one level and holds gunshots down; "fast" follows within a fraction of a second, so quiet sounds come back right after loud ones. Switching TV mode off and on is instant, to compare.</div>
++      </div>
++      <div>
+         <label class="switch"><input type="checkbox" id="volsync"> Same volume on every player</label>
+         <div class="hint" style="margin-top:6px">Changing the volume on one player (its buttons, Home Assistant or this page) sets the others in the stream to match.</div>
+       </div>
+@@ -225,6 +232,17 @@
+   $('jit').textContent = s.running ? 'this PC, last 10 s: worst gap between chunks ' + s.gapMaxMs + ' ms (' + s.chunkMs + ' ms expected), worst send ' + s.commitMaxMs + ' ms; ' + s.chunkMs + ' ms batches, ' + s.captureRequestMs + ' ms capture request, DSCP ' + (s.dscp ? 'CS6' : 'off') : '';
+   if (document.activeElement !== $('lead')) $('lead').value = String(s.leadMs);
+   $('volsync').checked = !!s.volumeSync;
++  if (s.tv) {
++    $('tvOn').checked = !!s.tv.on;
++    if (document.activeElement !== $('tvDlg')) $('tvDlg').value = String(s.tv.dialogueDb);
++    if (document.activeElement !== $('tvBass')) $('tvBass').value = String(s.tv.bassDb);
++    if (document.activeElement !== $('tvDyn')) $('tvDyn').value = s.tv.dynamics;
++    $('tvDlgV').textContent = '+' + s.tv.dialogueDb + ' dB';
++    $('tvBassV').textContent = s.tv.bassDb + ' dB';
++    $('tvStat').textContent = !s.tv.on ? 'off: the Echoes get the TV sound untouched' : s.tv.dynamics === 'off' ? '' :
++      'leveller ' + (s.tv.levelDb >= 0 ? '+' : '') + s.tv.levelDb + ' dB, peaks cut ' + s.tv.reductionDb + ' dB' +
++      (s.tv.costMaxMs == null ? '' : ', worst ' + s.tv.costMaxMs + ' ms to process a chunk');
++  }
+   $('srcErr').textContent = s.error || '';
+   $('quiet').textContent = (s.quietApps || []).map(a => a.muted
+     ? a.app + ' is muted in this PC\'s mixer, so the Echoes get nothing from it.'
+@@ -314,6 +332,10 @@
+ $('source').onchange = () => post('source', {source: $('source').value});
+ $('lead').onchange = () => post('lead', {ms: +$('lead').value});
+ $('volsync').onchange = () => post('volumesync', {on: $('volsync').checked});
++$('tvOn').onchange = () => post('tv', {on: $('tvOn').checked});
++$('tvDlg').onchange =() => post('tv', {dialogueDb: +$('tvDlg').value});
++$('tvBass').onchange = () => post('tv', {bassDb: +$('tvBass').value});
++$('tvDyn').onchange = () => post('tv', {dynamics: $('tvDyn').value});
+ $('refresh').onclick = () => post('refresh');
+ $('toggle').onclick = () => snap && snap.running ? post('stop') : post('start', {source: $('source').value});
+ $('addForm').onsubmit = async (e) => {
+diff -ruN a/requirements.txt b/requirements.txt
+--- a/requirements.txt	2026-10-28 17:56:56.716840250 +0100
++++ b/requirements.txt	2026-10-28 19:22:38.817903433 +0100
+@@ -6,3 +6,4 @@
+ zeroconf==0.151.5
+ numpy==2.5.4
+ av==19.0.2
++scipy==1.18.1
+diff -ruN a/streamer.py b/streamer.py
+--- a/streamer.py	2026-10-28 17:56:56.716741069 +0100
++++ b/streamer.py	2026-10-28 19:22:38.817747773 +0100
+@@ -42,6 +42,8 @@
+ 
+ from aiosendspin.audio.codecs import FlacEncoder
+ 
++from tvdsp import DYNAMICS, TvDsp
++
+ # Everything below replaces private aiosendspin functions, written against
+ # 9.1.1 exactly. Another version may rename or reshape any of them, and a
+ # patch that silently stops applying puts back the early-stamped frames and
+@@ -349,6 +351,12 @@
+         self.lead_ms = 80                # 0 = whatever each player asks for (2000 ms on an Echo)
+         self.channels: dict[str, str] = {}  # key -> "left" / "right"; absent is stereo
+         self.volume_sync = True          # players in the stream share one volume
++        # TV mode (tvdsp.py). Off, or all zero / "off", is a bit-exact
++        # passthrough. On by default, with the settings that suit TV.
++        self.tv_on = True
++        self.tv_dialogue_db = 4.0
++        self.tv_bass_db = -12.0
++        self.tv_dynamics = "normal"
+         try:
+             d = json.loads(self.path.read_text())
+             self.source = d.get("source", "")
+@@ -359,6 +367,10 @@
+             self.channels = {k: v for k, v in dict(d.get("channels", {})).items()
+                              if v in CHANNEL_MODES and v != "stereo"}
+             self.volume_sync = bool(d.get("volume_sync", True))
++            self.tv_on = bool(d.get("tv_on", self.tv_on))
++            self.tv_dialogue_db = float(d.get("tv_dialogue_db", self.tv_dialogue_db))
++            self.tv_bass_db = float(d.get("tv_bass_db", self.tv_bass_db))
++            self.tv_dynamics = str(d.get("tv_dynamics", self.tv_dynamics))
+         except (OSError, ValueError):
+             pass
+ 
+@@ -367,6 +379,9 @@
+             "source": self.source, "wanted": self.wanted,
+             "selected": self.selected, "manual": self.manual, "lead_ms": self.lead_ms,
+             "channels": self.channels, "volume_sync": self.volume_sync,
++            "tv_on": self.tv_on,
++            "tv_dialogue_db": self.tv_dialogue_db, "tv_bass_db": self.tv_bass_db,
++            "tv_dynamics": self.tv_dynamics,
+         }, indent=1))
+ 
+ 
+@@ -964,6 +979,8 @@
+     def __init__(self, loop: asyncio.AbstractEventLoop) -> None:
+         self.loop = loop
+         self.settings = Settings()
++        self.tv = TvDsp(self.settings.tv_dialogue_db, self.settings.tv_bass_db,
++                        self.settings.tv_dynamics, self.settings.tv_on)
+         log.info("transport: %d ms chunks, %d ms capture request, DSCP %s",
+                  CHUNK_MS, CAPTURE_LATENCY_MS, "CS6" if DSCP_ON else "off")
+         self.server: SendspinServer | None = None
+@@ -972,6 +989,8 @@
+         self.sources: list[dict] = []
+         self.running = False
+         self.stream_task: asyncio.Task | None = None
++        self.tv_ms: deque[float] = deque(maxlen=1000)
++        self._tv_err_logged = -60.0
+         self.reconcile_task: asyncio.Task | None = None
+         self.leader = None
+         self.stream_group = None
+@@ -1369,6 +1388,21 @@
+         self.volsync = VolumeSync(self.volsync.clock)  # a fresh start: nobody owes an answer
+         self.volsync.members(self._ready_clients if on else ())
+ 
++    def set_tv(self, dialogue_db: float | None, bass_db: float | None,
++               dynamics: str | None, on: bool | None = None) -> None:
++        """TV mode. Takes effect on the next chunk; filter state carries over."""
++        st = self.settings
++        if dynamics is not None and dynamics not in DYNAMICS:
++            raise ValueError(f"dynamics must be one of {', '.join(DYNAMICS)}")
++        self.tv.set(st.tv_dialogue_db if dialogue_db is None else dialogue_db,
++                    st.tv_bass_db if bass_db is None else bass_db,
++                    st.tv_dynamics if dynamics is None else dynamics)
++        if on is not None:
++            self.tv.enabled = on
++        st.tv_dialogue_db, st.tv_bass_db, st.tv_dynamics = self.tv.dialogue_db, self.tv.bass_db, self.tv.dynamics
++        st.tv_on = self.tv.enabled
++        st.save()
++
+     def set_lead(self, ms: int) -> None:
+         self.settings.lead_ms = max(0, min(10000, ms))
+         self.settings.save()
+@@ -1498,6 +1532,26 @@
+         self.rms_db = 20 * math.log10(max(rms, 1e-6))
+         self.peak_db = 20 * math.log10(max(peak, 1e-6))
+ 
++    def _tv_process(self, pcm: bytes) -> bytes:
++        """TV mode on one chunk, after its play time is fixed (so it can never
++        move WHEN the chunk plays) and before it is encoded. Times itself,
++        because that time comes out of the lead's network margin."""
++        t = time.perf_counter()
++        try:
++            out = self.tv.process(pcm)
++        except Exception:
++            # The stream loop's handler restarts the source on any error, so
++            # a fault here would cut the TV sound every second. Pass the
++            # chunk through instead and say so once a minute.
++            now = time.monotonic()
++            if now - self._tv_err_logged >= 60:
++                self._tv_err_logged = now
++                log.exception("TV mode failed; passing audio through")
++            self.tv.reset()
++            return pcm
++        self.tv_ms.append((time.perf_counter() - t) * 1000)
++        return out
++
+     async def _stream_loop(self) -> None:
+         assert self.server
+         name = self.settings.source
+@@ -1552,6 +1606,7 @@
+                         play_at = timeline.next(self.server.clock.now_us())
+                         if play_at is None:
+                             continue
++                        pcm = self._tv_process(pcm)
+                         out = bytes(CHUNK_BYTES) if timeline.silent else pcm
+                         stream.prepare_audio(out, fmt)
+                         for channel, side in sides:
+@@ -1559,6 +1614,7 @@
+                                                  fmt, channel_id=channel)
+                         play_us = await stream.commit_audio(play_start_us=play_at)
+                     else:
++                        pcm = self._tv_process(pcm)
+                         stream.prepare_audio(pcm, fmt)
+                         for channel, side in sides:
+                             stream.prepare_audio(one_side(pcm, side), fmt, channel_id=channel)
+@@ -1649,6 +1705,12 @@
+             "quietApps": self.quiet_apps,
+             "channelModes": list(CHANNEL_MODES),
+             "commitMaxMs": round(self.commit_max_ms),
++            "tv": {"on": self.tv.enabled,
++                   "dialogueDb": self.tv.dialogue_db, "bassDb": self.tv.bass_db,
++                   "dynamics": self.tv.dynamics, "dynamicsModes": list(DYNAMICS),
++                   "levelDb": round(self.tv.level_db, 1),
++                   "reductionDb": round(self.tv.reduction_db, 1),
++                   "costMaxMs": round(max(self.tv_ms), 2) if self.tv_ms else None},
+             "sync": self.sync_note,
+             "error": self.source_error,
+             "players": players,
+@@ -1735,6 +1797,11 @@
+             app.set_channel(key, str(body.get("channel", "")))
+         elif action == "lead":
+             app.set_lead(int(body["ms"]))
++        elif action == "tv":
++            app.set_tv(None if body.get("dialogueDb") is None else float(body["dialogueDb"]),
++                       None if body.get("bassDb") is None else float(body["bassDb"]),
++                       body.get("dynamics"),
++                       None if body.get("on") is None else bool(body["on"]))
+         elif action == "volumesync":
+             app.set_volume_sync(bool(body.get("on")))
+         elif action == "config":
+diff -ruN a/test_tvdsp.py b/test_tvdsp.py
+--- a/test_tvdsp.py	1970-01-01 01:00:00.000000000 +0100
++++ b/test_tvdsp.py	2026-10-28 19:22:38.818004863 +0100
+@@ -0,0 +1,171 @@
++"""TV mode's rules. Run: python -m pytest test_tvdsp.py"""
++import time
++
++import numpy as np
++
++from tvdsp import RATE, TvDsp
++
++FR = 480  # a 10 ms chunk
++
++
++def chunks(x, n=FR):
++    for i in range(0, len(x), n):
++        yield x[i:i + n]
++
++
++def run(d, x, n=FR):
++    return np.concatenate([d.run(c) for c in chunks(x, n)])
++
++
++def tone(f, db, secs=1.0, side=False):
++    t = np.arange(int(RATE * secs)) / RATE
++    s = 10 ** (db / 20) * np.sin(2 * np.pi * f * t)
++    return np.stack([s, -s if side else s], axis=1)
++
++
++def level(x):
++    return 20 * np.log10(np.sqrt(np.mean(x[len(x) // 2:] ** 2)))
++
++
++def test_off_is_bit_exact():
++    d = TvDsp()
++    pcm = (np.random.default_rng(1).integers(-32768, 32767, FR * 2)).astype("<i2").tobytes()
++    assert d.process(pcm) is pcm
++
++
++def test_no_delay_impulse_answers_at_sample_zero():
++    d = TvDsp(dialogue_db=6, bass_db=-6, dynamics="night")
++    x = np.zeros((FR, 2))
++    x[0] = 0.25
++    y = d.run(x)
++    assert abs(y[0, 0]) > 0.2  # the direct path is there at once, not later
++
++
++def test_no_delay_noise_correlates_at_lag_zero():
++    d = TvDsp(dialogue_db=6, bass_db=-6, dynamics="normal")
++    x = np.random.default_rng(2).normal(0, 0.05, (RATE, 2))
++    y = run(d, x)
++    a, b = x[:, 0], y[:, 0]
++    lags = range(-20, 21)
++    corr = [np.dot(a[20:-20], np.roll(b, -k)[20:-20]) for k in lags]
++    assert list(lags)[int(np.argmax(corr))] == 0
++
++
++def test_dialogue_lifts_the_centre_and_not_the_sides():
++    centre = level(run(TvDsp(dialogue_db=6), tone(2000, -20))) - level(tone(2000, -20))
++    side = level(run(TvDsp(dialogue_db=6), tone(2000, -20, side=True))) - level(tone(2000, -20))
++    low = level(run(TvDsp(dialogue_db=6), tone(150, -20))) - level(tone(150, -20))
++    assert 5.5 < centre < 6.5
++    assert abs(side) < 0.01
++    assert abs(low) < 0.5
++
++
++def test_bass_trim_is_a_shelf():
++    d40 = level(run(TvDsp(bass_db=-6), tone(40, -20))) - level(tone(40, -20))
++    d2k = level(run(TvDsp(bass_db=-6), tone(2000, -20))) - level(tone(2000, -20))
++    assert -6.2 < d40 < -4.5  # first-order: near full depth by 40 Hz
++    assert abs(d2k) < 0.2
++
++
++def test_no_bump_anywhere_from_the_bass_trim():
++    for f in (60, 120, 200, 300, 500):
++        assert level(run(TvDsp(bass_db=-9), tone(f, -20))) <= level(tone(f, -20)) + 0.01
++
++
++def test_a_gunshot_is_held_down_within_two_ms():
++    d = TvDsp(dynamics="night")
++    quiet = tone(1000, -40, 2.0)
++    shot = tone(1000, -1, 0.3)
++    y = run(d, np.concatenate([quiet, shot]))
++    after = y[len(quiet) + 96:]  # from 2 ms into the shot
++    assert 20 * np.log10(np.max(np.abs(after))) < -6
++    assert np.max(np.abs(y)) <= 1.0
++
++
++def test_leveller_raises_quiet_dialogue_slowly_and_not_silence():
++    d = TvDsp(dynamics="night")
++    run(d, tone(1000, -40, 10.0))
++    assert d.level_db > 8
++    d2 = TvDsp(dynamics="night")
++    run(d2, tone(1000, -80, 10.0))  # under the gate: room noise, not programme
++    assert d2.level_db == 0
++
++
++def test_chunk_size_does_not_change_the_output():
++    x = np.random.default_rng(3).normal(0, 0.1, (RATE, 2))
++    a = run(TvDsp(dialogue_db=4, bass_db=-6, dynamics="normal"), x, 480)
++    b = run(TvDsp(dialogue_db=4, bass_db=-6, dynamics="normal"), x, 960)
++    assert np.allclose(a, b, atol=1e-12)
++
++
++def test_cost_per_chunk():
++    d = TvDsp(dialogue_db=4, bass_db=-6, dynamics="night")
++    pcm = np.random.default_rng(4).integers(-8000, 8000, FR * 2).astype("<i2").tobytes()
++    d.process(pcm)
++    t = time.perf_counter()
++    for _ in range(500):
++        d.process(pcm)
++    per = (time.perf_counter() - t) / 500 * 1000
++    print(f"{per:.3f} ms per 10 ms chunk")
++    assert per < 1.0
++
++
++def pcm_of(x):
++    return np.clip(np.round(x * 32768), -32768, 32767).astype("<i2").tobytes()
++
++
++def frames_of(b):
++    return np.frombuffer(b, "<i2").astype(float).reshape(-1, 2) / 32768
++
++
++def test_switched_off_is_bit_exact():
++    d = TvDsp(dialogue_db=6, bass_db=-6, dynamics="night", enabled=False)
++    pcm = pcm_of(np.random.default_rng(5).normal(0, 0.1, (FR, 2)))
++    for _ in range(10):
++        assert d.process(pcm) == pcm
++
++
++def test_switching_on_is_settled_at_once():
++    # Off for 10 s of quiet speech, then on: the leveller has kept working,
++    # so the very first chunk after the fade is already lifted.
++    quiet = tone(1000, -40, 10.0)
++    off = TvDsp(dynamics="night", enabled=False)
++    for c in chunks(quiet):
++        off.process(pcm_of(c))
++    assert off.level_db > 8
++    off.enabled = True
++    out = b"".join(off.process(pcm_of(c)) for c in chunks(tone(1000, -40, 0.1)))
++    y = frames_of(out)[960:]  # after the 20 ms fade
++    assert level(y) > -40 + 8
++
++
++def test_the_switch_fades_without_a_click():
++    x = tone(440, -10, 2.0)
++    d = TvDsp(dialogue_db=9, bass_db=-12, dynamics="night")
++    out = []
++    for i, c in enumerate(chunks(x)):
++        if i in (50, 100, 150):
++            d.enabled = not d.enabled
++        out.append(frames_of(d.process(pcm_of(c))))
++    y = np.concatenate(out)
++    step = np.max(np.abs(np.diff(y[:, 0])))
++    natural = np.max(np.abs(np.diff(x[:, 0]))) * 10 ** (12 / 20)  # the most gain on offer
++    assert step < natural
++
++
++def test_game_levels_faster_than_normal():
++    loud_then_quiet = np.concatenate([tone(1000, -6, 3.0), tone(1000, -36, 1.0)])
++    lev = {}
++    for mode in ("normal", "game"):
++        d = TvDsp(dynamics=mode)
++        run(d, loud_then_quiet)
++        lev[mode] = d.level_db
++    # One second after a loud passage, game has climbed back far further.
++    assert lev["game"] - lev["normal"] > 5
++
++
++def test_game_holds_a_gunshot_down():
++    d = TvDsp(dynamics="game")
++    y = run(d, np.concatenate([tone(1000, -40, 2.0), tone(1000, -1, 0.3)]))
++    assert 20 * np.log10(np.max(np.abs(y[2 * RATE + 96:]))) < -3
++    assert np.max(np.abs(y)) <= 1.0
+diff -ruN a/tvdsp.py b/tvdsp.py
+--- a/tvdsp.py	1970-01-01 01:00:00.000000000 +0100
++++ b/tvdsp.py	2026-10-28 19:22:38.817965813 +0100
+@@ -0,0 +1,268 @@
++"""TV mode: dialogue, bass and loudness processing with no added latency.
++
++What a TV or soundbar does to make television listenable, rebuilt so that no
++sample is ever held back:
++
++- Dialogue lift: a presence boost around 2 kHz on the CENTRE of the stereo
++  image only. Dialogue is mixed to the centre; music and effects panned wide
++  are left alone. It also fills the 1.25-2.3 kHz dip in the Radar's stock
++  speaker curve (2.6-5.8 dB under 1 kHz). Sonos' classic Speech Enhancement
++  is the voice-band boost; the centre-only part is the soundbar centre
++  channel without the FFT upmix, which would cost a frame of latency.
++- Bass trim and bass compression: the Echo adds a FIXED +17 to +21 dB at
++  60-100 Hz at TV volumes (stock loudness compensation, EQ_50/EQ_60).
++  Dolby's Intelligent EQ only adds bass where the content lacks it; the
++  nearest zero-latency equivalent is a static trim plus a compressor on the
++  bass alone, so an explosion's low end is held down and dialogue is not.
++- Leveller: slow loudness riding like Dolby Volume / DTS TruVolume: quiet
++  scenes up, loud scenes down, frozen in silence so the noise floor is never
++  pumped up.
++  "game" is the same leveller made fast, for quiet cues after loud ones.
++- Peak compressor: the fast part of "night mode", for gunshots.
++
++Zero latency, by construction:
++
++- Every filter is a causal IIR applied with its state carried across chunks:
++  output sample n depends only on inputs up to n. Nothing is buffered.
++- Gains are decided per 1 ms block FROM THAT BLOCK, which has already arrived
++  (a chunk is processed whole), and ramped across it. The decision is never
++  waited for; at worst it acts on the next block.
++- Every stage is y = x + (g - 1) * F(x): with every gain at 1 the output is
++  the input, bit for bit, so "off" is exactly off.
++"""
++from __future__ import annotations
++
++import math
++
++import numpy as np
++from scipy.signal import lfilter
++
++RATE = 48000
++BLOCK = 48  # 1 ms: the granularity of every gain decision
++
++DYNAMICS = ("off", "normal", "night", "game")
++
++# Leveller target, range and speed, and the peak compressor, per dynamics
++# mode. level_tc_s is the loudness integration time; up/down are how fast the
++# leveller may raise and lower the gain. "normal" and "night" ride slowly, as
++# TV auto volume does, so a scene's dynamics survive. "game" follows within a
++# few hundred ms, so quiet cues (footsteps) come back up right after a loud
++# fight; the cost is audible pumping on music, which is why it is not the
++# default.
++_DYN = {
++    "normal": dict(target_db=-20.0, max_boost_db=6.0, max_cut_db=8.0,
++                   level_tc_s=0.4, up_db_s=1.5, down_db_s=4.0,
++                   comp_thresh_db=-12.0, comp_ratio=3.0, comp_release_ms=150.0,
++                   bass_thresh_db=-20.0, bass_ratio=3.0),
++    "night": dict(target_db=-20.0, max_boost_db=12.0, max_cut_db=12.0,
++                  level_tc_s=0.4, up_db_s=1.5, down_db_s=4.0,
++                  comp_thresh_db=-22.0, comp_ratio=4.0, comp_release_ms=200.0,
++                  bass_thresh_db=-28.0, bass_ratio=4.0),
++    "game": dict(target_db=-20.0, max_boost_db=9.0, max_cut_db=9.0,
++                 level_tc_s=0.1, up_db_s=10.0, down_db_s=20.0,
++                 comp_thresh_db=-14.0, comp_ratio=3.0, comp_release_ms=60.0,
++                 bass_thresh_db=-22.0, bass_ratio=3.0),
++}
++KNEE_DB = 6.0
++LEVEL_GATE_DB = -50.0    # below this the leveller holds its gain: silence is not boosted
++FADE_S = 0.02            # the on/off switch crossfades over this long
++BASS_RELEASE_MS = 200.0
++CLIP_KNEE = 10 ** (-1 / 20)  # soft safety clip above -1 dBFS
++
++VOICE_HZ, VOICE_Q = 2000.0, 0.9
++BASS_HZ = 120.0
++WEIGHT_HZ = 100.0        # leveller ignores rumble when judging loudness
++
++
++def _db(x: float) -> float:
++    return 20 * math.log10(max(x, 1e-9))
++
++
++def _gain(db: float) -> float:
++    return 10 ** (db / 20)
++
++
++def _bandpass(fc: float, q: float):
++    """RBJ band-pass with 0 dB peak: 1 + (G - 1) * BP is a peaking EQ of gain G."""
++    w0 = 2 * math.pi * fc / RATE
++    alpha = math.sin(w0) / (2 * q)
++    a0 = 1 + alpha
++    return (np.array([alpha, 0.0, -alpha]) / a0,
++            np.array([1.0, -2 * math.cos(w0) / a0, (1 - alpha) / a0]))
++
++
++def _lowpass1(fc: float):
++    """First-order low-pass. 1 + (G - 1) * LP is a first-order low shelf,
++    whose magnitude moves monotonically between G and 1 (no bump at fc, which
++    a second-order low-pass used this way would put there)."""
++    k = math.tan(math.pi * fc / RATE)
++    return np.array([k, k]) / (1 + k), np.array([1.0, (k - 1) / (k + 1)])
++
++
++def _highpass1(fc: float):
++    k = math.tan(math.pi * fc / RATE)
++    return np.array([1.0, -1.0]) / (1 + k), np.array([1.0, (k - 1) / (k + 1)])
++
++
++def _comp_gain_db(level_db: float, thresh_db: float, ratio: float) -> float:
++    """Soft-knee downward compressor: the gain (<= 0 dB) for an input level."""
++    over = level_db - thresh_db
++    if over <= -KNEE_DB / 2:
++        return 0.0
++    slope = 1 / ratio - 1
++    if over >= KNEE_DB / 2:
++        return slope * over
++    return slope * (over + KNEE_DB / 2) ** 2 / (2 * KNEE_DB)
++
++
++class TvDsp:
++    """Stateful processor for 48 kHz stereo s16le chunks. Not thread-safe:
++    call process() from the one stream loop."""
++
++    def __init__(self, dialogue_db: float = 0.0, bass_db: float = 0.0,
++                 dynamics: str = "off", enabled: bool = True) -> None:
++        self._bp = _bandpass(VOICE_HZ, VOICE_Q)
++        self._lp = _lowpass1(BASS_HZ)
++        self._hp = _highpass1(WEIGHT_HZ)
++        self.reset()
++        self.set(dialogue_db, bass_db, dynamics)
++        # The on/off switch. Switched off, the processing keeps running and
++        # its output is discarded, so switching back on is instant and
++        # settled (no leveller climbing from 0 dB), which is what makes an
++        # A/B comparison fair. Between the two, a 20 ms crossfade: both
++        # paths are sample-aligned (no latency), so the fade cannot comb.
++        self.enabled = enabled
++        self._mix = 1.0 if enabled else 0.0
++
++    def set(self, dialogue_db: float, bass_db: float, dynamics: str) -> None:
++        self.dialogue_db = max(0.0, min(9.0, float(dialogue_db)))
++        self.bass_db = max(-12.0, min(0.0, float(bass_db)))
++        self.dynamics = dynamics if dynamics in DYNAMICS else "off"
++
++    @property
++    def active(self) -> bool:
++        return self.dialogue_db > 0 or self.bass_db < 0 or self.dynamics != "off"
++
++    def reset(self) -> None:
++        self._zbp = np.zeros(2)
++        self._zlp = np.zeros((1, 2))
++        self._zhp = np.zeros(1)
++        self._loud = 0.0          # leveller's integrated mean square
++        self._lev_db = 0.0        # leveller gain
++        self._comp_env = 0.0      # peak compressor's envelope (linear)
++        self._bass_env = 0.0      # bass compressor's envelope (linear)
++        self._g_wide = 1.0        # last wideband gain applied (ramp start)
++        self._g_bass = 1.0        # last bass gain applied
++        self.reduction_db = 0.0   # for the page: the deepest wideband cut, last chunk
++        self.level_db = 0.0       # for the page: the leveller's gain
++
++    def process(self, pcm: bytes) -> bytes:
++        if not self.active:
++            if self._g_wide != 1.0 or self._g_bass != 1.0 or self._lev_db:
++                self.reset()
++            return pcm
++        x = np.frombuffer(pcm, dtype="<i2").astype(np.float64).reshape(-1, 2) / 32768.0
++        y = self.run(x)
++        target = 1.0 if self.enabled else 0.0
++        if self._mix == target == 0.0:
++            return pcm  # off: the input, bit for bit
++        if self._mix != target:
++            step = len(x) / (FADE_S * RATE)
++            end = self._mix + max(-step, min(step, target - self._mix))
++            m = np.linspace(self._mix, end, len(x) + 1)[1:, None]
++            self._mix = end
++            y = x + m * (y - x)
++        return np.clip(np.round(y * 32768.0), -32768, 32767).astype("<i2").tobytes()
++
++    def run(self, x: np.ndarray) -> np.ndarray:
++        """The processing on float stereo (N, 2) in [-1, 1)."""
++        n = len(x)
++        mid = (x[:, 0] + x[:, 1]) * 0.5
++        y = x.copy()
++
++        # Dialogue: peaking boost on the centre only, added to both sides.
++        bp, self._zbp = lfilter(*self._bp, mid, zi=self._zbp)
++        if self.dialogue_db > 0:
++            y += ((_gain(self.dialogue_db) - 1) * bp)[:, None]
++
++        # Bass band, for the trim and the bass compressor.
++        lp, self._zlp = lfilter(*self._lp, x, axis=0, zi=self._zlp)
++        weighted, self._zhp = lfilter(*self._hp, mid, zi=self._zhp)
++
++        starts = list(range(0, n, BLOCK))
++        g_bass_end = np.empty(len(starts))
++        g_wide_end = np.empty(len(starts))
++        dyn = _DYN.get(self.dynamics)
++        trim = _gain(self.bass_db)
++        bdt = BLOCK / RATE
++        deepest = 0.0
++        if dyn:
++            loud_a = math.exp(-bdt / dyn["level_tc_s"])
++            comp_rel = math.exp(-bdt / (dyn["comp_release_ms"] / 1000))
++            bass_rel = math.exp(-bdt / (BASS_RELEASE_MS / 1000))
++        for i, s in enumerate(starts):
++            e = min(s + BLOCK, n)
++            if not dyn:
++                g_bass_end[i] = trim
++                g_wide_end[i] = 1.0
++                continue
++            # Bass compressor: on the (trimmed) bass of the centre.
++            bpeak = float(np.max(np.abs(lp[s:e].mean(axis=1)))) * trim
++            self._bass_env = max(bpeak, self._bass_env * bass_rel)
++            g_bass_end[i] = trim * _gain(_comp_gain_db(_db(self._bass_env), dyn["bass_thresh_db"], dyn["bass_ratio"]))
++
++            # Leveller: integrated loudness, gated; the gain slews slowly.
++            ms = float(np.mean(weighted[s:e] ** 2))
++            self._loud = loud_a * self._loud + (1 - loud_a) * ms
++            if _db(math.sqrt(ms)) > LEVEL_GATE_DB and self._loud > 0:
++                want = dyn["target_db"] - 10 * math.log10(self._loud)
++                want = max(-dyn["max_cut_db"], min(dyn["max_boost_db"], want))
++                step = (dyn["up_db_s"] if want > self._lev_db else dyn["down_db_s"]) * bdt
++                self._lev_db += max(-step, min(step, want - self._lev_db))
++            lev = _gain(self._lev_db)
++
++            # Peak compressor on what the leveller hands it. The block's own
++            # peak is known (it has arrived), so the cut is in place by the
++            # block's end; the safety clip below takes the ramp's overshoot.
++            peak = float(np.max(np.abs(y[s:e]))) * lev
++            self._comp_env = max(peak, self._comp_env * comp_rel)
++            cut = _comp_gain_db(_db(self._comp_env), dyn["comp_thresh_db"], dyn["comp_ratio"])
++            deepest = min(deepest, cut)
++            g_wide_end[i] = lev * _gain(cut)
++
++        # Ramp each gain across its block from where the last block ended.
++        g_bass = self._ramp(g_bass_end, self._g_bass, starts, n)
++        g_wide = self._ramp(g_wide_end, self._g_wide, starts, n)
++        self._g_bass, self._g_wide = float(g_bass_end[-1]), float(g_wide_end[-1])
++        self.reduction_db, self.level_db = deepest, self._lev_db
++
++        if not (g_bass == 1.0).all():
++            y += (g_bass - 1)[:, None] * lp
++        if not (g_wide == 1.0).all():
++            y *= g_wide[:, None]
++            return _soft_clip(y)
++        return y if self.dialogue_db <= 0 else _soft_clip(y)
++
++    @staticmethod
++    def _ramp(ends: np.ndarray, start: float, starts: list[int], n: int) -> np.ndarray:
++        out = np.empty(n)
++        prev = start
++        for i, s in enumerate(starts):
++            e = min(s + BLOCK, n)
++            k = np.arange(1, e - s + 1) / (e - s)
++            out[s:e] = prev + (ends[i] - prev) * k
++            prev = ends[i]
++        return out
++
++
++def _soft_clip(y: np.ndarray) -> np.ndarray:
++    """Untouched below -1 dBFS; above it, rounds off toward full scale
++    instead of the hard clip int16 conversion would give. Per sample, so it
++    adds no latency."""
++    a = np.abs(y)
++    over = a > CLIP_KNEE
++    if over.any():
++        c = CLIP_KNEE
++        y = y.copy()
++        y[over] = np.sign(y[over]) * (c + (1 - c) * np.tanh((a[over] - c) / (1 - c)))
++    return y
