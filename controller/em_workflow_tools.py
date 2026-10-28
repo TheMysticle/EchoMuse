@@ -386,8 +386,11 @@ async def _stop_active_local_audio(live, schedules_enabled):
     actions = []
     errors = []
 
-    async def schedule_items(states):
-        if not (schedules_enabled and "local_schedule" in (live.capabilities or [])):
+    async def schedule_items(states, *, ringing=False):
+        # Something ringing is stopped whether or not the model may manage this
+        # speaker's schedule: a shared copy rings on a satellite with local
+        # schedules off, and "stop" there found nothing while it rang.
+        if "local_schedule" not in (live.capabilities or []) or not (schedules_enabled or ringing):
             return []
         snapshot = live.schedule.snapshot or {}
         return [item for item in snapshot.get("items", []) if item.get("state") in states]
@@ -416,7 +419,7 @@ async def _stop_active_local_audio(live, schedules_enabled):
 
     # 1. Something ringing outranks everything else. A timer is cancelled and
     # an alarm or reminder dismissed, as the dashboard does.
-    for item in await schedule_items({"ringing"}):
+    for item in await schedule_items({"ringing"}, ringing=True):
         await finish(item, "cancel" if item.get("kind") == "timer" else "dismiss")
     # A Home Assistant timer rings from the controller, not the speaker's store.
     try:

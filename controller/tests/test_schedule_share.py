@@ -1144,7 +1144,8 @@ def test_the_toggle_is_saved_and_reported(database, fresh, tmp_path):
 
 # --- the voice workflow (Pipecat) sees copies as ordinary items ------------------
 
-def test_a_voice_stop_on_the_satellite_holding_a_copy_stops_it_and_the_group(world):
+@pytest.mark.parametrize("schedules_enabled", [True, False])
+def test_a_voice_stop_on_the_satellite_holding_a_copy_stops_it_and_the_group(world, schedules_enabled):
     """The Pipecat flow's bare "stop" (em_workflow_tools.EchoMuseStop) acts on whatever
     rings in that satellite's own store; a copy is such an item, and the stop it
     causes is what sharing then carries to the rest."""
@@ -1166,7 +1167,7 @@ def test_a_voice_stop_on_the_satellite_holding_a_copy_stops_it_and_the_group(wor
             return False
         live = SimpleNamespace(device_id="B", capabilities=["local_schedule"], schedule=b.schedule,
                                send_control=b.send_control, stop_timer_alarm=no_ha_timer, spotify=None)
-        result = await em_workflow_tools._stop_active_local_audio(live, True)
+        result = await em_workflow_tools._stop_active_local_audio(live, schedules_enabled)
         assert not result["errors"]
         assert {s["id"] for s in result["stopped"]} == {mid_alarm, mid_timer}
         await settle()

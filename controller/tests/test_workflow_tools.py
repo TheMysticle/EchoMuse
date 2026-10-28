@@ -256,10 +256,28 @@ def test_a_second_stop_does_the_next_thing(monkeypatch):
 
 def test_local_schedules_off_still_stops_the_music(monkeypatch):
     async def main():
-        live,sent,spotify_stop,player_stop=_stop_rig(monkeypatch,[RINGING_TIMER])
+        live,sent,spotify_stop,player_stop=_stop_rig(monkeypatch,[COUNTDOWN])
         result=await tools._stop_active_local_audio(live,False)
         assert sent==[]
         spotify_stop.assert_awaited_once_with('stop',{}); player_stop.assert_awaited_once_with('A')
+        assert result['left_running']==[]
+    asyncio.run(main())
+
+
+def test_local_schedules_off_still_stops_what_is_ringing(monkeypatch):
+    # A shared copy rings on a satellite whose model may not manage its
+    # schedule, and "stop" there answered that there was nothing to stop.
+    async def main():
+        live,sent,spotify_stop,player_stop=_stop_rig(monkeypatch,[RINGING_ALARM,COUNTDOWN])
+        result=await tools._stop_active_local_audio(live,False)
+        assert [(c['action'],c['id']) for c in sent]==[('dismiss','wake')]
+        spotify_stop.assert_not_called(); player_stop.assert_not_called()
+        assert [i['id'] for i in result['stopped']]==['wake']
+        assert {i['type'] for i in result['left_running']}=={'spotify_connect','home_assistant_stream'}
+        live.capabilities=[]
+        sent.clear()
+        await tools._stop_active_local_audio(live,False)
+        assert sent==[]                                 # an Echo with no store of its own is not asked
     asyncio.run(main())
 
 
