@@ -1,0 +1,354 @@
+--- a/streamer.py
++++ b/streamer.py
+@@ -35,6 +35,7 @@
+ from aiosendspin.noise.pairing_token import decode_token
+ from aiosendspin.noise.trust_store import FileServerPairingStore
+ from aiosendspin.server.channels import MAIN_CHANNEL
++from aiosendspin.server.roles.player.events import VolumeChangedEvent
+ from aiosendspin.server.server import SendspinServer
+ from zeroconf import ServiceStateChange
+ from zeroconf.asyncio import AsyncServiceBrowser, AsyncServiceInfo, AsyncZeroconf
+@@ -347,6 +348,7 @@
+         self.manual: dict[str, str] = {}  # key -> ws url, for players mDNS cannot find
+         self.lead_ms = 80                # 0 = whatever each player asks for (2000 ms on an Echo)
+         self.channels: dict[str, str] = {}  # key -> "left" / "right"; absent is stereo
++        self.volume_sync = True          # players in the stream share one volume
+         try:
+             d = json.loads(self.path.read_text())
+             self.source = d.get("source", "")
+@@ -356,6 +358,7 @@
+             self.lead_ms = int(d.get("lead_ms", 80))
+             self.channels = {k: v for k, v in dict(d.get("channels", {})).items()
+                              if v in CHANNEL_MODES and v != "stereo"}
++            self.volume_sync = bool(d.get("volume_sync", True))
+         except (OSError, ValueError):
+             pass
+ 
+@@ -363,10 +366,73 @@
+         _write_private(self.path, json.dumps({
+             "source": self.source, "wanted": self.wanted,
+             "selected": self.selected, "manual": self.manual, "lead_ms": self.lead_ms,
+-            "channels": self.channels,
++            "channels": self.channels, "volume_sync": self.volume_sync,
+         }, indent=1))
+ 
+ 
++class VolumeSync:
++    """Keeps the players in the stream at one volume.
++
++    A player that reports a new volume (its buttons, Home Assistant, the page)
++    has it copied to the others. Two kinds of report are not a change, and
++    copying either would make the players fight:
++
++    - What a player says as it joins is where it already was. A rebooted Echo
++      announcing the level it restored must not move the rest.
++    - A player answers a volume it was sent by reporting it, rounded to its
++      own steps (an Echo has 30, about 3.4% apart). Copying the answer back
++      would make two players with different steps chase each other, and a
++      quick run of button presses would be pulled back to an earlier one.
++
++    Pure bookkeeping on an injected clock: the caller sends what reported()
++    returns.
++    """
++
++    JOIN_GRACE_S = 5.0     # reports this soon after joining are the join itself
++    ANSWER_S = 3.0         # how long a sent volume waits for its answer
++    ANSWER_TOLERANCE = 4   # percent; one Echo step either way
++
++    def __init__(self, clock=time.monotonic) -> None:
++        self.clock = clock
++        self._joined: dict[str, float] = {}
++        self._sent: dict[str, list[tuple[int, float]]] = {}
++
++    def members(self, ids) -> None:
++        """The players in the stream now. A newcomer starts its grace."""
++        now = self.clock()
++        ids = set(ids)
++        for i in ids:
++            self._joined.setdefault(i, now)
++        for i in list(self._joined):
++            if i not in ids:
++                del self._joined[i]
++                self._sent.pop(i, None)
++
++    def reported(self, who: str, volume: int, volumes: dict[str, int | None]) -> dict[str, int]:
++        """A player reported volume. volumes holds every member's last report.
++        Returns {player: volume} to send."""
++        now = self.clock()
++        joined = self._joined.get(who)
++        if joined is None or now - joined < self.JOIN_GRACE_S:
++            return {}
++        sent = [(v, t) for v, t in self._sent.get(who, []) if now - t < self.ANSWER_S]
++        for k, (v, _) in enumerate(sent):
++            if v == volume:
++                self._sent[who] = sent[k + 1:]
++                return {}
++        if sent and abs(volume - sent[-1][0]) <= self.ANSWER_TOLERANCE:
++            self._sent[who] = []
++            return {}
++        self._sent[who] = []
++        out = {}
++        for other in self._joined:
++            if other == who or volumes.get(other) == volume:
++                continue
++            out[other] = volume
++            self._sent.setdefault(other, []).append((volume, now))
++        return out
++
++
+ # --------------------------------------------------------------------------
+ # Discovery
+ # --------------------------------------------------------------------------
+@@ -920,6 +986,9 @@
+         self.sync_note = ""
+         self.restart_stream = False       # re-anchor the stream at the next chunk
+         self._ready_ids: set[str] = set()  # ready players at the last grouping pass
++        self._ready_clients: dict[str, object] = {}  # the same, by client id
++        self.volsync = VolumeSync()
++        self._vol_watch: dict[str, tuple[object, object]] = {}  # client id -> (client, unsubscribe)
+         self._applied_lead = 0
+         self.gap_max_ms = 0.0             # worst spacing between captured chunks, last ~10 s
+         self.commit_max_ms = 0.0         # worst time to encode and send one chunk, last ~10 s
+@@ -1154,6 +1223,7 @@
+                         log.info("a player joined the running stream; restarting it")
+                         self.restart_stream = True
+                     self._ready_ids = ids
++                    self._track_volumes(ready)
+                     for other in list(group.clients):
+                         if other.client_id not in ids and self._is_ours(other):
+                             await other.ungroup()
+@@ -1162,6 +1232,7 @@
+                     self.leader = None
+                     self.sync_note = ""
+                     self._ready_ids = set()
++                    self._track_volumes([])
+             except Exception as e:  # keep the loop alive
+                 log.warning("grouping: %s", e)
+             await asyncio.sleep(1)
+@@ -1250,6 +1321,54 @@
+                 for name in ("get_min_buffer_us", "get_required_lead_time_us", "_lead_override"):
+                     role.__dict__.pop(name, None)
+ 
++    def _track_volumes(self, ready) -> None:
++        """Follow the volume of every player in the stream (VolumeSync)."""
++        self._ready_clients = {c.client_id: c for c in ready}
++        self.volsync.members(self._ready_clients if self.settings.volume_sync else ())
++        for cid, c in self._ready_clients.items():
++            held = self._vol_watch.get(cid)
++            if held and held[0] is c:
++                continue
++            if held:
++                held[1]()
++            self._vol_watch[cid] = (c, c.add_event_listener(self._client_event))
++
++    def _client_event(self, client, event) -> None:
++        # Called inside aiosendspin's event dispatch: nothing here may raise
++        # into it.
++        try:
++            self._sync_volume(client, event)
++        except Exception:
++            log.exception("volume sync")
++
++    def _sync_volume(self, client, event) -> None:
++        if not isinstance(event, VolumeChangedEvent) or not self.settings.volume_sync:
++            return
++        if self._ready_clients.get(client.client_id) is not client:
++            return
++        volumes = {}
++        for cid, c in self._ready_clients.items():
++            r = c.role(PLAYER_ROLE)
++            volumes[cid] = r.volume if r else None
++        for cid, v in self.volsync.reported(client.client_id, event.volume, volumes).items():
++            r = self._ready_clients[cid].role(PLAYER_ROLE)
++            if r is None:
++                continue
++            log.info("volume %d from %s -> %s", v, self._label(client), self._label(self._ready_clients[cid]))
++            r.set_volume(v)
++
++    def _label(self, client) -> str:
++        for key, p in self.discovery.players.items():
++            if self.client_for(key) is client:
++                return p.label
++        return client.client_id
++
++    def set_volume_sync(self, on: bool) -> None:
++        self.settings.volume_sync = on
++        self.settings.save()
++        self.volsync = VolumeSync(self.volsync.clock)  # a fresh start: nobody owes an answer
++        self.volsync.members(self._ready_clients if on else ())
++
+     def set_lead(self, ms: int) -> None:
+         self.settings.lead_ms = max(0, min(10000, ms))
+         self.settings.save()
+@@ -1508,6 +1627,7 @@
+             "running": self.running,
+             "source": self.settings.source,
+             "sources": self.sources,
++            "volumeSync": self.settings.volume_sync,
+             "rmsDb": round(self.rms_db, 1),
+             "peakDb": round(self.peak_db, 1),
+             # From capture: the chunk's play time minus when its first sample
+@@ -1615,6 +1735,8 @@
+             app.set_channel(key, str(body.get("channel", "")))
+         elif action == "lead":
+             app.set_lead(int(body["ms"]))
++        elif action == "volumesync":
++            app.set_volume_sync(bool(body.get("on")))
+         elif action == "config":
+             await app.set_transport(
+                 None if body.get("chunkMs") is None else int(body["chunkMs"]),
+--- a/index.html
++++ b/index.html
+@@ -120,6 +120,10 @@
+         <div class="hint" style="margin-top:6px">Less buffer means less delay and a bigger chance of dropouts on a weak Wi-Fi link.</div>
+       </div>
+       <div>
++        <label class="switch"><input type="checkbox" id="volsync"> Same volume on every player</label>
++        <div class="hint" style="margin-top:6px">Changing the volume on one player (its buttons, Home Assistant or this page) sets the others in the stream to match.</div>
++      </div>
++      <div>
+         <div class="meter" id="meter"><i></i><b></b></div>
+         <div class="readout"><span id="rms">-- dB</span><span id="peak">peak -- dB</span></div>
+       </div>
+@@ -220,6 +224,7 @@
+     : (s.source || '').startsWith('test:') ? 'test source: no audio-server delay to compare with' : "this PC's audio-server block size is unknown (not PipeWire, or pw-top missing)";
+   $('jit').textContent = s.running ? 'this PC, last 10 s: worst gap between chunks ' + s.gapMaxMs + ' ms (' + s.chunkMs + ' ms expected), worst send ' + s.commitMaxMs + ' ms; ' + s.chunkMs + ' ms batches, ' + s.captureRequestMs + ' ms capture request, DSCP ' + (s.dscp ? 'CS6' : 'off') : '';
+   if (document.activeElement !== $('lead')) $('lead').value = String(s.leadMs);
++  $('volsync').checked = !!s.volumeSync;
+   $('srcErr').textContent = s.error || '';
+   $('quiet').textContent = (s.quietApps || []).map(a => a.muted
+     ? a.app + ' is muted in this PC\'s mixer, so the Echoes get nothing from it.'
+@@ -308,6 +313,7 @@
+ 
+ $('source').onchange = () => post('source', {source: $('source').value});
+ $('lead').onchange = () => post('lead', {ms: +$('lead').value});
++$('volsync').onchange = () => post('volumesync', {on: $('volsync').checked});
+ $('refresh').onclick = () => post('refresh');
+ $('toggle').onclick = () => snap && snap.running ? post('stop') : post('start', {source: $('source').value});
+ $('addForm').onsubmit = async (e) => {
+--- /dev/null	2026-10-27 15:18:39.188224599 +0100
++++ b/test_volume_sync.py
+@@ -0,0 +1,123 @@
++"""VolumeSync's rules. Run: python -m pytest test_volume_sync.py (or plain python)."""
++import importlib.util
++import pathlib
++import sys
++
++spec = importlib.util.spec_from_file_location("streamer", pathlib.Path(__file__).with_name("streamer.py"))
++streamer = importlib.util.module_from_spec(spec)
++sys.modules["streamer"] = streamer
++spec.loader.exec_module(streamer)
++VolumeSync = streamer.VolumeSync
++
++
++class Clock:
++    def __init__(self):
++        self.t = 1000.0
++
++    def __call__(self):
++        return self.t
++
++
++def joined(*ids):
++    c = Clock()
++    s = VolumeSync(clock=c)
++    s.members(ids)
++    c.t += VolumeSync.JOIN_GRACE_S
++    return s, c
++
++
++def test_a_change_is_copied_to_the_others():
++    s, _ = joined("a", "b", "c")
++    assert s.reported("a", 54, {"a": 54, "b": 50, "c": 50}) == {"b": 54, "c": 54}
++
++
++def test_a_player_already_there_is_not_sent_anything():
++    s, _ = joined("a", "b")
++    assert s.reported("a", 54, {"a": 54, "b": 54}) == {}
++
++
++def test_the_answer_to_a_sent_volume_is_not_copied_back():
++    s, _ = joined("a", "b")
++    s.reported("a", 54, {"a": 54, "b": 50})
++    assert s.reported("b", 54, {"a": 54, "b": 54}) == {}
++
++
++def test_a_rounded_answer_is_not_copied_back():
++    s, _ = joined("a", "b")
++    s.reported("a", 55, {"a": 55, "b": 50})
++    assert s.reported("b", 54, {"a": 55, "b": 54}) == {}
++
++
++def test_a_quick_run_of_presses_is_not_pulled_back():
++    s, _ = joined("a", "b")
++    s.reported("a", 50, {"a": 50, "b": 47})
++    s.reported("a", 54, {"a": 54, "b": 47})
++    s.reported("a", 57, {"a": 57, "b": 47})
++    # b's answers arrive after the run: none is a change
++    assert s.reported("b", 50, {"a": 57, "b": 50}) == {}
++    assert s.reported("b", 54, {"a": 57, "b": 54}) == {}
++    assert s.reported("b", 57, {"a": 57, "b": 57}) == {}
++
++
++def test_a_press_after_the_answer_is_a_change():
++    s, c = joined("a", "b")
++    s.reported("a", 54, {"a": 54, "b": 50})
++    s.reported("b", 54, {"a": 54, "b": 54})
++    c.t += 0.5
++    assert s.reported("b", 57, {"a": 54, "b": 57}) == {"a": 57}
++
++
++def test_an_unanswered_volume_stops_swallowing_reports():
++    s, c = joined("a", "b")
++    s.reported("a", 54, {"a": 54, "b": 50})
++    c.t += VolumeSync.ANSWER_S
++    assert s.reported("b", 57, {"a": 54, "b": 57}) == {"a": 57}
++
++
++def test_a_far_off_report_while_one_is_owed_is_a_change():
++    s, _ = joined("a", "b")
++    s.reported("a", 54, {"a": 54, "b": 50})
++    assert s.reported("b", 20, {"a": 54, "b": 20}) == {"a": 20}
++
++
++def test_a_newcomer_does_not_move_the_rest():
++    s, c = joined("a", "b")
++    s.members(["a", "b", "c"])
++    assert s.reported("c", 30, {"a": 54, "b": 54, "c": 30}) == {}
++    c.t += VolumeSync.JOIN_GRACE_S
++    assert s.reported("c", 33, {"a": 54, "b": 54, "c": 33}) == {"a": 33, "b": 33}
++
++
++def test_a_newcomer_follows_a_change_made_during_its_grace():
++    s, _ = joined("a", "b")
++    s.members(["a", "b", "c"])
++    assert s.reported("a", 60, {"a": 60, "b": 54, "c": 30}) == {"b": 60, "c": 60}
++
++
++def test_a_player_not_in_the_stream_is_ignored_and_untouched():
++    s, _ = joined("a", "b")
++    assert s.reported("x", 10, {"a": 54, "b": 54}) == {}
++    assert "x" not in s.reported("a", 60, {"a": 60, "b": 54, "x": 10})
++
++
++def test_leaving_forgets_what_a_player_owed():
++    s, c = joined("a", "b")
++    s.reported("a", 54, {"a": 54, "b": 50})
++    s.members(["a"])
++    s.members(["a", "b"])
++    c.t += VolumeSync.JOIN_GRACE_S
++    assert s.reported("b", 54, {"a": 60, "b": 54}) == {"a": 54}
++
++
++def test_with_no_members_nothing_is_sent():
++    s, _ = joined()
++    assert s.reported("a", 54, {"a": 54}) == {}
++
++
++if __name__ == "__main__":
++    n = 0
++    for name, f in list(globals().items()):
++        if name.startswith("test_"):
++            f()
++            n += 1
++    print(f"{n} passed")
