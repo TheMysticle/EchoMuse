@@ -121,17 +121,19 @@ func TestLowLatencyPullBudget(t *testing.T) {
 	}
 }
 
-func TestQuarterPeriodsKeepDuckRate(t *testing.T) {
-	whole := &Mixer{gain: unityGain}
-	quarter := &Mixer{gain: unityGain}
-	quarter.SetSlices(4)
-	for _, target := range []int32{0, unityGain, DuckGain(-18), unityGain} {
-		whole.applyGain(period(loopPeriodFrames, 1000), target)
-		for i := 0; i < 4; i++ {
-			quarter.applyGain(period(loopPeriodFrames/4, 1000), target)
-		}
-		if whole.Gain() != quarter.Gain() {
-			t.Fatalf("target %d: whole %d, quarter %d", target, whole.Gain(), quarter.Gain())
+func TestSlicedPeriodsKeepDuckRate(t *testing.T) {
+	for _, n := range []int{4, loopPeriodFrames / lowLatencyPeriodFrames} {
+		whole := &Mixer{gain: unityGain}
+		sliced := &Mixer{gain: unityGain}
+		sliced.SetSlices(n)
+		for _, target := range []int32{0, unityGain, DuckGain(-18), unityGain} {
+			whole.applyGain(period(loopPeriodFrames, 1000), target)
+			for i := 0; i < n; i++ {
+				sliced.applyGain(period(loopPeriodFrames/n, 1000), target)
+			}
+			if whole.Gain() != sliced.Gain() {
+				t.Fatalf("%d slices, target %d: whole %d, sliced %d", n, target, whole.Gain(), sliced.Gain())
+			}
 		}
 	}
 }

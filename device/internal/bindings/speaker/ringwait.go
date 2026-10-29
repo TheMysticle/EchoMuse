@@ -13,7 +13,7 @@ const (
 // source reports a low-latency stream. The blocking write otherwise keeps the
 // ring full (171ms), and everything in it is lead the stream must have
 // arrived with: lead must exceed the ring's occupancy plus the period being
-// built. With 512-frame pulls this is 48ms + 10.67ms = 58.67ms,
+// built. With 256-frame pulls this is 48ms + 5.33ms = 53.33ms,
 // before network jitter and scheduling overhead. Voice still uses 2048 frames.
 //
 // The earlier 64ms floor was inferred from Auddrv_DL1_Interrupt_Handler
@@ -36,10 +36,16 @@ func ringWait(d, target int) time.Duration {
 	return min(time.Duration(d-target)*time.Second/48000, maxRingWait)
 }
 
-const lowLatencyPeriodFrames = 512
+// lowLatencyPeriodFrames is the pull length for a low-latency stream. A late
+// packet's deadline is the play time of the period that holds its first
+// sample, less the fill wait's reserve, and that period starts up to one
+// pull length before the sample: the pull length is lead the stream needs
+// on top of the reserve. 512 (10.67ms) until 2026-10-29; 256 halves that
+// for twice the writes and status reads.
+const lowLatencyPeriodFrames = 256
 
 // sourcePeriodBytes is the length of the period the pull source is asked to
-// build, in stereo S16 bytes. A quarter of the loop's when a low-latency stream has
+// build, in stereo S16 bytes. An eighth of the loop's when a low-latency stream has
 // the speaker to itself; a voice period is a whole one and so is everything
 // mixed against it. Everything but this choice is length-agnostic.
 func sourcePeriodBytes(voiceReady, lowLatency bool) int {

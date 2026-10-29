@@ -194,6 +194,10 @@ type PcmSpeaker struct {
 	srcBuf     []byte
 	srcLastNs  atomic.Int64 // last period the source played
 	dacStep    dacStepLog   // pullSource's alone
+	// The last pulled period's measured play time and when its Fill
+	// returned, for writeMargin. Write loop only.
+	pullAt, pullFilled time.Time
+	margin             writeMargin
 }
 
 // MusicSource is a pull producer for the music plane. Fill writes one stereo
@@ -311,6 +315,7 @@ func (p *PcmSpeaker) pullSource(n int) []byte {
 		}
 		return nil
 	}
+	p.pullAt, p.pullFilled = playAt, time.Now()
 	p.srcLastNs.Store(now.UnixNano())
 	return buf
 }
@@ -654,7 +659,7 @@ func (p *PcmSpeaker) silenceLoop() {
 	}()
 	var meter writeLoopMeter // bench builds only; empty otherwise
 	// The rest of a voice period being played in low-latency slices (see
-	// voiceSlice). A flush drops what is queued, not this: at most 32ms of a
+	// voiceSlice). A flush drops what is queued, not this: at most 37ms of a
 	// cancelled reply still plays.
 	var voiceRest []byte
 	for {
@@ -683,10 +688,10 @@ func (p *PcmSpeaker) silenceLoop() {
 		} else if p.music.playing {
 			p.report(p.music.drained(), "music")
 		}
-		// The source period is a quarter of the loop's when a low-latency
+		// The source period is an eighth of the loop's when a low-latency
 		// Sendspin stream is playing: the source must have audio for the
 		// period it is asked to build, so a shorter one lowers the lead the
-		// stream needs by the difference (32ms). A voice period is sliced to
+		// stream needs by the difference. A voice period is sliced to
 		// match rather than pulling a whole one under it.
 		sourceBytes := periodBytes
 		if music == nil && !p.music.playing && !p.music.isActive() {
@@ -814,6 +819,10 @@ func (p *PcmSpeaker) silenceLoop() {
 			return
 		}
 		meter.afterWrite()
+		if !p.pullAt.IsZero() {
+			p.margin.note(time.Now(), p.pullAt, p.pullFilled, len(out)/4)
+			p.pullAt = time.Time{}
+		}
 	}
 }
 
