@@ -1,0 +1,498 @@
+diff -ruN a/index.html b/index.html
+--- a/index.html	2026-10-28 19:33:57.853613301 +0100
++++ b/index.html	2026-10-28 19:33:57.854517092 +0100
+@@ -127,6 +127,10 @@
+         <div class="hint" style="margin-top:6px">Applied to the TV audio here, before it is sent; adds no delay. Dialogue lift raises 2 kHz in the centre only, where speech is mixed. Bass trim takes back some of the Echo's own bass boost. Loudness rides quiet and loud scenes toward one level and holds gunshots down; "fast" follows within a fraction of a second, so quiet sounds come back right after loud ones. Switching TV mode off and on is instant, to compare.</div>
+       </div>
+       <div>
++        <label>Auto stream: let the players go after <input type="number" id="autostop" min="0" max="1440" step="1" style="width:4em"> min without sound</label>
++        <div class="hint" style="margin-top:6px">When the TV has been silent that long, the players are released (as with Stop); the moment sound arrives they are taken back, and the first 1 to 2 seconds of it are not heard. 0 keeps streaming always. Adds no delay while streaming.</div>
++      </div>
++      <div>
+         <label class="switch"><input type="checkbox" id="volsync"> Same volume on every player</label>
+         <div class="hint" style="margin-top:6px">Changing the volume on one player (its buttons, Home Assistant or this page) sets the others in the stream to match.</div>
+       </div>
+@@ -212,7 +216,7 @@
+ 
+ function render(s) {
+   const pill = $('status');
+-  pill.textContent = s.running ? (s.latencyMs == null ? 'Waiting for a player' : 'Streaming') : 'Idle';
++  pill.textContent = s.running ? (s.idle ? 'Waiting for sound' : s.latencyMs == null ? 'Waiting for a player' : 'Streaming') : 'Idle';
+   pill.className = 'pill' + (s.running && s.latencyMs != null ? ' live' : '');
+   $('toggle').textContent = s.running ? 'Stop' : 'Start streaming';
+   $('toggle').className = s.running ? 'danger' : 'primary';
+@@ -232,6 +236,7 @@
+   $('jit').textContent = s.running ? 'this PC, last 10 s: worst gap between chunks ' + s.gapMaxMs + ' ms (' + s.chunkMs + ' ms expected), worst send ' + s.commitMaxMs + ' ms; ' + s.chunkMs + ' ms batches, ' + s.captureRequestMs + ' ms capture request, DSCP ' + (s.dscp ? 'CS6' : 'off') : '';
+   if (document.activeElement !== $('lead')) $('lead').value = String(s.leadMs);
+   $('volsync').checked = !!s.volumeSync;
++  if (document.activeElement !== $('autostop')) $('autostop').value = String(s.autoStopMin);
+   if (s.tv) {
+     $('tvOn').checked = !!s.tv.on;
+     if (document.activeElement !== $('tvDlg')) $('tvDlg').value = String(s.tv.dialogueDb);
+@@ -331,7 +336,8 @@
+ 
+ $('source').onchange = () => post('source', {source: $('source').value});
+ $('lead').onchange = () => post('lead', {ms: +$('lead').value});
+-$('volsync').onchange = () => post('volumesync', {on: $('volsync').checked});
++$('autostop').onchange = () => post('autostop', {min: +$('autostop').value || 0});
++$('volsync').onchange =() => post('volumesync', {on: $('volsync').checked});
+ $('tvOn').onchange = () => post('tv', {on: $('tvOn').checked});
+ $('tvDlg').onchange =() => post('tv', {dialogueDb: +$('tvDlg').value});
+ $('tvBass').onchange = () => post('tv', {bassDb: +$('tvBass').value});
+diff -ruN a/streamer.py b/streamer.py
+--- a/streamer.py	2026-10-28 19:33:57.853546121 +0100
++++ b/streamer.py	2026-10-28 19:33:57.854436702 +0100
+@@ -351,6 +351,7 @@
+         self.lead_ms = 80                # 0 = whatever each player asks for (2000 ms on an Echo)
+         self.channels: dict[str, str] = {}  # key -> "left" / "right"; absent is stereo
+         self.volume_sync = True          # players in the stream share one volume
++        self.auto_stop_min = 10.0        # release the players after this long without sound; 0 = never
+         # TV mode (tvdsp.py). Off, or all zero / "off", is a bit-exact
+         # passthrough. On by default, with the settings that suit TV.
+         self.tv_on = True
+@@ -367,6 +368,7 @@
+             self.channels = {k: v for k, v in dict(d.get("channels", {})).items()
+                              if v in CHANNEL_MODES and v != "stereo"}
+             self.volume_sync = bool(d.get("volume_sync", True))
++            self.auto_stop_min = max(0.0, float(d.get("auto_stop_min", self.auto_stop_min)))
+             self.tv_on = bool(d.get("tv_on", self.tv_on))
+             self.tv_dialogue_db = float(d.get("tv_dialogue_db", self.tv_dialogue_db))
+             self.tv_bass_db = float(d.get("tv_bass_db", self.tv_bass_db))
+@@ -379,6 +381,7 @@
+             "source": self.source, "wanted": self.wanted,
+             "selected": self.selected, "manual": self.manual, "lead_ms": self.lead_ms,
+             "channels": self.channels, "volume_sync": self.volume_sync,
++            "auto_stop_min": self.auto_stop_min,
+             "tv_on": self.tv_on,
+             "tv_dialogue_db": self.tv_dialogue_db, "tv_bass_db": self.tv_bass_db,
+             "tv_dynamics": self.tv_dynamics,
+@@ -448,6 +451,59 @@
+         return out
+ 
+ 
++class AutoStop:
++    """Auto stream: let the players go after `minutes` without sound, and
++    take them back the moment sound returns.
++
++    The capture keeps running while idle, which is how sound returning is
++    seen at all, so only the players' side stops: the stream ends, the group
++    is stopped and they drop to a discovery connection, exactly as on Stop.
++    That hands a grouped Echo back to its speaker group instead of holding it
++    on a silent low-latency stream. Silence is the chunk's PEAK under
++    SILENT_DB: a TV with nothing playing sends digital zeros, and any
++    programme peaks far above it within a second. No chunks at all (a card
++    that stops delivering) counts as silence too, because nothing refreshes
++    `last`. Reads the peak the level meter already computed: nothing is added
++    to the audio path, and a resumed stream starts at the same lead.
++    """
++
++    SILENT_DB = -60.0
++
++    def __init__(self, minutes: float, clock=time.monotonic) -> None:
++        self.minutes = minutes
++        self.clock = clock
++        self.idle = False
++        self.last = clock()
++
++    def heard(self, peak_db: float) -> bool:
++        """One chunk's peak. True when it ends an idle spell."""
++        if peak_db <= self.SILENT_DB:
++            return False
++        self.last = self.clock()
++        if self.idle:
++            self.idle = False
++            return True
++        return False
++
++    def due(self) -> bool:
++        """True once, when the silence has lasted long enough to go idle."""
++        if self.minutes <= 0 or self.idle:
++            return False
++        if self.clock() - self.last >= self.minutes * 60:
++            self.idle = True
++            return True
++        return False
++
++    def reset(self) -> None:
++        """A start or a stop by hand: streaming, and the silence counts from now."""
++        self.idle = False
++        self.last = self.clock()
++
++    @property
++    def silent_s(self) -> float:
++        return self.clock() - self.last
++
++
+ # --------------------------------------------------------------------------
+ # Discovery
+ # --------------------------------------------------------------------------
+@@ -885,6 +941,15 @@
+     MAX_STEP_US = 2_000       # well inside the Echo's 5 ms snap threshold
+     TARGET_EXTRA_US = 2_000   # median lead above the setting, as the library settled
+     SHORT_US = 10_000         # lead this far under the target is eating the Echo's margin
++    # A silent chunk is dropped while the lead is more than one chunk over the
++    # target. An S/PDIF card with no signal (the TV off) free-runs on its own
++    # clock: the ICUSBAUDIO7D delivered ~50,000 frames a second, 4% fast, and
++    # the lead grew ~40 ms every second, far past what steering (2 ms per 2 s)
++    # can take back; the TV then came back seconds late against the picture.
++    # A correct-rate input never gets a chunk ahead (steady state is the
++    # target +-2 ms, and a late chunk only ever lowers the lead), so on real
++    # programme this never acts, and it never cuts sound.
++    LONG_US = 10_000
+ 
+     def __init__(self, lead_us: int) -> None:
+         self.lead_us = lead_us
+@@ -906,13 +971,16 @@
+         self.steps = 0
+         self.stepped_us = 0
+         self.logged = 0.0
++        self.surplus = 0          # silent chunks dropped because the input ran fast
++        self.surplus_logged = 0.0
+ 
+     @property
+     def warming(self) -> bool:
+         return self.warm < self.WARM
+ 
+-    def next(self, now_us: int) -> int | None:
+-        """Play time for the chunk in hand, or None to drop it."""
++    def next(self, now_us: int, quiet: bool = False) -> int | None:
++        """Play time for the chunk in hand, or None to drop it. `quiet`: the
++        chunk carries no sound, so dropping it cannot be heard."""
+         if self.anchor is None:
+             self.anchor = now_us + self.target_us
+         if self.drops:
+@@ -920,6 +988,14 @@
+             return None
+         play = self.anchor + self.n * self.chunk_ms * 1000
+         slack = play - now_us
++        if quiet and not self.warming and slack > self.target_us + self.LONG_US:
++            self.surplus += 1
++            now = time.monotonic()
++            if now - self.surplus_logged >= 60:
++                self.surplus_logged = now
++                log.info("input running fast with no sound (no signal?): %d silent chunk(s) "
++                         "dropped to hold the lead", self.surplus)
++            return None
+         self.silent = self.warming
+         if self.warming:
+             self.warm += 1
+@@ -1007,6 +1083,7 @@
+         self._ready_ids: set[str] = set()  # ready players at the last grouping pass
+         self._ready_clients: dict[str, object] = {}  # the same, by client id
+         self.volsync = VolumeSync()
++        self.auto = AutoStop(self.settings.auto_stop_min)
+         self._vol_watch: dict[str, tuple[object, object]] = {}  # client id -> (client, unsubscribe)
+         self._applied_lead = 0
+         self.gap_max_ms = 0.0             # worst spacing between captured chunks, last ~10 s
+@@ -1079,7 +1156,9 @@
+         # the speaker group takes the Echo back, and the 10 s retry took it
+         # again, so the two swapped it every 5 s.
+         assert self.server
+-        ticked = self.running and any(self.discovery.players.get(k) is not None
++        # Idle (auto stream, no sound) is a Stop for this purpose, or the same
++        # swap would start again for as long as the TV is off.
++        ticked = self.running and not self.auto.idle and any(self.discovery.players.get(k) is not None
+                      and self.discovery.players[k].url == p.url
+                      for k in self.settings.selected)
+         self.server.connect_to_client(
+@@ -1213,6 +1292,8 @@
+         """Keep every ticked, ready player in one group, and nobody else in it."""
+         while True:
+             try:
++                if self.running and self.auto.due():
++                    await self._go_idle()
+                 for key, p in list(self.discovery.players.items()):
+                     if p.lapsed and not self._connected(p):
+                         del self.discovery.players[key]
+@@ -1499,8 +1580,39 @@
+                 self._dial_at[key] = time.monotonic()
+                 self._dial(p)
+ 
++    async def _go_idle(self) -> None:
++        """Auto stream: no sound for the set time. The stream loop stops its
++        transport at the next chunk (or never sends again, if the card has
++        gone quiet altogether); this ends the playback as Stop does and drops
++        the players to a discovery connection."""
++        log.info("no sound for %g min; letting the players go until sound returns",
++                 self.auto.minutes)
++        for group in {id(c.group): c.group for c in self.ready_selected()}.values():
++            try:
++                await group.stop()
++            except Exception as e:
++                log.warning("stopping the group: %s", e)
++        self.latency_ms = None
++        self._redial_ticked()
++
++    def _wake(self) -> None:
++        """Auto stream: sound again. Ask the players for playback now; the
++        stream loop starts the stream as soon as the leader is ready."""
++        log.info("sound again after %.0f s; taking the players back", self.auto.silent_s)
++        self._redial_ticked()
++
++    def set_auto_stop(self, minutes: float) -> None:
++        self.settings.auto_stop_min = max(0.0, min(24 * 60.0, minutes))
++        self.settings.save()
++        was_idle = self.auto.idle
++        self.auto.minutes = self.settings.auto_stop_min
++        self.auto.reset()  # the silence counts from the change
++        if was_idle and self.running:
++            self._redial_ticked()
++
+     async def stop_stream(self, end_playback: bool = True) -> None:
+         self.running = False
++        self.auto.reset()
+         if self.stream_task:
+             self.stream_task.cancel()
+             try:
+@@ -1581,6 +1693,15 @@
+                         self.gap_max_ms = max(gaps)
+                     last_chunk = arrived
+                     self._meter(pcm)
++                    if self.auto.heard(self.peak_db):
++                        self._wake()
++                    if self.auto.idle:
++                        if stream is not None and not stream.is_stopped:
++                            stream.stop()
++                        stream = None
++                        self.latency_ms = None
++                        delays.clear()
++                        continue
+                     leader = self.leader
+                     if leader is None or not self.ready(leader):
+                         stream = None
+@@ -1603,7 +1724,8 @@
+                         lead_ms = self.settings.lead_ms
+                         timeline = OwnTimeline(lead_ms * 1000) if lead_ms else None
+                     if timeline is not None:
+-                        play_at = timeline.next(self.server.clock.now_us())
++                        play_at = timeline.next(self.server.clock.now_us(),
++                                                quiet=self.peak_db <= AutoStop.SILENT_DB)
+                         if play_at is None:
+                             continue
+                         pcm = self._tv_process(pcm)
+@@ -1684,6 +1806,9 @@
+             "source": self.settings.source,
+             "sources": self.sources,
+             "volumeSync": self.settings.volume_sync,
++            "autoStopMin": self.settings.auto_stop_min,
++            "idle": self.running and self.auto.idle,
++            "silentS": round(self.auto.silent_s) if self.running else None,
+             "rmsDb": round(self.rms_db, 1),
+             "peakDb": round(self.peak_db, 1),
+             # From capture: the chunk's play time minus when its first sample
+@@ -1802,6 +1927,8 @@
+                        None if body.get("bassDb") is None else float(body["bassDb"]),
+                        body.get("dynamics"),
+                        None if body.get("on") is None else bool(body["on"]))
++        elif action == "autostop":
++            app.set_auto_stop(float(body["min"]))
+         elif action == "volumesync":
+             app.set_volume_sync(bool(body.get("on")))
+         elif action == "config":
+diff -ruN a/test_auto_stop.py b/test_auto_stop.py
+--- a/test_auto_stop.py	1970-01-01 01:00:00.000000000 +0100
++++ b/test_auto_stop.py	2026-10-28 19:33:57.854553972 +0100
+@@ -0,0 +1,115 @@
++"""AutoStop's rules. Run: python -m pytest test_auto_stop.py (or plain python)."""
++import importlib.util
++import pathlib
++import sys
++
++spec = importlib.util.spec_from_file_location("streamer", pathlib.Path(__file__).with_name("streamer.py"))
++streamer = importlib.util.module_from_spec(spec)
++sys.modules["streamer"] = streamer
++spec.loader.exec_module(streamer)
++AutoStop = streamer.AutoStop
++
++SOUND, ZEROS = -20.0, -120.0
++
++
++class Clock:
++    def __init__(self):
++        self.t = 1000.0
++
++    def __call__(self):
++        return self.t
++
++
++def make(minutes=10):
++    c = Clock()
++    return AutoStop(minutes, clock=c), c
++
++
++def test_sound_keeps_it_streaming():
++    a, c = make()
++    for _ in range(1200):  # 20 min of sound, a chunk per second
++        c.t += 1
++        assert not a.heard(SOUND)
++        assert not a.due()
++    assert not a.idle
++
++
++def test_goes_idle_once_after_the_set_silence():
++    a, c = make(10)
++    a.heard(SOUND)
++    c.t += 10 * 60 - 1
++    a.heard(ZEROS)
++    assert not a.due()
++    c.t += 1
++    assert a.due()
++    assert a.idle
++    c.t += 60
++    assert not a.due()  # once only
++
++
++def test_no_chunks_at_all_counts_as_silence():
++    a, c = make(1)
++    c.t += 61  # nothing heard: a card that stopped delivering
++    assert a.due()
++
++
++def test_sound_ends_the_idle_spell_on_the_first_chunk():
++    a, c = make(1)
++    c.t += 61
++    assert a.due()
++    assert not a.heard(ZEROS)
++    assert a.idle
++    assert a.heard(SOUND)  # the first audible chunk wakes it
++    assert not a.idle
++    assert not a.heard(SOUND)  # and only that one
++    c.t += 30
++    assert not a.due()  # the silence counts again from the last sound
++
++
++def test_quiet_but_real_sound_is_sound():
++    a, c = make(1)
++    for _ in range(120):
++        c.t += 1
++        a.heard(-50.0)  # a very quiet scene still peaks well above -60 dBFS
++        assert not a.due()
++
++
++def test_the_threshold_is_the_peak_not_a_hiss():
++    a, c = make(1)
++    for _ in range(61):
++        c.t += 1
++        a.heard(AutoStop.SILENT_DB)  # at the threshold is silence
++    assert a.due()
++
++
++def test_zero_minutes_never_stops():
++    a, c = make(0)
++    c.t += 24 * 3600
++    assert not a.due()
++    assert not a.idle
++
++
++def test_reset_counts_from_now_and_streams():
++    a, c = make(1)
++    c.t += 61
++    assert a.due()
++    a.reset()
++    assert not a.idle
++    c.t += 59
++    assert not a.due()
++    c.t += 1
++    assert a.due()
++
++
++def test_silent_s():
++    a, c = make(5)
++    a.heard(SOUND)
++    c.t += 42
++    assert a.silent_s == 42
++
++
++if __name__ == "__main__":
++    for name, f in list(globals().items()):
++        if name.startswith("test_"):
++            f()
++    print("ok")
+diff -ruN a/test_timeline.py b/test_timeline.py
+--- a/test_timeline.py	1970-01-01 01:00:00.000000000 +0100
++++ b/test_timeline.py	2026-10-28 19:33:57.854584462 +0100
+@@ -0,0 +1,84 @@
++"""OwnTimeline against inputs that run fast or slow. Run: python -m pytest test_timeline.py"""
++import importlib.util
++import pathlib
++import sys
++
++import numpy as np
++
++spec = importlib.util.spec_from_file_location("streamer", pathlib.Path(__file__).with_name("streamer.py"))
++streamer = importlib.util.module_from_spec(spec)
++sys.modules["streamer"] = streamer
++spec.loader.exec_module(streamer)
++OwnTimeline = streamer.OwnTimeline
++CHUNK_US = streamer.CHUNK_MS * 1000
++LEAD_US = 50_000
++
++
++def feed(rate, seconds, quiet, jitter_us=0, seed=0):
++    """Chunks arriving from a card whose clock runs at `rate` times real time.
++    Returns the lead of each sent chunk (us) and how many were dropped."""
++    t = OwnTimeline(LEAD_US)
++    rng = np.random.default_rng(seed)
++    n = int(seconds * 1e6 / CHUNK_US * rate)
++    slack, dropped = [], 0
++    for i in range(n):
++        now = int(i * CHUNK_US / rate + abs(rng.normal(0, jitter_us)))
++        q = quiet(i) if callable(quiet) else quiet
++        play = t.next(now, quiet=q)
++        if play is None:
++            dropped += 1
++            continue
++        if not t.warming:
++            slack.append(play - now)
++    return np.array(slack), dropped, t
++
++
++def test_correct_rate_with_jitter_drops_nothing():
++    # Silence at the right rate (a paused TV still locked): never touched.
++    s, dropped, t = feed(1.0, 120, quiet=True, jitter_us=700)
++    assert t.surplus == 0
++    assert abs(np.median(s[-500:]) - t.target_us) < 2_000
++
++
++def test_fast_card_with_no_signal_holds_the_lead():
++    # The ICUSBAUDIO7D with the TV off: ~50 kHz instead of 48 kHz.
++    s, dropped, t = feed(50_000 / 48_000, 300, quiet=True, jitter_us=700)
++    assert t.surplus > 0
++    assert s.max() < t.target_us + OwnTimeline.LONG_US + CHUNK_US
++    # Without the drop the lead would be ~12 s over by now.
++
++
++def test_sound_is_never_dropped_even_when_running_fast():
++    s, dropped, t = feed(1.04, 30, quiet=False)
++    assert t.surplus == 0
++
++
++def test_tv_back_on_starts_at_the_lead():
++    # Two minutes off (fast, silent), then the card locks and sound plays.
++    rate_off = 50_000 / 48_000
++    t = OwnTimeline(LEAD_US)
++    now = 0.0
++    for _ in range(int(120e6 / CHUNK_US * rate_off)):
++        now += CHUNK_US / rate_off
++        t.next(int(now), quiet=True)
++    leads = []
++    for _ in range(300):  # 3 s of programme at the right rate
++        now += CHUNK_US
++        play = t.next(int(now), quiet=False)
++        assert play is not None
++        leads.append(play - now)
++    assert max(leads) < t.target_us + OwnTimeline.LONG_US + CHUNK_US
++
++
++def test_quiet_pauses_inside_programme_are_not_shortened():
++    # Speech with 300 ms pauses at the right rate: the lead stays at the
++    # target, so no pause loses a chunk.
++    s, dropped, t = feed(1.0, 60, quiet=lambda i: (i // 30) % 2 == 1, jitter_us=700)
++    assert t.surplus == 0
++
++
++if __name__ == "__main__":
++    for name, f in list(globals().items()):
++        if name.startswith("test_"):
++            f()
++    print("ok")
