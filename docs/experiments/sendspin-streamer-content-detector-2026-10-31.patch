@@ -1,0 +1,533 @@
+--- a/streamer.py
++++ b/streamer.py
+@@ -42,6 +42,7 @@
+ 
+ from aiosendspin.audio.codecs import FlacEncoder
+ 
++from contentdetect import ContentDetector, add_routes as add_content_routes
+ from tvdsp import DYNAMICS, TvDsp
+ 
+ # Everything below replaces private aiosendspin functions, written against
+@@ -1116,6 +1117,8 @@
+         self.running = False
+         self.stream_task: asyncio.Task | None = None
+         self.tv_ms: deque[float] = deque(maxlen=1000)
++        self.content = ContentDetector(self.settings.path.parent / "content")
++        self.content.start()
+         self._tv_err_logged = -60.0
+         self.reconcile_task: asyncio.Task | None = None
+         self.leader = None
+@@ -1713,6 +1716,7 @@
+         because that time comes out of the lead's network margin."""
+         t = time.perf_counter()
+         try:
++            self.content.feed(pcm)  # log only, before TV mode: a copy, no measuring here
+             out = self.tv.process(pcm)
+         except Exception:
+             # The stream loop's handler restarts the source on any error, so
+@@ -2043,6 +2047,7 @@
+     web_app = web.Application(middlewares=[guard])
+     web_app["core"] = core
+     web_app.router.add_get("/", index)
++    add_content_routes(web_app, core.settings.path.parent / "content")
+     web_app.router.add_get("/ws", ws_handler)
+     web_app.router.add_get("/api/state", lambda r: web.json_response(r.app["core"].snapshot()))
+     web_app.router.add_post("/api/{action}", api)
+--- a/index.html
++++ b/index.html
+@@ -120,7 +120,7 @@
+         <div class="hint" style="margin-top:6px">Less buffer means less delay and a bigger chance of dropouts on a weak Wi-Fi link.</div>
+       </div>
+       <div>
+-        <div><label class="switch"><input type="checkbox" id="tvOn"> <b>TV mode</b></label> <span class="hint" id="tvStat"></span></div>
++        <div><label class="switch"><input type="checkbox" id="tvOn"> <b>TV mode</b></label> <a href="/content" class="hint">Content detector</a> <span class="hint" id="tvStat"></span></div>
+         <label class="switch"><input type="checkbox" id="tvRoom"> Room tuning</label><br>
+         <label>TV level <input type="range" id="tvLvl" min="0" max="24" step="1"> <span id="tvLvlV"></span></label><br>
+         <label>Dialogue lift <input type="range" id="tvDlg" min="0" max="9" step="1"> <span id="tvDlgV"></span></label><br>
+--- a/Dockerfile
++++ b/Dockerfile
+@@ -14,7 +14,7 @@
+ WORKDIR /app
+ COPY requirements.txt constraints.txt ./
+ RUN pip install --no-cache-dir -r requirements.txt -c constraints.txt
+-COPY streamer.py tvdsp.py index.html ./
++COPY streamer.py tvdsp.py contentdetect.py content.html index.html yamnet.tflite ./
+ COPY docker/entrypoint.sh ./
+ 
+ # The defaults are the ICUSBAUDIO7D's optical input. EM_SOURCE only applies
+--- a/requirements.txt
++++ b/requirements.txt
+@@ -7,3 +7,4 @@
+ numpy==2.5.4
+ av==19.0.2
+ scipy==1.18.1
++ai-edge-litert==2.3.0
+--- a/constraints.txt
++++ b/constraints.txt
+@@ -22,3 +22,9 @@
+ yarl==1.25.1
+ zeroconf==0.151.5
+ scipy==1.18.1
++ai-edge-litert==2.3.0
++backports.strenum==1.2.8
++flatbuffers==25.12.19
++ml_dtypes==0.6.0
++protobuf==7.36.2
++tqdm==4.70.1
+--- a/contentdetect.py
++++ b/contentdetect.py
+@@ -0,0 +1,314 @@
++"""What is playing: music, or not. LOG ONLY: it changes no setting.
++
++The stream loop only copies each chunk into a buffer (feed). A thread hands
++each full window down a pipe to a separate low-priority process, which runs
++YAMNet. It is a process and not a thread so that the model cannot hold the GIL
++against the stream: at a 50 ms lead, a chunk has little margin to lose. If the
++worker is busy or dead a window is dropped, and nothing in the audio path ever
++waits on it.
++
++Tested 2026-10-31 on 14 labelled clips: one 0.975 s patch per 5 s window called
++87 of 88 music windows music, and needing 5 of the last 6 to enter music
++removed every false switch (background music in news, documentaries, trailers),
++entering after about 25 s. 6.5 ms of one NAS thread per run.
++
++Clips are the raw input, before TV mode, as mono 24 kHz WAV: one when the
++decision changes, one when a window's label changes (at most one a minute), and
++one every 10 minutes, oldest deleted past MAX_SAMPLE_BYTES. Silence is neither
++measured nor saved.
++"""
++from __future__ import annotations
++
++import asyncio
++import json
++import logging
++import os
++import re
++import subprocess
++import sys
++import threading
++import time
++from pathlib import Path
++
++log = logging.getLogger("streamer")
++
++RATE = 48000
++WINDOW_S = 5
++WINDOW_BYTES = RATE * WINDOW_S * 4     # s16le stereo
++SILENT_DB = -60.0
++HISTORY, ENTER = 6, 5                  # windows behind the decision, and how many to enter music
++EXIT = HISTORY - ENTER                 # at or below this many music windows, leave it
++SILENCE_RESET_S = 60                   # silence this long: whatever comes next starts afresh
++MUSIC_MIN, SPEECH_MAX, SPEECH_MIN = 0.5, 0.5, 0.3
++SAMPLE_EVERY_S = 600
++SAMPLE_GAP_S = 60
++MAX_SAMPLE_BYTES = 300 * 1024 * 1024
++MAX_LOG_BYTES = 20 * 1024 * 1024
++LOG_NAME, MARKS_NAME, OFF_NAME = "content.jsonl", "marks.jsonl", "samples-off"
++MODEL = Path(__file__).with_name("yamnet.tflite")
++
++
++def label_of(music: float, speech: float) -> str:
++    """One window."""
++    if music > MUSIC_MIN and speech < SPEECH_MAX:
++        return "music"
++    return "speech" if speech >= SPEECH_MIN else "other"
++
++
++class Decision:
++    """What a setting would follow: slow to change its mind."""
++
++    def __init__(self) -> None:
++        self.recent: list[bool] = []
++        self.state = "not music"
++
++    def push(self, label: str) -> str:
++        self.recent = (self.recent + [label == "music"])[-HISTORY:]
++        n = sum(self.recent)
++        if n >= ENTER:
++            self.state = "music"
++        elif n <= EXIT and len(self.recent) == HISTORY:
++            self.state = "not music"
++        return self.state
++
++    def reset(self) -> None:
++        self.recent = []
++        self.state = "not music"
++
++
++class SampleStore:
++    """Decides when to keep a clip, and keeps the folder under its cap."""
++
++    def __init__(self, folder: Path, cap: int = MAX_SAMPLE_BYTES) -> None:
++        self.folder = folder
++        self.cap = cap
++        self.last_at = float("-inf")
++        self.last_label = ""
++        self.last_state = ""
++
++    def wanted(self, now: float, label: str, state: str) -> str | None:
++        """Why this window should be kept, or None."""
++        why = None
++        if state != self.last_state:
++            why = "decision changed"
++        elif label != self.last_label and now - self.last_at >= SAMPLE_GAP_S:
++            why = "label changed"
++        elif now - self.last_at >= SAMPLE_EVERY_S:
++            why = "periodic"
++        self.last_label, self.last_state = label, state
++        if why:
++            self.last_at = now
++        return why
++
++    def prune(self) -> None:
++        files = sorted(self.folder.glob("*.wav"))
++        total = sum(f.stat().st_size for f in files)
++        for f in files:
++            if total <= self.cap:
++                break
++            total -= f.stat().st_size
++            f.unlink(missing_ok=True)
++
++
++def worker(folder: Path) -> None:
++    """The child process: read windows from stdin, score them, log, keep clips."""
++    import wave
++
++    import numpy as np
++    from ai_edge_litert.interpreter import Interpreter
++    from scipy.signal import resample_poly
++
++    os.nice(15)
++    folder.mkdir(parents=True, exist_ok=True)
++    it = Interpreter(str(MODEL), num_threads=1)
++    it.allocate_tensors()
++    inp, out = it.get_input_details()[0], it.get_output_details()[0]
++    import zipfile
++    names = zipfile.ZipFile(MODEL).read("yamnet_label_list.txt").decode().split("\n")
++    names = [n.strip() for n in names if n.strip()]
++    i_music, i_speech = names.index("Music"), names.index("Speech")
++    decision, store = Decision(), SampleStore(folder)
++    started, quiet_since, cpu_start = time.monotonic(), None, time.process_time()
++    logfile = folder / LOG_NAME
++    while True:
++        raw = sys.stdin.buffer.read(WINDOW_BYTES)
++        if len(raw) < WINDOW_BYTES:
++            return
++        x = np.frombuffer(raw, dtype="<i2").reshape(-1, 2).astype(np.float32).mean(axis=1) / 32768.0
++        rms = float(np.sqrt(np.mean(x ** 2)) + 1e-12)
++        db = 20 * np.log10(rms)
++        now = time.monotonic()
++        if db < SILENT_DB:
++            quiet_since = quiet_since or now
++            if now - quiet_since >= SILENCE_RESET_S:
++                decision.reset()
++            continue
++        quiet_since = None
++        patch = resample_poly(x[:46800], 1, 3).astype(np.float32)[:15600]
++        it.set_tensor(inp["index"], patch)
++        it.invoke()
++        scores = it.get_tensor(out["index"]).reshape(-1)
++        music, speech = float(scores[i_music]), float(scores[i_speech])
++        label = label_of(music, speech)
++        state = decision.push(label)
++        t = time.time()
++        rec = {"t": round(t, 1), "label": label, "decision": state, "music": round(music, 3),
++               "speech": round(speech, 3), "rms_db": round(db, 1),
++               "top": [names[i] for i in np.argsort(scores)[-3:][::-1]],
++               "cpu_s": round(time.process_time() - cpu_start, 2), "up_s": round(now - started)}
++        why = None
++        if not (folder / OFF_NAME).exists():
++            why = store.wanted(now, label, state)
++        if why:
++            name = time.strftime("%Y%m%d-%H%M%S", time.localtime(t)) + ".wav"
++            mono = resample_poly(x, 1, 2)
++            with wave.open(str(folder / name), "wb") as w:
++                w.setnchannels(1)
++                w.setsampwidth(2)
++                w.setframerate(RATE // 2)
++                w.writeframes(np.clip(mono * 32768, -32768, 32767).astype("<i2").tobytes())
++            rec["sample"], rec["why"] = name, why
++            store.prune()
++        with open(logfile, "a") as fh:
++            fh.write(json.dumps(rec) + "\n")
++        if logfile.stat().st_size > MAX_LOG_BYTES:
++            lines = logfile.read_text().splitlines(True)
++            tmp = logfile.with_suffix(".tmp")
++            tmp.write_text("".join(lines[len(lines) // 2:]))
++            tmp.replace(logfile)
++
++
++class ContentDetector:
++    """The stream's side: a copy per chunk and a pipe. Never raises into the stream."""
++
++    def __init__(self, folder: Path) -> None:
++        self.folder = folder
++        self.buf = bytearray(WINDOW_BYTES)
++        self.pos = 0
++        self.full: bytes | None = None
++        self.wake = threading.Event()
++        self.proc: subprocess.Popen | None = None
++        self.dropped = 0
++        self.available = MODEL.exists()
++
++    def start(self) -> None:
++        if self.available:
++            threading.Thread(target=self._pump, daemon=True, name="contentdetect").start()
++        else:
++            log.warning("content detector off: %s is missing", MODEL)
++
++    def feed(self, pcm: bytes) -> None:
++        n = len(pcm)
++        if self.pos + n >= WINDOW_BYTES:
++            cut = WINDOW_BYTES - self.pos
++            self.buf[self.pos:] = pcm[:cut]
++            if self.full is None:
++                self.full = bytes(self.buf)
++                self.wake.set()
++            else:
++                self.dropped += 1
++            self.buf[:n - cut] = pcm[cut:]
++            self.pos = n - cut
++        else:
++            self.buf[self.pos:self.pos + n] = pcm
++            self.pos += n
++
++    def _pump(self) -> None:
++        while True:
++            self.wake.wait()
++            self.wake.clear()
++            window, self.full = self.full, None
++            if window is None:
++                continue
++            try:
++                if self.proc is None or self.proc.poll() is not None:
++                    self.proc = subprocess.Popen(
++                        [sys.executable, str(Path(__file__)), "--worker", str(self.folder)],
++                        stdin=subprocess.PIPE)
++                self.proc.stdin.write(window)
++                self.proc.stdin.flush()
++            except OSError as e:
++                log.warning("content detector: %s; retrying in a minute", e)
++                self.proc = None
++                time.sleep(60)
++
++
++_SAMPLE = re.compile(r"^\d{8}-\d{6}\.wav$")
++
++
++def read_log(folder: Path, limit: int = 20000) -> dict:
++    records, marks = [], {}
++    try:
++        lines = (folder / LOG_NAME).read_text().splitlines()[-limit:]
++    except OSError:
++        lines = []
++    for line in lines:
++        try:
++            records.append(json.loads(line))
++        except ValueError:
++            pass
++    try:
++        for line in (folder / MARKS_NAME).read_text().splitlines():
++            m = json.loads(line)
++            marks[m["sample"]] = m["verdict"]
++    except (OSError, ValueError, KeyError):
++        pass
++    have = {f.name for f in folder.glob("*.wav")}
++    for r in records:
++        if r.get("sample") not in have:
++            r.pop("sample", None)
++    return {"records": records, "marks": marks, "saving": not (folder / OFF_NAME).exists(),
++            "bytes": sum(f.stat().st_size for f in folder.glob("*.wav")), "capBytes": MAX_SAMPLE_BYTES}
++
++
++def add_routes(app, folder: Path) -> None:
++    from aiohttp import web
++
++    folder.mkdir(parents=True, exist_ok=True)
++    page = Path(__file__).with_name("content.html")
++
++    async def show(_):
++        return web.FileResponse(page)
++
++    async def data(_):
++        return web.json_response(await asyncio.to_thread(read_log, folder))
++
++    async def sample(request):
++        name = request.match_info["name"]
++        if not _SAMPLE.match(name) or not (folder / name).is_file():
++            raise web.HTTPNotFound()
++        return web.FileResponse(folder / name)
++
++    async def mark(request):
++        body = await request.json()
++        name, verdict = str(body.get("sample", "")), body.get("verdict")
++        if not _SAMPLE.match(name) or verdict not in ("right", "wrong", None):
++            raise web.HTTPBadRequest()
++        with open(folder / MARKS_NAME, "a") as fh:
++            fh.write(json.dumps({"sample": name, "verdict": verdict, "t": round(time.time())}) + "\n")
++        return web.json_response({"ok": True})
++
++    async def saving(request):
++        body = await request.json()
++        off = folder / OFF_NAME
++        if body.get("on"):
++            off.unlink(missing_ok=True)
++        else:
++            off.touch()
++        return web.json_response({"ok": True})
++
++    async def clear(_):
++        for f in folder.glob("*.wav"):
++            f.unlink(missing_ok=True)
++        return web.json_response({"ok": True})
++
++    app.router.add_get("/content", show)
++    app.router.add_get("/content/data", data)
++    app.router.add_get("/content/sample/{name}", sample)
++    app.router.add_post("/content/mark", mark)
++    app.router.add_post("/content/saving", saving)
++    app.router.add_post("/content/clear", clear)
++
++
++if __name__ == "__main__" and len(sys.argv) == 3 and sys.argv[1] == "--worker":
++    worker(Path(sys.argv[2]))
+--- a/content.html
++++ b/content.html
+@@ -0,0 +1,58 @@
++<!doctype html>
++<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
++<title>Content Detector</title>
++<style>
++:root{--bg:#f7f7f5;--card:#fff;--fg:#1d1f21;--mute:#666b70;--line:#dcdcd8;--music:#7a4fd0;--speech:#16836b;--other:#a8abb0;--bad:#b3261e;--good:#16836b}
++@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#17181a;--card:#212326;--fg:#ececea;--mute:#a0a4a9;--line:#3a3d41;--music:#a98bf0;--speech:#4cc3a6;--other:#6d7176;--bad:#f2857c;--good:#4cc3a6}}
++:root[data-theme="dark"]{--bg:#17181a;--card:#212326;--fg:#ececea;--mute:#a0a4a9;--line:#3a3d41;--music:#a98bf0;--speech:#4cc3a6;--other:#6d7176;--bad:#f2857c;--good:#4cc3a6}
++*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.45 system-ui,sans-serif;padding:16px}
++main{max-width:860px;margin:auto}h1{font-size:22px;margin:0 0 4px}.mute{color:var(--mute)}a{color:inherit}
++.card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:14px;margin:14px 0}
++.row{display:flex;gap:12px;flex-wrap:wrap;align-items:center}.stat b{display:block;font-size:20px}.stat{min-width:120px}
++#strip{display:flex;height:34px;border-radius:4px;overflow:hidden;background:var(--line)}#strip i{flex:1 1 0;min-width:0}
++.legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin:0 4px 0 12px}.legend i:first-child{margin-left:0}
++.clip{border-top:1px solid var(--line);padding:12px 0}.clip:first-child{border-top:0}.tag{font-weight:600}.top{font-size:13px;color:var(--mute)}
++audio{width:100%;height:36px;margin:8px 0}button,select{font:inherit;color:inherit;background:transparent;border:1px solid var(--line);border-radius:6px;padding:5px 11px;cursor:pointer}
++button.on{border-color:currentColor;font-weight:600}button.right.on{color:var(--good)}button.wrong.on{color:var(--bad)}.danger{color:var(--bad)}
++</style></head><body><main>
++<h1>Content detector</h1><div class="mute">Log only: this changes no sound. <a href="/">Back to the streamer</a></div>
++<div class="card"><div class="row" id="stats"></div></div>
++<div class="card"><div class="row" style="justify-content:space-between"><b>Timeline</b><select id="range"><option value="3600">Last hour</option><option value="21600">Last 6 hours</option><option value="86400" selected>Last 24 hours</option><option value="604800">Last 7 days</option></select></div>
++<div id="strip" style="margin-top:10px" role="img" aria-label="What was detected over time"></div>
++<div class="row mute" style="justify-content:space-between;font-size:13px"><span id="from"></span><span id="to"></span></div>
++<div class="legend mute" style="font-size:13px;margin-top:6px"><i style="background:var(--music)"></i>Music <i style="background:var(--speech)"></i>Speech <i style="background:var(--other)"></i>Other</div></div>
++<div class="card"><div class="row" style="justify-content:space-between"><b>Saved clips</b><span class="row"><label><input type="checkbox" id="saving"> Save clips</label><select id="filter"><option value="all">All</option><option value="decision changed">Decision changes</option><option value="unmarked">Not marked yet</option><option value="wrong">Marked wrong</option></select><button class="danger" id="clear">Delete all clips</button></span></div>
++<div id="clips" style="margin-top:6px"></div></div>
++</main><script>
++const $=id=>document.getElementById(id);let D=null;
++const css={music:'var(--music)',speech:'var(--speech)',other:'var(--other)'};
++const when=t=>new Date(t*1000).toLocaleString([], {weekday:'short',hour:'2-digit',minute:'2-digit',second:'2-digit'});
++const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
++function stat(k,v){return `<div class="stat"><b>${esc(v)}</b><span class="mute">${esc(k)}</span></div>`}
++function render(){
++  if(!D)return;const r=D.records,last=r[r.length-1];const win=+$('range').value,now=Date.now()/1000,from=now-win;
++  const inr=r.filter(x=>x.t>=from),m=inr.filter(x=>x.label==='music').length;
++  const right=Object.values(D.marks).filter(v=>v==='right').length,wrong=Object.values(D.marks).filter(v=>v==='wrong').length;
++  const cpu=last&&last.up_s?(100*last.cpu_s/last.up_s).toFixed(2)+'%':'-';
++  $('stats').innerHTML=stat('Decision now',last?last.decision:'nothing yet')+stat('Music in this range',inr.length?Math.round(100*m/inr.length)+'%':'-')+stat('Your marks',right+wrong?`${right} right, ${wrong} wrong`:'none')+stat('Worker CPU, one thread',cpu)+stat('Clip storage',`${(D.bytes/1048576).toFixed(0)} of ${(D.capBytes/1048576).toFixed(0)} MB`);
++  $('saving').checked=D.saving;
++  const n=Math.min(240,Math.max(60,Math.floor($('strip').clientWidth/3)));const b=Array.from({length:n},()=>({}));
++  for(const x of inr){const i=Math.min(n-1,Math.floor((x.t-from)/win*n));b[i][x.label]=(b[i][x.label]||0)+1}
++  $('strip').innerHTML=b.map(c=>{const k=Object.keys(c).sort((p,q)=>c[q]-c[p])[0];return `<i style="background:${k?css[k]:'transparent'}"></i>`}).join('');
++  $('from').textContent=when(from);$('to').textContent='now';
++  const f=$('filter').value;let cl=r.filter(x=>x.sample).reverse();
++  if(f==='decision changed')cl=cl.filter(x=>x.why===f);if(f==='unmarked')cl=cl.filter(x=>!D.marks[x.sample]);if(f==='wrong')cl=cl.filter(x=>D.marks[x.sample]==='wrong');
++  const openNow=document.querySelector('audio:not([paused])');
++  $('clips').innerHTML=cl.slice(0,100).map(x=>{const v=D.marks[x.sample];const q=encodeURIComponent(x.sample);return `<div class="clip" data-s="${esc(x.sample)}"><div><span class="tag">${esc(x.label)}</span> <span class="mute">· decision: ${esc(x.decision)} · ${when(x.t)} · ${esc(x.why||'')}</span></div>
++  <div class="top">music ${x.music.toFixed(2)}, speech ${x.speech.toFixed(2)} · ${esc((x.top||[]).join(', '))} · ${x.rms_db} dB</div>
++  <audio controls preload="none" src="/content/sample/${q}"></audio>
++  <div class="row"><button class="right ${v==='right'?'on':''}" data-v="right">Right</button><button class="wrong ${v==='wrong'?'on':''}" data-v="wrong">Wrong</button></div></div>`}).join('')||'<div class="mute" style="padding:12px 0">No clips here yet. They appear once the TV has sound.</div>';
++}
++async function load(){if(document.querySelector('#clips audio')&&[...document.querySelectorAll('#clips audio')].some(a=>!a.paused))return;try{D=await (await fetch('/content/data')).json();render()}catch(e){}}
++const post=(p,b)=>fetch(p,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b||{})});
++$('clips').addEventListener('click',async e=>{const v=e.target.dataset.v;if(!v)return;const s=e.target.closest('.clip').dataset.s;const nv=D.marks[s]===v?null:v;await post('/content/mark',{sample:s,verdict:nv});if(nv)D.marks[s]=nv;else delete D.marks[s];render()});
++$('range').onchange=render;$('filter').onchange=render;
++$('saving').onchange=async()=>{await post('/content/saving',{on:$('saving').checked});load()};
++$('clear').onclick=async()=>{if(confirm('Delete every saved clip? This cannot be undone.')){await post('/content/clear');load()}};
++load();setInterval(load,15000);
++</script></body></html>
+--- a/test_contentdetect.py
++++ b/test_contentdetect.py
+@@ -0,0 +1,76 @@
++"""The content detector's rules. Run: python -m pytest test_contentdetect.py"""
++import json
++import time
++
++from contentdetect import (MARKS_NAME, WINDOW_BYTES, ContentDetector, Decision, SampleStore,
++                           label_of, read_log)
++
++
++def test_labels():
++    assert label_of(0.9, 0.0) == "music"
++    assert label_of(0.9, 0.6) == "speech"
++    assert label_of(0.1, 0.1) == "other"
++
++
++def test_decision_needs_five_of_six_and_leaves_at_one():
++    d = Decision()
++    for _ in range(4):
++        assert d.push("music") == "not music"
++    assert d.push("music") == "music"
++    for _ in range(4):
++        assert d.push("speech") == "music"
++    assert d.push("speech") == "not music"
++
++
++def test_background_music_blip_does_not_switch():
++    d = Decision()
++    for label in ["music", "music", "speech", "music", "music", "speech", "music", "speech"]:
++        assert d.push(label) == "not music"
++
++
++def test_samples_on_a_change_and_rate_limited(tmp_path):
++    s = SampleStore(tmp_path)
++    assert s.wanted(0, "speech", "not music") == "decision changed"
++    assert s.wanted(5, "music", "not music") is None      # under a minute since the last
++    assert s.wanted(70, "speech", "not music") == "label changed"
++    assert s.wanted(75, "music", "music") == "decision changed"
++    assert s.wanted(700, "music", "music") == "periodic"
++
++
++def test_prune_keeps_under_the_cap_deleting_oldest(tmp_path):
++    for i in range(5):
++        (tmp_path / f"2026010{i}-000000.wav").write_bytes(b"x" * 100)
++    SampleStore(tmp_path, cap=250).prune()
++    assert sorted(f.name for f in tmp_path.glob("*.wav")) == ["20260103-000000.wav", "20260104-000000.wav"]
++
++
++def test_feed_is_cheap_and_hands_over_whole_windows(tmp_path):
++    d = ContentDetector(tmp_path)
++    chunk = bytes(range(256)) * 7 + bytes(208)
++    t = time.perf_counter()
++    for _ in range(3000):
++        d.feed(chunk)
++        if d.full:
++            assert len(d.full) == WINDOW_BYTES
++            d.full = None
++    assert (time.perf_counter() - t) / 3000 < 0.0005
++
++
++def test_feed_drops_a_window_when_the_worker_is_behind(tmp_path):
++    d = ContentDetector(tmp_path)
++    d.feed(bytes(WINDOW_BYTES))
++    first = d.full
++    d.feed(bytes(WINDOW_BYTES))
++    assert d.full is first and d.dropped == 1
++
++
++def test_log_hides_deleted_clips_and_latest_mark_wins(tmp_path):
++    (tmp_path / "20260101-000000.wav").write_bytes(b"x")
++    rows = [{"t": 1, "label": "music", "sample": "20260101-000000.wav"},
++            {"t": 2, "label": "music", "sample": "20260102-000000.wav"}]
++    (tmp_path / "content.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows) + "broken\n")
++    (tmp_path / MARKS_NAME).write_text(
++        '{"sample":"20260101-000000.wav","verdict":"right"}\n{"sample":"20260101-000000.wav","verdict":"wrong"}\n')
++    d = read_log(tmp_path)
++    assert d["records"][0]["sample"] == "20260101-000000.wav" and "sample" not in d["records"][1]
++    assert d["marks"]["20260101-000000.wav"] == "wrong"

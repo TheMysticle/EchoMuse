@@ -1,0 +1,925 @@
+--- a/streamer.py
++++ b/streamer.py
+@@ -42,8 +42,8 @@
+ 
+ from aiosendspin.audio.codecs import FlacEncoder
+ 
+-from contentdetect import ContentDetector, add_routes as add_content_routes
+-from tvdsp import DYNAMICS, TvDsp
++from contentdetect import SWITCHES_NAME, ContentDetector, add_routes as add_content_routes
++from tvdsp import DYNAMICS, PRESET_KEYS, TvDsp, clamp_preset
+ 
+ # Everything below replaces private aiosendspin functions, written against
+ # 9.1.1 exactly. Another version may rename or reshape any of them, and a
+@@ -362,6 +362,9 @@
+         self.tv_level_db = 10.0
+         self.tv_room_eq = True
+         self.tv_voice_cut_db = 0.0
++        self.tv_presets = None         # {"general": {...}, "music": {...}}; seeded on load
++        self.tv_active = "general"
++        self.ai_switch = False
+         try:
+             d = json.loads(self.path.read_text())
+             self.source = d.get("source", "")
+@@ -380,6 +383,9 @@
+             self.tv_level_db = float(d.get("tv_level_db", self.tv_level_db))
+             self.tv_room_eq = bool(d.get("tv_room_eq", self.tv_room_eq))
+             self.tv_voice_cut_db = float(d.get("tv_voice_cut_db", self.tv_voice_cut_db))
++            self.tv_presets = d.get("tv_presets", self.tv_presets)
++            self.tv_active = d.get("tv_active", self.tv_active)
++            self.ai_switch = bool(d.get("ai_switch", self.ai_switch))
+         except (OSError, ValueError):
+             pass
+ 
+@@ -393,6 +399,7 @@
+             "tv_dialogue_db": self.tv_dialogue_db, "tv_bass_db": self.tv_bass_db,
+             "tv_dynamics": self.tv_dynamics, "tv_level_db": self.tv_level_db,
+             "tv_room_eq": self.tv_room_eq, "tv_voice_cut_db": self.tv_voice_cut_db,
++            "tv_presets": self.tv_presets, "tv_active": self.tv_active, "ai_switch": self.ai_switch,
+         }, indent=1))
+ 
+ 
+@@ -1103,6 +1110,9 @@
+                          self.steps, self.stepped_us / 1000, step / 1000, off / 1000)
+ 
+ 
++PRESETS = ("general", "music")
++
++
+ class App:
+     def __init__(self, loop: asyncio.AbstractEventLoop) -> None:
+         self.loop = loop
+@@ -1120,7 +1130,10 @@
+         self.running = False
+         self.stream_task: asyncio.Task | None = None
+         self.tv_ms: deque[float] = deque(maxlen=1000)
+-        self.content = ContentDetector(self.settings.path.parent / "content")
++        self._seed_presets()
++        self.detected = None  # "music", "not music", or None while nobody knows
++        self.content = ContentDetector(self.settings.path.parent / "content",
++                                       lambda state: loop.call_soon_threadsafe(self.on_content, state))
+         self.content.start()
+         self._tv_err_logged = -60.0
+         self.reconcile_task: asyncio.Task | None = None
+@@ -1538,12 +1551,19 @@
+                voice_cut_db: float | None = None) -> None:
+         """TV mode. Takes effect on the next chunk; filter state carries over."""
+         st = self.settings
++        if (dialogue_db, bass_db, dynamics, level_db, room_eq, voice_cut_db) == (None,) * 6:
++            # The on/off switch alone: a preset fading in carries on.
++            if on is not None:
++                self.tv.enabled = on
++                st.tv_on = on
++                st.save()
++            return
+         if dynamics is not None and dynamics not in DYNAMICS:
+             raise ValueError(f"dynamics must be one of {', '.join(DYNAMICS)}")
+         self.tv.set(st.tv_dialogue_db if dialogue_db is None else dialogue_db,
+                     st.tv_bass_db if bass_db is None else bass_db,
+                     st.tv_dynamics if dynamics is None else dynamics,
+-                    level_db)
++                    st.tv_level_db if level_db is None else level_db)
+         if on is not None:
+             self.tv.enabled = on
+         st.tv_dialogue_db, st.tv_bass_db, st.tv_dynamics = self.tv.dialogue_db, self.tv.bass_db, self.tv.dynamics
+@@ -1551,12 +1571,81 @@
+         if room_eq is not None:
+             self.tv.room_eq = room_eq
+         st.tv_room_eq = self.tv.room_eq
+-        if voice_cut_db is not None:
+-            self.tv.set_voice_cut(voice_cut_db)
++        self.tv.set_voice_cut(st.tv_voice_cut_db if voice_cut_db is None else voice_cut_db)
+         st.tv_voice_cut_db = self.tv.voice_cut_db
+         st.tv_on = self.tv.enabled
++        st.tv_presets[st.tv_active] = self._live_preset()
+         st.save()
+ 
++    def _live_preset(self) -> dict:
++        st = self.settings
++        return clamp_preset({"dialogueDb": st.tv_dialogue_db, "voiceCutDb": st.tv_voice_cut_db,
++                             "bassDb": st.tv_bass_db, "tvLevelDb": st.tv_level_db,
++                             "dynamics": st.tv_dynamics, "roomEq": st.tv_room_eq})
++
++    def _seed_presets(self) -> None:
++        """Both presets start as the settings in use, so that nothing changes until one is edited."""
++        st = self.settings
++        have = st.tv_presets if isinstance(st.tv_presets, dict) else {}
++        st.tv_presets = {name: clamp_preset(have[name]) if name in have else self._live_preset()
++                         for name in PRESETS}
++        if st.tv_active not in PRESETS:
++            st.tv_active = "general"
++
++    def edit_preset(self, name: str, changes: dict) -> None:
++        """Change a preset. If it is the one playing, heard at once."""
++        st = self.settings
++        if name not in PRESETS:
++            raise ValueError(f"preset must be one of {', '.join(PRESETS)}")
++        known = {k: changes[k] for k in PRESET_KEYS if changes.get(k) is not None}
++        p = clamp_preset({**st.tv_presets[name], **known})
++        st.tv_presets[name] = p
++        if name == st.tv_active:
++            self.set_tv(p["dialogueDb"], p["bassDb"], p["dynamics"], None, p["tvLevelDb"],
++                        p["roomEq"], p["voiceCutDb"])
++        else:
++            st.save()
++
++    def use_preset(self, name: str, why: str) -> None:
++        """Fade to a preset. The settings hold its values from here, so a control
++        moved halfway through the fade starts from where the fade was going."""
++        st = self.settings
++        if name not in PRESETS:
++            raise ValueError(f"preset must be one of {', '.join(PRESETS)}")
++        if name == st.tv_active:
++            return
++        p = st.tv_presets[name]
++        st.tv_active = name
++        st.tv_dialogue_db, st.tv_voice_cut_db, st.tv_bass_db = p["dialogueDb"], p["voiceCutDb"], p["bassDb"]
++        st.tv_level_db, st.tv_dynamics, st.tv_room_eq = p["tvLevelDb"], p["dynamics"], p["roomEq"]
++        self.tv.glide_to(p)
++        log.info("preset: %s (%s)", name, why)
++        # This loop is the stream's, and a write to the array can take a while.
++        line = json.dumps({"t": round(time.time(), 1), "to": name, "why": why}) + "\n"
++        self.loop.run_in_executor(None, self._record_switch, line)
++
++    def _record_switch(self, line: str) -> None:
++        try:
++            self.settings.save()
++            with open(self.settings.path.parent / "content" / SWITCHES_NAME, "a") as fh:
++                fh.write(line)
++        except OSError as e:
++            log.warning("could not record a preset switch: %s", e)
++
++    def _follow_detector(self) -> None:
++        if self.settings.ai_switch and self.detected is not None:
++            self.use_preset("music" if self.detected == "music" else "general", "AI")
++
++    def on_content(self, state: str | None) -> None:
++        """The detector's answer. None, a dead worker, leaves the preset where it is."""
++        self.detected = state
++        self._follow_detector()
++
++    def set_ai(self, on: bool) -> None:
++        self.settings.ai_switch = on
++        self.settings.save()
++        self._follow_detector()
++
+     def set_lead(self, ms: int) -> None:
+         self.settings.lead_ms = max(0, min(10000, ms))
+         self.settings.save()
+@@ -1909,6 +1998,9 @@
+                    "dialogueDb": self.tv.dialogue_db, "bassDb": self.tv.bass_db,
+                    "dynamics": self.tv.dynamics, "dynamicsModes": list(DYNAMICS),
+                    "tvLevelDb": self.tv.tv_level_db, "roomEq": self.tv.room_eq, "voiceCutDb": self.tv.voice_cut_db,
++                   "presets": self.settings.tv_presets, "active": self.settings.tv_active,
++                   "aiSwitch": self.settings.ai_switch, "detected": self.detected,
++                   "detectorAvailable": self.content.available,
+                    "levelDb": round(self.tv.level_db, 1),
+                    "reductionDb": round(self.tv.reduction_db, 1),
+                    "costMaxMs": round(max(self.tv_ms), 2) if self.tv_ms else None},
+@@ -1998,6 +2090,16 @@
+             app.set_channel(key, str(body.get("channel", "")))
+         elif action == "lead":
+             app.set_lead(int(body["ms"]))
++        elif action == "tv" and body.get("aiSwitch") is not None:
++            if body["aiSwitch"] and not app.content.available:
++                raise ValueError("the content detector's model files are missing")
++            app.set_ai(bool(body["aiSwitch"]))
++        elif action == "tv" and body.get("activePreset") is not None:
++            if app.settings.ai_switch:
++                raise ValueError("AI switching is on: turn it off to choose a preset by hand")
++            app.use_preset(str(body["activePreset"]), "by hand")
++        elif action == "tv" and body.get("preset") is not None:
++            app.edit_preset(str(body["preset"]), body)
+         elif action == "tv":
+             app.set_tv(None if body.get("dialogueDb") is None else float(body["dialogueDb"]),
+                        None if body.get("bassDb") is None else float(body["bassDb"]),
+--- a/tvdsp.py
++++ b/tvdsp.py
+@@ -101,6 +101,11 @@
+ # 100-300 Hz against 2-4 kHz than the TV (2026-10-31). Its own control, not part
+ # of the dialogue lift, because a kick and a bass guitar are in the centre too.
+ CUT_HZ, CUT_Q, CUT_MAX_DB = 250.0, 0.9, 6.0
++# A preset change fades over this long, so that a switch made by the detector is
++# not heard as a jump. The gains here are all causal: nothing is held back.
++GLIDE_S = 3.0
++OFF_SLEW_DB_S = 6.0      # the leveller's gain handing over to "off"'s fixed one
++PRESET_KEYS = ("dialogueDb", "voiceCutDb", "bassDb", "tvLevelDb", "dynamics", "roomEq")
+ BASS_HZ = 120.0
+ WEIGHT_HZ = 100.0        # leveller ignores rumble when judging loudness
+ 
+@@ -191,6 +196,17 @@
+     return slope * (over + KNEE_DB / 2) ** 2 / (2 * KNEE_DB)
+ 
+ 
++def clamp_preset(p: dict) -> dict:
++    """A preset's values, each within what TvDsp accepts."""
++    dyn = p.get("dynamics", "off")
++    return {"dialogueDb": max(0.0, min(9.0, float(p.get("dialogueDb", 0)))),
++            "voiceCutDb": max(0.0, min(CUT_MAX_DB, float(p.get("voiceCutDb", 0)))),
++            "bassDb": max(-12.0, min(0.0, float(p.get("bassDb", 0)))),
++            "tvLevelDb": max(0.0, min(LEVEL_MAX_DB, float(p.get("tvLevelDb", 0)))),
++            "dynamics": dyn if dyn in DYNAMICS else "off",
++            "roomEq": bool(p.get("roomEq", False))}
++
++
+ class TvDsp:
+     """Stateful processor for 48 kHz stereo s16le chunks. Not thread-safe:
+     call process() from the one stream loop."""
+@@ -198,6 +214,10 @@
+     def __init__(self, dialogue_db: float = 0.0, bass_db: float = 0.0,
+                  dynamics: str = "off", enabled: bool = True,
+                  level_db: float = 0.0, room_eq: bool = False, voice_cut_db: float = 0.0) -> None:
++        self._glide = None        # {attr: (from, to)}, while a preset fades in
++        self._glide_t = self._glide_n = 0
++        self._off_db = None       # "off"'s gain on its way from the leveller's
++        self._eq_fade_s = FADE_S
+         self._bp = _bandpass(VOICE_HZ, VOICE_Q)
+         self._cut = _bandpass(CUT_HZ, CUT_Q)
+         self.set_voice_cut(voice_cut_db)
+@@ -219,12 +239,40 @@
+ 
+     def set(self, dialogue_db: float, bass_db: float, dynamics: str,
+             level_db: float | None = None) -> None:
++        self._glide, self._off_db, self._eq_fade_s = None, None, FADE_S  # a hand on a control wins
+         if level_db is not None:
+             self.tv_level_db = max(0.0, min(LEVEL_MAX_DB, float(level_db)))
+         self.dialogue_db = max(0.0, min(9.0, float(dialogue_db)))
+         self.bass_db = max(-12.0, min(0.0, float(bass_db)))
+         self.dynamics = dynamics if dynamics in DYNAMICS else "off"
+ 
++    def glide_to(self, preset: dict, seconds: float = GLIDE_S) -> None:
++        """Fade to a preset. Called between chunks, on the stream's own loop."""
++        p = clamp_preset(preset)
++        self._glide = {"dialogue_db": (self.dialogue_db, p["dialogueDb"]),
++                       "voice_cut_db": (self.voice_cut_db, p["voiceCutDb"]),
++                       "bass_db": (self.bass_db, p["bassDb"]),
++                       "tv_level_db": (self.tv_level_db, p["tvLevelDb"])}
++        self._glide_t, self._glide_n = 0, max(1, int(seconds * RATE))
++        if p["dynamics"] != self.dynamics:
++            # The two ways the wideband gain is made have to meet where the other left it.
++            if p["dynamics"] == "off":
++                self._off_db = self._lev_db
++            elif self.dynamics == "off":
++                self._lev_db = self.tv_level_db if self._off_db is None else self._off_db
++                self._off_db = None
++            self.dynamics = p["dynamics"]
++        self.room_eq = p["roomEq"]
++        self._eq_fade_s = max(FADE_S, seconds)
++
++    def _tick(self, n: int) -> None:
++        self._glide_t += n
++        k = min(1.0, self._glide_t / self._glide_n)
++        for attr, (a, b) in self._glide.items():
++            setattr(self, attr, a + (b - a) * k)
++        if k >= 1.0:
++            self._glide, self._eq_fade_s = None, FADE_S
++
+     def set_voice_cut(self, db: float) -> None:
+         self.voice_cut_db = max(0.0, min(CUT_MAX_DB, float(db)))
+ 
+@@ -256,6 +304,8 @@
+         self.level_db = 0.0       # for the page: the leveller's gain
+ 
+     def process(self, pcm: bytes) -> bytes:
++        if self._glide:
++            self._tick(len(pcm) // 4)
+         if not self.active:
+             if self._g_wide != 1.0 or self._g_bass != 1.0 or self._lev_db:
+                 self.reset()
+@@ -283,7 +333,7 @@
+         eq, self._zeq = sosfilt(self._sos, x, axis=0, zi=self._zeq)
+         target = 1.0 if self.room_eq else 0.0
+         if self._eq_mix != target or target:
+-            step = n / (FADE_S * RATE)
++            step = n / (self._eq_fade_s * RATE)
+             end = self._eq_mix + max(-step, min(step, target - self._eq_mix))
+             m = np.linspace(self._eq_mix, end, n + 1)[1:, None]
+             self._eq_mix = end
+@@ -326,7 +376,14 @@
+             e = min(s + BLOCK, n)
+             if not dyn:
+                 g_bass_end[i] = trim
+-                g_wide_end[i] = static
++                if self._off_db is not None:
++                    step = OFF_SLEW_DB_S * bdt
++                    self._off_db += max(-step, min(step, up - self._off_db))
++                    g_wide_end[i] = _gain(self._off_db)
++                    if self._off_db == up:
++                        self._off_db = None
++                else:
++                    g_wide_end[i] = static
+                 continue
+             # Bass compressor: on the (trimmed) bass of the centre.
+             bpeak = float(np.max(np.abs(lp[s:e].mean(axis=1)))) * trim
+--- a/contentdetect.py
++++ b/contentdetect.py
+@@ -1,21 +1,27 @@
+-"""What is playing: music, or not. LOG ONLY: it changes no setting.
++"""What is playing: music, or not.
+ 
+ The stream loop only copies each chunk into a buffer (feed). A thread hands
+-each full window down a pipe to a separate low-priority process, which runs
+-YAMNet. It is a process and not a thread so that the model cannot hold the GIL
+-against the stream: at a 50 ms lead, a chunk has little margin to lose. If the
+-worker is busy or dead a window is dropped, and nothing in the audio path ever
+-waits on it.
+-
+-Tested 2026-10-31 on 14 labelled clips: one 0.975 s patch per 5 s window called
+-87 of 88 music windows music, and needing 5 of the last 6 to enter music
+-removed every false switch (background music in news, documentaries, trailers),
+-entering after about 25 s. 6.5 ms of one NAS thread per run.
+-
+-Clips are the raw input, before TV mode, as mono 24 kHz WAV: one when the
+-decision changes, one when a window's label changes (at most one a minute), and
+-one every 10 minutes, oldest deleted past MAX_SAMPLE_BYTES. Silence is neither
+-measured nor saved.
++each full window down a pipe to a separate low-priority process, which runs the
++models and answers with its decision. It is a process and not a thread so that
++a model cannot hold the GIL against the stream: at a 50 ms lead, a chunk has
++little margin to lose. If the worker is busy or dead a window is dropped and the
++preset in use stays, and nothing in the audio path ever waits on it.
++
++The decision comes from EfficientAT mn10 over the whole 5 s window. On 14
++labelled videos (2026-10-31), with the rule below, it was the only one tested
++with no false music on films, games or sport: YAMNet on one patch gave 10 of 96
++film windows, and 100 of 100 on music against mn10's 98. Its margin on real music
++through the TV is thin (0.51 and 0.57 on two clips), so YAMNet's score is logged
++beside it as a reference and has no say.
++
++ONE THREAD IS LOAD-BEARING. Without OPENBLAS_NUM_THREADS=1 the mel's matrix
++product spread over every core: 478 ms of CPU a window against 33 (0.76% of a
++thread), and a flat-out run of that coincided with the stream's lead dropping.
++
++Clips are the raw input, before TV mode, as mono 32 kHz WAV, what mn10 hears:
++one when the decision changes, one when a window's label changes (at most one a
++minute), and one every 10 minutes, oldest deleted past MAX_SAMPLE_BYTES. Silence
++is neither measured nor saved.
+ """
+ from __future__ import annotations
+ 
+@@ -45,7 +51,14 @@
+ MAX_SAMPLE_BYTES = 300 * 1024 * 1024
+ MAX_LOG_BYTES = 20 * 1024 * 1024
+ LOG_NAME, MARKS_NAME, OFF_NAME = "content.jsonl", "marks.jsonl", "samples-off"
+-MODEL = Path(__file__).with_name("yamnet.tflite")
++HERE = Path(__file__).parent
++YAMNET, MN10 = HERE / "yamnet.tflite", HERE / "mn10.onnx"
++MEL_BASIS, LABELS = HERE / "mel_basis.npy", HERE / "audioset_labels.txt"
++MODEL_FILES = (YAMNET, MN10, MEL_BASIS, LABELS)
++ONE_THREAD = {k: "1" for k in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS")}
++MN10_MUSIC, MN10_SPEECH = 137, 0
++N_FFT, HOP, WIN = 1024, 320, 800
++SWITCHES_NAME = "switches.jsonl"
+ 
+ 
+ def label_of(music: float, speech: float) -> str:
+@@ -110,21 +123,47 @@
+             f.unlink(missing_ok=True)
+ 
+ 
++def log_mel(x, basis):
++    """EfficientAT's input without torch: 5 s at 32 kHz to [1, 1, 128, 500]."""
++    import numpy as np
++
++    x = np.asarray(x, dtype=np.float32)
++    x = x[1:] - 0.97 * x[:-1]
++    x = np.pad(x, N_FFT // 2, mode="reflect")
++    pad = (N_FFT - WIN) // 2
++    w = np.pad(np.hanning(WIN).astype(np.float32), (pad, N_FFT - WIN - pad))
++    n = 1 + (len(x) - N_FFT) // HOP
++    idx = np.arange(N_FFT)[None] + HOP * np.arange(n)[:, None]
++    s = np.fft.rfft(x[idx] * w, axis=1)
++    p = (s.real ** 2 + s.imag ** 2).astype(np.float32)
++    return ((np.log(p @ basis.T + 1e-5).T + 4.5) / 5.0)[None, None].astype(np.float32)
++
++
+ def worker(folder: Path) -> None:
+-    """The child process: read windows from stdin, score them, log, keep clips."""
++    """The child process: read windows from stdin, score them, log, keep clips.
++    A line "D <decision>" on stdout is the answer to the stream's side."""
++    os.environ.update(ONE_THREAD)  # before numpy loads its BLAS
+     import wave
+ 
+     import numpy as np
++    import onnxruntime as ort
+     from ai_edge_litert.interpreter import Interpreter
+     from scipy.signal import resample_poly
+ 
+     os.nice(15)
++    so = ort.SessionOptions()
++    so.intra_op_num_threads = so.inter_op_num_threads = 1
++    so.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
++    so.enable_cpu_mem_arena = False
++    mn10 = ort.InferenceSession(str(MN10), so, providers=["CPUExecutionProvider"])
++    basis = np.load(MEL_BASIS)
++    tags = LABELS.read_text().splitlines()
+     folder.mkdir(parents=True, exist_ok=True)
+-    it = Interpreter(str(MODEL), num_threads=1)
++    it = Interpreter(str(YAMNET), num_threads=1)
+     it.allocate_tensors()
+     inp, out = it.get_input_details()[0], it.get_output_details()[0]
+     import zipfile
+-    names = zipfile.ZipFile(MODEL).read("yamnet_label_list.txt").decode().split("\n")
++    names = zipfile.ZipFile(YAMNET).read("yamnet_label_list.txt").decode().split("\n")
+     names = [n.strip() for n in names if n.strip()]
+     i_music, i_speech = names.index("Music"), names.index("Speech")
+     decision, store = Decision(), SampleStore(folder)
+@@ -140,33 +179,37 @@
+         now = time.monotonic()
+         if db < SILENT_DB:
+             quiet_since = quiet_since or now
+-            if now - quiet_since >= SILENCE_RESET_S:
++            if now - quiet_since >= SILENCE_RESET_S and decision.state == "music":
+                 decision.reset()
++                print("D not music", flush=True)
+             continue
+         quiet_since = None
+         patch = resample_poly(x[:46800], 1, 3).astype(np.float32)[:15600]
+         it.set_tensor(inp["index"], patch)
+         it.invoke()
+-        scores = it.get_tensor(out["index"]).reshape(-1)
+-        music, speech = float(scores[i_music]), float(scores[i_speech])
++        yam = it.get_tensor(out["index"]).reshape(-1)
++        x32 = resample_poly(x, 2, 3).astype(np.float32)[:160000]
++        scores = mn10.run(None, {"mel": log_mel(x32, basis)})[0].reshape(-1)
++        music, speech = float(scores[MN10_MUSIC]), float(scores[MN10_SPEECH])
+         label = label_of(music, speech)
+         state = decision.push(label)
++        print("D " + state, flush=True)
+         t = time.time()
+-        rec = {"t": round(t, 1), "label": label, "decision": state, "music": round(music, 3),
+-               "speech": round(speech, 3), "rms_db": round(db, 1),
+-               "top": [names[i] for i in np.argsort(scores)[-3:][::-1]],
++        rec = {"t": round(t, 1), "model": "mn10", "label": label, "decision": state,
++               "music": round(music, 3), "speech": round(speech, 3), "rms_db": round(db, 1),
++               "yam_music": round(float(yam[i_music]), 3), "yam_speech": round(float(yam[i_speech]), 3),
++               "top": [tags[i] for i in np.argsort(scores)[-3:][::-1]],
+                "cpu_s": round(time.process_time() - cpu_start, 2), "up_s": round(now - started)}
+         why = None
+         if not (folder / OFF_NAME).exists():
+             why = store.wanted(now, label, state)
+         if why:
+             name = time.strftime("%Y%m%d-%H%M%S", time.localtime(t)) + ".wav"
+-            mono = resample_poly(x, 1, 2)
+             with wave.open(str(folder / name), "wb") as w:
+                 w.setnchannels(1)
+                 w.setsampwidth(2)
+-                w.setframerate(RATE // 2)
+-                w.writeframes(np.clip(mono * 32768, -32768, 32767).astype("<i2").tobytes())
++                w.setframerate(32000)
++                w.writeframes(np.clip(x32 * 32768, -32768, 32767).astype("<i2").tobytes())
+             rec["sample"], rec["why"] = name, why
+             store.prune()
+         with open(logfile, "a") as fh:
+@@ -181,21 +224,22 @@
+ class ContentDetector:
+     """The stream's side: a copy per chunk and a pipe. Never raises into the stream."""
+ 
+-    def __init__(self, folder: Path) -> None:
++    def __init__(self, folder: Path, on_decision=None) -> None:
+         self.folder = folder
++        self.on_decision = on_decision  # called from a reader thread
+         self.buf = bytearray(WINDOW_BYTES)
+         self.pos = 0
+         self.full: bytes | None = None
+         self.wake = threading.Event()
+         self.proc: subprocess.Popen | None = None
+         self.dropped = 0
+-        self.available = MODEL.exists()
++        self.available = all(f.exists() for f in MODEL_FILES)
+ 
+     def start(self) -> None:
+         if self.available:
+             threading.Thread(target=self._pump, daemon=True, name="contentdetect").start()
+         else:
+-            log.warning("content detector off: %s is missing", MODEL)
++            log.warning("content detector off: a model file is missing")
+ 
+     def feed(self, pcm: bytes) -> None:
+         n = len(pcm)
+@@ -224,7 +268,10 @@
+                 if self.proc is None or self.proc.poll() is not None:
+                     self.proc = subprocess.Popen(
+                         [sys.executable, str(Path(__file__)), "--worker", str(self.folder)],
+-                        stdin=subprocess.PIPE)
++                        stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=False,
++                        env={**os.environ, **ONE_THREAD})
++                    threading.Thread(target=self._answers, args=(self.proc.stdout,), daemon=True,
++                                     name="contentanswers").start()
+                 self.proc.stdin.write(window)
+                 self.proc.stdin.flush()
+             except OSError as e:
+@@ -232,6 +279,13 @@
+                 self.proc = None
+                 time.sleep(60)
+ 
++    def _answers(self, pipe) -> None:
++        for line in pipe:
++            if line.startswith(b"D ") and self.on_decision:
++                self.on_decision(line[2:].decode().strip())
++        if self.on_decision:
++            self.on_decision(None)  # the worker has gone: nobody knows
++
+ 
+ _SAMPLE = re.compile(r"^\d{8}-\d{6}\.wav$")
+ 
+@@ -253,11 +307,17 @@
+             marks[m["sample"]] = m["verdict"]
+     except (OSError, ValueError, KeyError):
+         pass
++    switches = []
++    try:
++        for line in (folder / SWITCHES_NAME).read_text().splitlines()[-200:]:
++            switches.append(json.loads(line))
++    except (OSError, ValueError):
++        pass
+     have = {f.name for f in folder.glob("*.wav")}
+     for r in records:
+         if r.get("sample") not in have:
+             r.pop("sample", None)
+-    return {"records": records, "marks": marks, "saving": not (folder / OFF_NAME).exists(),
++    return {"records": records, "marks": marks, "switches": switches, "saving": not (folder / OFF_NAME).exists(),
+             "bytes": sum(f.stat().st_size for f in folder.glob("*.wav")), "capBytes": MAX_SAMPLE_BYTES}
+ 
+ 
+--- a/content.html
++++ b/content.html
+@@ -9,18 +9,20 @@
+ main{max-width:860px;margin:auto}h1{font-size:22px;margin:0 0 4px}.mute{color:var(--mute)}a{color:inherit}
+ .card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:14px;margin:14px 0}
+ .row{display:flex;gap:12px;flex-wrap:wrap;align-items:center}.stat b{display:block;font-size:20px}.stat{min-width:120px}
+-#strip{display:flex;height:34px;border-radius:4px;overflow:hidden;background:var(--line)}#strip i{flex:1 1 0;min-width:0}
++#strip,#lstrip{display:flex;height:30px;border-radius:4px;overflow:hidden;background:var(--line)}#lstrip{height:12px}#strip i,#lstrip i{flex:1 1 0;min-width:0}
+ .legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin:0 4px 0 12px}.legend i:first-child{margin-left:0}
+ .clip{border-top:1px solid var(--line);padding:12px 0}.clip:first-child{border-top:0}.tag{font-weight:600}.top{font-size:13px;color:var(--mute)}
+ audio{width:100%;height:36px;margin:8px 0}button,select{font:inherit;color:inherit;background:transparent;border:1px solid var(--line);border-radius:6px;padding:5px 11px;cursor:pointer}
+ button.on{border-color:currentColor;font-weight:600}button.right.on{color:var(--good)}button.wrong.on{color:var(--bad)}.danger{color:var(--bad)}
+ </style></head><body><main>
+-<h1>Content detector</h1><div class="mute">Log only: this changes no sound. <a href="/">Back to the streamer</a></div>
++<h1>Content detector</h1><div class="mute">The detector's decision chooses the preset only while AI switching is on. <a href="/">Back to the streamer</a></div>
+ <div class="card"><div class="row" id="stats"></div></div>
+ <div class="card"><div class="row" style="justify-content:space-between"><b>Timeline</b><select id="range"><option value="3600">Last hour</option><option value="21600">Last 6 hours</option><option value="86400" selected>Last 24 hours</option><option value="604800">Last 7 days</option></select></div>
+-<div id="strip" style="margin-top:10px" role="img" aria-label="What was detected over time"></div>
++<div class="mute" style="font-size:13px;margin-top:10px">Decision</div><div id="strip" role="img" aria-label="The decision over time"></div>
++<div class="mute" style="font-size:13px;margin-top:6px">Label of each window</div><div id="lstrip" role="img" aria-label="Window labels over time"></div>
+ <div class="row mute" style="justify-content:space-between;font-size:13px"><span id="from"></span><span id="to"></span></div>
+-<div class="legend mute" style="font-size:13px;margin-top:6px"><i style="background:var(--music)"></i>Music <i style="background:var(--speech)"></i>Speech <i style="background:var(--other)"></i>Other</div></div>
++<div class="legend mute" style="font-size:13px;margin-top:6px"><i style="background:var(--music)"></i>Music <i style="background:var(--speech)"></i>Speech, or decision not music <i style="background:var(--other)"></i>Other</div></div>
++<div class="card"><b>Preset switches</b><div id="switches" class="mute" style="margin-top:6px"></div></div>
+ <div class="card"><div class="row" style="justify-content:space-between"><b>Saved clips</b><span class="row"><label><input type="checkbox" id="saving"> Save clips</label><select id="filter"><option value="all">All</option><option value="decision changed">Decision changes</option><option value="unmarked">Not marked yet</option><option value="wrong">Marked wrong</option></select><button class="danger" id="clear">Delete all clips</button></span></div>
+ <div id="clips" style="margin-top:6px"></div></div>
+ </main><script>
+@@ -31,22 +33,27 @@
+ function stat(k,v){return `<div class="stat"><b>${esc(v)}</b><span class="mute">${esc(k)}</span></div>`}
+ function render(){
+   if(!D)return;const r=D.records,last=r[r.length-1];const win=+$('range').value,now=Date.now()/1000,from=now-win;
+-  const inr=r.filter(x=>x.t>=from),m=inr.filter(x=>x.label==='music').length;
++  const inr=r.filter(x=>x.t>=from),m=inr.filter(x=>x.decision==='music').length;
+   const right=Object.values(D.marks).filter(v=>v==='right').length,wrong=Object.values(D.marks).filter(v=>v==='wrong').length;
+   const cpu=last&&last.up_s?(100*last.cpu_s/last.up_s).toFixed(2)+'%':'-';
+-  $('stats').innerHTML=stat('Decision now',last?last.decision:'nothing yet')+stat('Music in this range',inr.length?Math.round(100*m/inr.length)+'%':'-')+stat('Your marks',right+wrong?`${right} right, ${wrong} wrong`:'none')+stat('Worker CPU, one thread',cpu)+stat('Clip storage',`${(D.bytes/1048576).toFixed(0)} of ${(D.capBytes/1048576).toFixed(0)} MB`);
++  $('stats').innerHTML=stat('Decision now',last?last.decision:'nothing yet')+stat('Decision was music',inr.length?Math.round(100*m/inr.length)+'%':'-')+stat('Your marks',right+wrong?`${right} right, ${wrong} wrong`:'none')+stat('Worker CPU, one thread',cpu)+stat('Clip storage',`${(D.bytes/1048576).toFixed(0)} of ${(D.capBytes/1048576).toFixed(0)} MB`);
+   $('saving').checked=D.saving;
+-  const n=Math.min(240,Math.max(60,Math.floor($('strip').clientWidth/3)));const b=Array.from({length:n},()=>({}));
+-  for(const x of inr){const i=Math.min(n-1,Math.floor((x.t-from)/win*n));b[i][x.label]=(b[i][x.label]||0)+1}
+-  $('strip').innerHTML=b.map(c=>{const k=Object.keys(c).sort((p,q)=>c[q]-c[p])[0];return `<i style="background:${k?css[k]:'transparent'}"></i>`}).join('');
++  const n=Math.min(240,Math.max(60,Math.floor($('strip').clientWidth/3)));
++  const paint=(el,key,cols)=>{const b=Array.from({length:n},()=>({}));
++    for(const x of inr){const i=Math.min(n-1,Math.floor((x.t-from)/win*n));b[i][key(x)]=(b[i][key(x)]||0)+1}
++    el.innerHTML=b.map(c=>{const k=Object.keys(c).sort((p,q)=>c[q]-c[p])[0];return `<i style="background:${k?cols[k]:'transparent'}"></i>`}).join('')};
++  paint($('strip'),x=>x.decision,{music:'var(--music)','not music':'var(--speech)'});
++  paint($('lstrip'),x=>x.label,css);
++  const sw=(D.switches||[]).slice().reverse().slice(0,20);
++  $('switches').innerHTML=sw.map(x=>`<div>${when(x.t)}: to ${esc(x.to)} (${esc(x.why)})</div>`).join('')||'None yet.';
+   $('from').textContent=when(from);$('to').textContent='now';
+   const f=$('filter').value;let cl=r.filter(x=>x.sample).reverse();
+   if(f==='decision changed')cl=cl.filter(x=>x.why===f);if(f==='unmarked')cl=cl.filter(x=>!D.marks[x.sample]);if(f==='wrong')cl=cl.filter(x=>D.marks[x.sample]==='wrong');
+   const openNow=document.querySelector('audio:not([paused])');
+-  $('clips').innerHTML=cl.slice(0,100).map(x=>{const v=D.marks[x.sample];const q=encodeURIComponent(x.sample);return `<div class="clip" data-s="${esc(x.sample)}"><div><span class="tag">${esc(x.label)}</span> <span class="mute">· decision: ${esc(x.decision)} · ${when(x.t)} · ${esc(x.why||'')}</span></div>
+-  <div class="top">music ${x.music.toFixed(2)}, speech ${x.speech.toFixed(2)} · ${esc((x.top||[]).join(', '))} · ${x.rms_db} dB</div>
++  $('clips').innerHTML=cl.slice(0,100).map(x=>{const v=D.marks[x.sample];const q=encodeURIComponent(x.sample);return `<div class="clip" data-s="${esc(x.sample)}"><div><span class="tag">Decision: ${esc(x.decision)}</span> <span class="mute">· label: ${esc(x.label)} · ${esc(x.model||'yamnet')} · ${when(x.t)} · ${esc(x.why||'')}</span></div>
++  <div class="top">music ${x.music.toFixed(2)}, speech ${x.speech.toFixed(2)}${x.yam_music==null?'':` (YAMNet ${x.yam_music.toFixed(2)}, ${x.yam_speech.toFixed(2)})`} · ${esc((x.top||[]).join(', '))} · ${x.rms_db} dB</div>
+   <audio controls preload="none" src="/content/sample/${q}"></audio>
+-  <div class="row"><button class="right ${v==='right'?'on':''}" data-v="right">Right</button><button class="wrong ${v==='wrong'?'on':''}" data-v="wrong">Wrong</button></div></div>`}).join('')||'<div class="mute" style="padding:12px 0">No clips here yet. They appear once the TV has sound.</div>';
++  <div class="row"><button class="right ${v==='right'?'on':''}" data-v="right">Decision right</button><button class="wrong ${v==='wrong'?'on':''}" data-v="wrong">Decision wrong</button></div></div>`}).join('')||'<div class="mute" style="padding:12px 0">No clips here yet. They appear once the TV has sound.</div>';
+ }
+ async function load(){if(document.querySelector('#clips audio')&&[...document.querySelectorAll('#clips audio')].some(a=>!a.paused))return;try{D=await (await fetch('/content/data')).json();render()}catch(e){}}
+ const post=(p,b)=>fetch(p,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b||{})});
+--- a/index.html
++++ b/index.html
+@@ -53,6 +53,11 @@
+   .latency .u { font-size: 15px; color: var(--muted); margin-left: 4px; }
+   .latency .cap { font-size: 12px; color: var(--muted); margin-top: 2px; }
+   .hint { font-size: 12.5px; color: var(--muted); }
++  .presetbox { border: 1px solid var(--line); border-radius: 10px; padding: 10px; margin: 8px 0; }
++  .tabs { display: flex; gap: 6px; margin: 8px 0 6px; }
++  .tabs button { flex: 1; min-height: 34px; background: transparent; color: var(--ink); border: 1px solid var(--line); border-radius: 8px; cursor: pointer; font: inherit; }
++  .tabs button.editing { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); font-weight: 600; }
++  .tabs button.playing::after { content: " ▶"; color: var(--good); }
+   .err { color: var(--bad); font-size: 13px; }
+   .player { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; }
+   .player + .player { margin-top: 10px; }
+@@ -121,6 +126,11 @@
+       </div>
+       <div>
+         <div><label class="switch"><input type="checkbox" id="tvOn"> <b>TV mode</b></label> <a href="/content" class="hint">Content detector</a> <span class="hint" id="tvStat"></span></div>
++        <div class="presetbox">
++          <label class="switch"><input type="checkbox" id="aiOn"> <b>AI switching</b></label> <span class="hint" id="aiStat"></span>
++          <div class="tabs" role="group" aria-label="Preset to edit"><button type="button" id="pGeneral">General</button><button type="button" id="pMusic">Music</button></div>
++          <div class="hint" id="pNote"></div>
++        </div>
+         <label class="switch"><input type="checkbox" id="tvRoom"> Room tuning</label><br>
+         <label>TV level <input type="range" id="tvLvl" min="0" max="24" step="1"> <span id="tvLvlV"></span></label><br>
+         <label>Dialogue lift <input type="range" id="tvDlg" min="0" max="9" step="1"> <span id="tvDlgV"></span></label><br>
+@@ -177,6 +187,7 @@
+ const rows = new Map();
+ let snap = null, lastSources = '', touched = 0;
+ 
++let editing = null;  // the preset the controls below are showing
+ async function post(action, body = {}) {
+   try {
+     const r = await fetch('/api/' + action, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+@@ -242,16 +253,31 @@
+   if (document.activeElement !== $('autostop')) $('autostop').value = String(s.autoStopMin);
+   if (s.tv) {
+     $('tvOn').checked = !!s.tv.on;
+-    $('tvRoom').checked = !!s.tv.roomEq;
+-    if (document.activeElement !== $('tvLvl')) $('tvLvl').value = String(s.tv.tvLevelDb);
+-    $('tvLvlV').textContent = '+' + s.tv.tvLevelDb + ' dB';
+-    if (document.activeElement !== $('tvDlg')) $('tvDlg').value = String(s.tv.dialogueDb);
+-    if (document.activeElement !== $('tvBass')) $('tvBass').value = String(s.tv.bassDb);
+-    if (document.activeElement !== $('tvDyn')) $('tvDyn').value = s.tv.dynamics;
+-    $('tvDlgV').textContent = '+' + s.tv.dialogueDb + ' dB';
+-    if (document.activeElement !== $('tvCut')) $('tvCut').value = String(s.tv.voiceCutDb);
+-    $('tvCutV').textContent = s.tv.voiceCutDb ? '-' + s.tv.voiceCutDb + ' dB' : 'off';
+-    $('tvBassV').textContent = s.tv.bassDb + ' dB';
++    if (!editing) editing = s.tv.active;
++    const p = s.tv.presets[editing];
++    const fix = v => Math.round(v * 10) / 10;
++    $('aiOn').checked = !!s.tv.aiSwitch;
++    $('aiOn').disabled = !s.tv.detectorAvailable;
++    $('aiStat').textContent = !s.tv.detectorAvailable ? 'unavailable: the detector\'s model files are missing'
++      : 'hearing ' + (s.tv.detected || 'nothing yet');
++    for (const [id, name] of [['pGeneral', 'general'], ['pMusic', 'music']]) {
++      $(id).classList.toggle('editing', editing === name);
++      $(id).classList.toggle('playing', s.tv.active === name);
++      $(id).setAttribute('aria-pressed', String(editing === name));
++    }
++    $('pNote').textContent = (editing === s.tv.active ? 'Editing the preset playing now: changes are heard at once.'
++      : 'Editing a preset that is not playing: changes are heard when it next plays.')
++      + (s.tv.aiSwitch ? ' The detector chooses which one plays, fading over 3 s.' : ' Click a preset to play it.');
++    $('tvRoom').checked = !!p.roomEq;
++    if (document.activeElement !== $('tvLvl')) $('tvLvl').value = String(p.tvLevelDb);
++    $('tvLvlV').textContent = '+' + fix(p.tvLevelDb) + ' dB';
++    if (document.activeElement !== $('tvDlg')) $('tvDlg').value = String(p.dialogueDb);
++    if (document.activeElement !== $('tvBass')) $('tvBass').value = String(p.bassDb);
++    if (document.activeElement !== $('tvDyn')) $('tvDyn').value = p.dynamics;
++    $('tvDlgV').textContent = '+' + fix(p.dialogueDb) + ' dB';
++    if (document.activeElement !== $('tvCut')) $('tvCut').value = String(p.voiceCutDb);
++    $('tvCutV').textContent = p.voiceCutDb ? '-' + fix(p.voiceCutDb) + ' dB' : 'off';
++    $('tvBassV').textContent = fix(p.bassDb) + ' dB';
+     $('tvStat').textContent = !s.tv.on ? 'off: the Echoes get the TV sound untouched' : s.tv.dynamics === 'off' ? '' :
+       'leveller ' + (s.tv.levelDb >= 0 ? '+' : '') + s.tv.levelDb + ' dB, peaks cut ' + s.tv.reductionDb + ' dB' +
+       (s.tv.costMaxMs == null ? '' : ', worst ' + s.tv.costMaxMs + ' ms to process a chunk');
+@@ -347,12 +373,18 @@
+ $('autostop').onchange = () => post('autostop', {min: +$('autostop').value || 0});
+ $('volsync').onchange =() => post('volumesync', {on: $('volsync').checked});
+ $('tvOn').onchange = () => post('tv', {on: $('tvOn').checked});
+-$('tvRoom').onchange = () => post('tv', {roomEq: $('tvRoom').checked});
+-$('tvLvl').onchange = () => post('tv', {tvLevelDb: +$('tvLvl').value});
+-$('tvDlg').onchange =() => post('tv', {dialogueDb: +$('tvDlg').value});
+-$('tvCut').onchange =() => post('tv', {voiceCutDb: +$('tvCut').value});
+-$('tvBass').onchange = () => post('tv', {bassDb: +$('tvBass').value});
+-$('tvDyn').onchange = () => post('tv', {dynamics: $('tvDyn').value});
++const edit = (changes) => post('tv', {preset: editing, ...changes});
++$('aiOn').onchange = () => post('tv', {aiSwitch: $('aiOn').checked});
++for (const [id, name] of [['pGeneral', 'general'], ['pMusic', 'music']]) $(id).onclick = () => {
++  editing = name;
++  if (snap && snap.tv && !snap.tv.aiSwitch) post('tv', {activePreset: name});
++};
++$('tvRoom').onchange = () => edit({roomEq: $('tvRoom').checked});
++$('tvLvl').onchange = () => edit({tvLevelDb: +$('tvLvl').value});
++$('tvDlg').onchange =() => edit({dialogueDb: +$('tvDlg').value});
++$('tvCut').onchange =() => edit({voiceCutDb: +$('tvCut').value});
++$('tvBass').onchange = () => edit({bassDb: +$('tvBass').value});
++$('tvDyn').onchange = () => edit({dynamics: $('tvDyn').value});
+ $('refresh').onclick = () => post('refresh');
+ $('toggle').onclick = () => snap && snap.running ? post('stop') : post('start', {source: $('source').value});
+ $('addForm').onsubmit = async (e) => {
+--- a/Dockerfile
++++ b/Dockerfile
+@@ -14,7 +14,7 @@
+ WORKDIR /app
+ COPY requirements.txt constraints.txt ./
+ RUN pip install --no-cache-dir -r requirements.txt -c constraints.txt
+-COPY streamer.py tvdsp.py contentdetect.py content.html index.html yamnet.tflite ./
++COPY streamer.py tvdsp.py contentdetect.py content.html index.html yamnet.tflite mn10.onnx mel_basis.npy audioset_labels.txt LICENSE-mn10.txt ./
+ COPY docker/entrypoint.sh ./
+ 
+ # The defaults are the ICUSBAUDIO7D's optical input. EM_SOURCE only applies
+--- a/requirements.txt
++++ b/requirements.txt
+@@ -8,3 +8,4 @@
+ av==19.0.2
+ scipy==1.18.1
+ ai-edge-litert==2.3.0
++onnxruntime==1.31.1
+--- a/constraints.txt
++++ b/constraints.txt
+@@ -28,3 +28,4 @@
+ ml_dtypes==0.6.0
+ protobuf==7.36.2
+ tqdm==4.70.1
++onnxruntime==1.31.1
+--- a/pack.sh
++++ b/pack.sh
+@@ -6,7 +6,7 @@
+ set -eu
+ cd "$(dirname "$0")"
+ out=${OUT:-$PWD/sendspin-streamer-$(date +%Y%m%d).tar.gz}
+-files="streamer.py tvdsp.py contentdetect.py content.html yamnet.tflite index.html requirements.txt constraints.txt run.sh pack.sh install-service.sh README.md"
++files="streamer.py tvdsp.py contentdetect.py content.html yamnet.tflite mn10.onnx mel_basis.npy audioset_labels.txt LICENSE-mn10.txt index.html requirements.txt constraints.txt run.sh pack.sh install-service.sh README.md"
+ if [ "${1:-}" = "--with-config" ]; then
+   cfg=${SENDSPIN_STREAMER_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/sendspin-streamer}
+   [ -d "$cfg" ] || { echo "no config at $cfg" >&2; exit 1; }
+--- a/test_tvdsp.py
++++ b/test_tvdsp.py
+@@ -274,3 +274,53 @@
+     x[0] = 0.5
+     y = run(TvDsp(voice_cut_db=6.0), x)
+     assert int(np.argmax(np.abs(y[:, 0]))) == 0
++
++
++def _p(**k):
++    return {"dialogueDb": 2, "voiceCutDb": 1, "bassDb": -4, "tvLevelDb": 8, "dynamics": "normal", "roomEq": False, **k}
++
++
++def _glide_steps(start, to):
++    """Largest change in gain from one 10 ms chunk to the next while fading, in dB."""
++    d = TvDsp(start["dialogueDb"], start["bassDb"], start["dynamics"], True, start["tvLevelDb"],
++              start["roomEq"], start["voiceCutDb"])
++    x = (tone(1000, -30, secs=8) * 32768).astype("<i2")
++    fr = RATE // 100
++    def feed(a, b):
++        out = []
++        for i in range(a, b, fr):
++            y = np.frombuffer(d.process(x[i:i + fr].tobytes()), dtype="<i2").astype(float)
++            out.append(20 * np.log10(np.sqrt(np.mean(y ** 2)) + 1))
++        return out
++    settled = feed(0, RATE * 2)
++    d.glide_to(to)
++    fading = feed(RATE * 2, RATE * 8)
++    return float(np.max(np.abs(np.diff([settled[-1]] + fading)))), d
++
++
++def test_glide_has_no_jump_and_lands_on_the_preset():
++    worst, d = _glide_steps(_p(), _p(dialogueDb=0, voiceCutDb=0, bassDb=0, tvLevelDb=2, dynamics="night"))
++    assert worst < 0.5
++    assert (d.dialogue_db, d.voice_cut_db, d.bass_db, d.tv_level_db, d.dynamics) == (0, 0, 0, 2, "night")
++    assert d._glide is None
++
++
++def test_glide_from_the_leveller_to_off_and_back_has_no_jump():
++    worst, _ = _glide_steps(_p(), _p(dynamics="off"))
++    assert worst < 0.5
++    worst, _ = _glide_steps(_p(dynamics="off"), _p())
++    assert worst < 0.5
++
++
++def test_a_hand_on_a_control_ends_the_glide():
++    d = TvDsp(2, -4, "normal", True, 8)
++    d.glide_to(_p(dialogueDb=9))
++    d.set(1, -4, "normal", 8)
++    d.process(bytes(1920))
++    assert d.dialogue_db == 1
++
++
++def test_clamp_preset_keeps_every_value_in_range():
++    from tvdsp import clamp_preset
++    p = clamp_preset({"dialogueDb": 99, "voiceCutDb": -5, "bassDb": 3, "tvLevelDb": 99, "dynamics": "loud"})
++    assert p == {"dialogueDb": 9.0, "voiceCutDb": 0.0, "bassDb": 0.0, "tvLevelDb": 24.0, "dynamics": "off", "roomEq": False}
+--- a/test_contentdetect.py
++++ b/test_contentdetect.py
+@@ -2,8 +2,8 @@
+ import json
+ import time
+ 
+-from contentdetect import (MARKS_NAME, WINDOW_BYTES, ContentDetector, Decision, SampleStore,
+-                           label_of, read_log)
++from contentdetect import (MARKS_NAME, ONE_THREAD, WINDOW_BYTES, ContentDetector, Decision, SampleStore,
++                           label_of, log_mel, read_log)
+ 
+ 
+ def test_labels():
+@@ -74,3 +74,19 @@
+     d = read_log(tmp_path)
+     assert d["records"][0]["sample"] == "20260101-000000.wav" and "sample" not in d["records"][1]
+     assert d["marks"]["20260101-000000.wav"] == "wrong"
++
++
++def test_the_worker_is_told_one_thread():
++    assert ONE_THREAD["OPENBLAS_NUM_THREADS"] == "1"
++
++
++def test_answers_reach_the_stream_and_a_dead_worker_says_so(tmp_path):
++    got = []
++    d = ContentDetector(tmp_path, got.append)
++    d._answers([b"INFO: something else\n", b"D music\n", b"D not music\n"])
++    assert got == ["music", "not music", None]
++
++
++def test_log_mel_shape_is_what_the_model_takes():
++    import numpy as np
++    assert log_mel(np.zeros(160000), np.load("mel_basis.npy")).shape == (1, 1, 128, 500)
+--- a/test_presets.py
++++ b/test_presets.py
+@@ -0,0 +1,89 @@
++"""AI switching and the two presets, against App's own methods."""
++import asyncio
++import types
++
++import pytest
++
++import streamer
++from tvdsp import TvDsp, clamp_preset
++
++
++def make(tmp_path, ai=True, active="general"):
++    a = streamer.App.__new__(streamer.App)
++    (tmp_path / "content").mkdir()
++    gen = clamp_preset({"dialogueDb": 2, "voiceCutDb": 1, "bassDb": -4, "tvLevelDb": 8, "dynamics": "normal"})
++    mus = clamp_preset({"dialogueDb": 0, "voiceCutDb": 0, "bassDb": -2, "tvLevelDb": 6, "dynamics": "off"})
++    a.settings = types.SimpleNamespace(
++        tv_presets={"general": gen, "music": mus}, tv_active=active, ai_switch=ai, tv_dialogue_db=2.0,
++        tv_voice_cut_db=1.0, tv_bass_db=-4.0, tv_level_db=8.0, tv_dynamics="normal", tv_room_eq=False,
++        tv_on=True, path=tmp_path / "settings.json", save=lambda: None)
++    a.tv = TvDsp(2, -4, "normal", True, 8, False, 1)
++    a.loop = types.SimpleNamespace(run_in_executor=lambda _e, f, *x: f(*x))
++    a.detected = None
++    return a
++
++
++def test_decision_chooses_the_preset_only_with_ai_on(tmp_path):
++    a = make(tmp_path)
++    a.on_content("music")
++    assert a.settings.tv_active == "music" and a.settings.tv_dynamics == "off"
++    a.on_content("not music")
++    assert a.settings.tv_active == "general"
++
++
++def test_ai_off_changes_nothing(tmp_path):
++    a = make(tmp_path, ai=False)
++    a.on_content("music")
++    assert a.settings.tv_active == "general" and a.detected == "music" and a.tv._glide is None
++
++
++def test_turning_ai_on_follows_what_is_being_heard(tmp_path):
++    a = make(tmp_path, ai=False)
++    a.on_content("music")
++    a.set_ai(True)
++    assert a.settings.tv_active == "music"
++
++
++def test_dead_worker_keeps_the_preset(tmp_path):
++    a = make(tmp_path)
++    a.on_content("music")
++    a.on_content(None)
++    assert a.settings.tv_active == "music" and a.detected is None
++
++
++def test_editing_the_other_preset_is_not_heard(tmp_path):
++    a = make(tmp_path)
++    a.edit_preset("music", {"dialogueDb": 5, "preset": "music"})
++    assert a.settings.tv_presets["music"]["dialogueDb"] == 5 and a.tv.dialogue_db == 2
++
++
++def test_editing_the_preset_playing_is_heard_and_kept(tmp_path):
++    a = make(tmp_path)
++    a.edit_preset("general", {"voiceCutDb": 3})
++    assert a.tv.voice_cut_db == 3 and a.settings.tv_presets["general"]["voiceCutDb"] == 3
++    assert a.settings.tv_presets["general"]["tvLevelDb"] == 8
++
++
++def test_on_off_alone_does_not_end_a_fade_or_touch_presets(tmp_path):
++    a = make(tmp_path)
++    a.on_content("music")
++    before = dict(a.settings.tv_presets["music"])
++    a.set_tv(None, None, None, False)
++    assert a.tv._glide is not None and not a.tv.enabled and a.settings.tv_presets["music"] == before
++
++
++def test_unknown_preset_is_refused(tmp_path):
++    a = make(tmp_path)
++    with pytest.raises(ValueError):
++        a.edit_preset("films", {})
++    with pytest.raises(ValueError):
++        a.use_preset("films", "by hand")
++
++
++def test_seeding_starts_both_as_the_settings_in_use(tmp_path):
++    a = make(tmp_path)
++    a.settings.tv_presets = None
++    a.settings.tv_active = "nonsense"
++    a._seed_presets()
++    assert a.settings.tv_presets["music"] == a.settings.tv_presets["general"]
++    assert a.settings.tv_presets["music"]["dialogueDb"] == 2 and a.settings.tv_active == "general"

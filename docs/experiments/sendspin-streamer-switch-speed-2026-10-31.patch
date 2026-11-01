@@ -1,0 +1,329 @@
+--- a/streamer.py
++++ b/streamer.py
+@@ -42,7 +42,7 @@
+ 
+ from aiosendspin.audio.codecs import FlacEncoder
+ 
+-from contentdetect import SWITCHES_NAME, ContentDetector, add_routes as add_content_routes
++from contentdetect import RULES, SWITCHES_NAME, ContentDetector, add_routes as add_content_routes
+ from tvdsp import DYNAMICS, PRESET_KEYS, TvDsp, clamp_preset
+ 
+ # Everything below replaces private aiosendspin functions, written against
+@@ -365,6 +365,7 @@
+         self.tv_presets = None         # {"general": {...}, "music": {...}}; seeded on load
+         self.tv_active = "general"
+         self.ai_switch = False
++        self.switch_speed = "fast"
+         try:
+             d = json.loads(self.path.read_text())
+             self.source = d.get("source", "")
+@@ -386,6 +387,7 @@
+             self.tv_presets = d.get("tv_presets", self.tv_presets)
+             self.tv_active = d.get("tv_active", self.tv_active)
+             self.ai_switch = bool(d.get("ai_switch", self.ai_switch))
++            self.switch_speed = d.get("switch_speed", self.switch_speed)
+         except (OSError, ValueError):
+             pass
+ 
+@@ -400,6 +402,7 @@
+             "tv_dynamics": self.tv_dynamics, "tv_level_db": self.tv_level_db,
+             "tv_room_eq": self.tv_room_eq, "tv_voice_cut_db": self.tv_voice_cut_db,
+             "tv_presets": self.tv_presets, "tv_active": self.tv_active, "ai_switch": self.ai_switch,
++            "switch_speed": self.switch_speed,
+         }, indent=1))
+ 
+ 
+@@ -1134,6 +1137,9 @@
+         self.detected = None  # "music", "not music", or None while nobody knows
+         self.content = ContentDetector(self.settings.path.parent / "content",
+                                        lambda state: loop.call_soon_threadsafe(self.on_content, state))
++        if self.settings.switch_speed not in RULES:
++            self.settings.switch_speed = "fast"
++        self.content.set_speed(self.settings.switch_speed)
+         self.content.start()
+         self._tv_err_logged = -60.0
+         self.reconcile_task: asyncio.Task | None = None
+@@ -1641,6 +1647,19 @@
+         self.detected = state
+         self._follow_detector()
+ 
++    def set_switch_speed(self, speed: str) -> None:
++        if speed not in RULES:
++            raise ValueError(f"speed must be one of {', '.join(RULES)}")
++        self.settings.switch_speed = speed
++        self.loop.run_in_executor(None, self._store_speed, speed)
++
++    def _store_speed(self, speed: str) -> None:
++        try:
++            self.settings.save()
++            self.content.set_speed(speed)
++        except OSError as e:
++            log.warning("could not store the switching speed: %s", e)
++
+     def set_ai(self, on: bool) -> None:
+         self.settings.ai_switch = on
+         self.settings.save()
+@@ -1999,7 +2018,7 @@
+                    "dynamics": self.tv.dynamics, "dynamicsModes": list(DYNAMICS),
+                    "tvLevelDb": self.tv.tv_level_db, "roomEq": self.tv.room_eq, "voiceCutDb": self.tv.voice_cut_db,
+                    "presets": self.settings.tv_presets, "active": self.settings.tv_active,
+-                   "aiSwitch": self.settings.ai_switch, "detected": self.detected,
++                   "aiSwitch": self.settings.ai_switch, "switchSpeed": self.settings.switch_speed, "detected": self.detected,
+                    "detectorAvailable": self.content.available,
+                    "levelDb": round(self.tv.level_db, 1),
+                    "reductionDb": round(self.tv.reduction_db, 1),
+@@ -2094,6 +2113,8 @@
+             if body["aiSwitch"] and not app.content.available:
+                 raise ValueError("the content detector's model files are missing")
+             app.set_ai(bool(body["aiSwitch"]))
++        elif action == "tv" and body.get("switchSpeed") is not None:
++            app.set_switch_speed(str(body["switchSpeed"]))
+         elif action == "tv" and body.get("activePreset") is not None:
+             if app.settings.ai_switch:
+                 raise ValueError("AI switching is on: turn it off to choose a preset by hand")
+--- a/contentdetect.py
++++ b/contentdetect.py
+@@ -14,6 +14,15 @@
+ through the TV is thin (0.51 and 0.57 on two clips), so YAMNet's score is logged
+ beside it as a reference and has no say.
+ 
++Two speeds (RULES). A harder set the same night, 30 videos and 35 staged changes
++from news to music and back: "careful", the first rule, took 29 s to enter and
++24 s to leave, with 2.5 false entries over 17 videos that are not music. "fast"
++took 15 s and 11 s, with 5 false entries on the SAME 3 videos (Inception, Interstellar,
++a Pixar montage) and no more time wrongly on music, for about twice the CPU. Needing
++2 of 3 at the slower rate looked as quick but also fell for Top Gear, a BBC
++documentary, commercials and football, and is why this one scores more often
++rather than asking for less evidence.
++
+ ONE THREAD IS LOAD-BEARING. Without OPENBLAS_NUM_THREADS=1 the mel's matrix
+ product spread over every core: 478 ms of CPU a window against 33 (0.76% of a
+ thread), and a flat-out run of that coincided with the stream's lead dropping.
+@@ -41,9 +50,12 @@
+ RATE = 48000
+ WINDOW_S = 5
+ WINDOW_BYTES = RATE * WINDOW_S * 4     # s16le stereo
++HOP_BYTES = WINDOW_BYTES // 2          # a window is scored every 2.5 s, half of it new
+ SILENT_DB = -60.0
+-HISTORY, ENTER = 6, 5                  # windows behind the decision, and how many to enter music
+-EXIT = HISTORY - ENTER                 # at or below this many music windows, leave it
++# Windows behind the decision, how many of them enter music, and at or below how
++# many it leaves. "careful" scores every other window, so non-overlapping ones.
++RULES = {"fast": (5, 4, 1), "careful": (6, 5, 1)}
++SPEED_MARK = "speed-careful"
+ SILENCE_RESET_S = 60                   # silence this long: whatever comes next starts afresh
+ MUSIC_MIN, SPEECH_MAX, SPEECH_MIN = 0.5, 0.5, 0.3
+ SAMPLE_EVERY_S = 600
+@@ -71,16 +83,23 @@
+ class Decision:
+     """What a setting would follow: slow to change its mind."""
+ 
+-    def __init__(self) -> None:
++    def __init__(self, speed: str = "fast") -> None:
+         self.recent: list[bool] = []
+         self.state = "not music"
++        self.speed = speed
++
++    def set_speed(self, speed: str) -> None:
++        """A new rule starts counting afresh and holds the decision until it has enough."""
++        if speed != self.speed:
++            self.speed, self.recent = speed, []
+ 
+     def push(self, label: str) -> str:
+-        self.recent = (self.recent + [label == "music"])[-HISTORY:]
++        history, enter, leave = RULES[self.speed]
++        self.recent = (self.recent + [label == "music"])[-history:]
+         n = sum(self.recent)
+-        if n >= ENTER:
++        if n >= enter:
+             self.state = "music"
+-        elif n <= EXIT and len(self.recent) == HISTORY:
++        elif n <= leave and len(self.recent) == history:
+             self.state = "not music"
+         return self.state
+ 
+@@ -168,11 +187,17 @@
+     i_music, i_speech = names.index("Music"), names.index("Speech")
+     decision, store = Decision(), SampleStore(folder)
+     started, quiet_since, cpu_start = time.monotonic(), None, time.process_time()
++    previous, hop = None, 0
+     logfile = folder / LOG_NAME
+     while True:
+-        raw = sys.stdin.buffer.read(WINDOW_BYTES)
+-        if len(raw) < WINDOW_BYTES:
++        new = sys.stdin.buffer.read(HOP_BYTES)
++        if len(new) < HOP_BYTES:
+             return
++        raw, previous = (None if previous is None else previous + new), new
++        hop += 1
++        decision.set_speed("careful" if (folder / SPEED_MARK).exists() else "fast")
++        if raw is None or (decision.speed == "careful" and hop % 2):
++            continue
+         x = np.frombuffer(raw, dtype="<i2").reshape(-1, 2).astype(np.float32).mean(axis=1) / 32768.0
+         rms = float(np.sqrt(np.mean(x ** 2)) + 1e-12)
+         db = 20 * np.log10(rms)
+@@ -195,7 +220,7 @@
+         state = decision.push(label)
+         print("D " + state, flush=True)
+         t = time.time()
+-        rec = {"t": round(t, 1), "model": "mn10", "label": label, "decision": state,
++        rec = {"t": round(t, 1), "model": "mn10", "label": label, "decision": state, "speed": decision.speed,
+                "music": round(music, 3), "speech": round(speech, 3), "rms_db": round(db, 1),
+                "yam_music": round(float(yam[i_music]), 3), "yam_speech": round(float(yam[i_speech]), 3),
+                "top": [tags[i] for i in np.argsort(scores)[-3:][::-1]],
+@@ -227,7 +252,7 @@
+     def __init__(self, folder: Path, on_decision=None) -> None:
+         self.folder = folder
+         self.on_decision = on_decision  # called from a reader thread
+-        self.buf = bytearray(WINDOW_BYTES)
++        self.buf = bytearray(HOP_BYTES)
+         self.pos = 0
+         self.full: bytes | None = None
+         self.wake = threading.Event()
+@@ -243,8 +268,8 @@
+ 
+     def feed(self, pcm: bytes) -> None:
+         n = len(pcm)
+-        if self.pos + n >= WINDOW_BYTES:
+-            cut = WINDOW_BYTES - self.pos
++        if self.pos + n >= HOP_BYTES:
++            cut = HOP_BYTES - self.pos
+             self.buf[self.pos:] = pcm[:cut]
+             if self.full is None:
+                 self.full = bytes(self.buf)
+@@ -257,6 +282,15 @@
+             self.buf[self.pos:self.pos + n] = pcm
+             self.pos += n
+ 
++    def set_speed(self, speed: str) -> None:
++        """Read by the worker before each window, so no restart is needed. A file write: off the stream's loop."""
++        self.folder.mkdir(parents=True, exist_ok=True)
++        mark = self.folder / SPEED_MARK
++        if speed == "careful":
++            mark.touch()
++        else:
++            mark.unlink(missing_ok=True)
++
+     def _pump(self) -> None:
+         while True:
+             self.wake.wait()
+--- a/index.html
++++ b/index.html
+@@ -128,6 +128,7 @@
+         <div><label class="switch"><input type="checkbox" id="tvOn"> <b>TV mode</b></label> <a href="/content" class="hint">Content detector</a> <span class="hint" id="tvStat"></span></div>
+         <div class="presetbox">
+           <label class="switch"><input type="checkbox" id="aiOn"> <b>AI switching</b></label> <span class="hint" id="aiStat"></span>
++          <div style="margin-top:6px"><label>Switching speed <select id="aiSpeed"><option value="fast">Fast (about 15 s)</option><option value="careful">Careful (about 30 s)</option></select></label></div>
+           <div class="tabs" role="group" aria-label="Preset to edit"><button type="button" id="pGeneral">General</button><button type="button" id="pMusic">Music</button></div>
+           <div class="hint" id="pNote"></div>
+         </div>
+@@ -258,6 +259,7 @@
+     const fix = v => Math.round(v * 10) / 10;
+     $('aiOn').checked = !!s.tv.aiSwitch;
+     $('aiOn').disabled = !s.tv.detectorAvailable;
++    if (document.activeElement !== $('aiSpeed')) $('aiSpeed').value = s.tv.switchSpeed;
+     $('aiStat').textContent = !s.tv.detectorAvailable ? 'unavailable: the detector\'s model files are missing'
+       : 'hearing ' + (s.tv.detected || 'nothing yet');
+     for (const [id, name] of [['pGeneral', 'general'], ['pMusic', 'music']]) {
+@@ -375,6 +377,7 @@
+ $('tvOn').onchange = () => post('tv', {on: $('tvOn').checked});
+ const edit = (changes) => post('tv', {preset: editing, ...changes});
+ $('aiOn').onchange = () => post('tv', {aiSwitch: $('aiOn').checked});
++$('aiSpeed').onchange = () => post('tv', {switchSpeed: $('aiSpeed').value});
+ for (const [id, name] of [['pGeneral', 'general'], ['pMusic', 'music']]) $(id).onclick = () => {
+   editing = name;
+   if (snap && snap.tv && !snap.tv.aiSwitch) post('tv', {activePreset: name});
+--- a/test_contentdetect.py
++++ b/test_contentdetect.py
+@@ -2,7 +2,7 @@
+ import json
+ import time
+ 
+-from contentdetect import (MARKS_NAME, ONE_THREAD, WINDOW_BYTES, ContentDetector, Decision, SampleStore,
++from contentdetect import (HOP_BYTES, MARKS_NAME, ONE_THREAD, SPEED_MARK, WINDOW_BYTES, ContentDetector, Decision, SampleStore,
+                            label_of, log_mel, read_log)
+ 
+ 
+@@ -13,7 +13,7 @@
+ 
+ 
+ def test_decision_needs_five_of_six_and_leaves_at_one():
+-    d = Decision()
++    d = Decision("careful")
+     for _ in range(4):
+         assert d.push("music") == "not music"
+     assert d.push("music") == "music"
+@@ -22,8 +22,37 @@
+     assert d.push("speech") == "not music"
+ 
+ 
++def test_fast_needs_four_of_five_and_leaves_at_one():
++    d = Decision("fast")
++    for _ in range(3):
++        assert d.push("music") == "not music"
++    assert d.push("music") == "music"
++    for _ in range(3):
++        assert d.push("speech") == "music"
++    assert d.push("speech") == "not music"
++
++
++def test_changing_speed_holds_the_decision_and_counts_afresh():
++    d = Decision("fast")
++    for _ in range(4):
++        d.push("music")
++    d.set_speed("careful")
++    assert d.state == "music" and d.recent == []
++    for _ in range(5):
++        assert d.push("speech") == "music"
++    assert d.push("speech") == "not music"
++
++
++def test_set_speed_leaves_a_mark_only_for_careful(tmp_path):
++    d = ContentDetector(tmp_path / "new")
++    d.set_speed("careful")
++    assert (tmp_path / "new" / SPEED_MARK).exists()
++    d.set_speed("fast")
++    assert not (tmp_path / "new" / SPEED_MARK).exists()
++
++
+ def test_background_music_blip_does_not_switch():
+-    d = Decision()
++    d = Decision("careful")
+     for label in ["music", "music", "speech", "music", "music", "speech", "music", "speech"]:
+         assert d.push(label) == "not music"
+ 
+@@ -51,16 +80,16 @@
+     for _ in range(3000):
+         d.feed(chunk)
+         if d.full:
+-            assert len(d.full) == WINDOW_BYTES
++            assert len(d.full) == HOP_BYTES
+             d.full = None
+     assert (time.perf_counter() - t) / 3000 < 0.0005
+ 
+ 
+ def test_feed_drops_a_window_when_the_worker_is_behind(tmp_path):
+     d = ContentDetector(tmp_path)
+-    d.feed(bytes(WINDOW_BYTES))
++    d.feed(bytes(HOP_BYTES))
+     first = d.full
+-    d.feed(bytes(WINDOW_BYTES))
++    d.feed(bytes(HOP_BYTES))
+     assert d.full is first and d.dropped == 1
+ 
+ 
+--- a/test_presets.py
++++ b/test_presets.py
+@@ -87,3 +87,12 @@
+     a._seed_presets()
+     assert a.settings.tv_presets["music"] == a.settings.tv_presets["general"]
+     assert a.settings.tv_presets["music"]["dialogueDb"] == 2 and a.settings.tv_active == "general"
++
++
++def test_switch_speed_is_stored_and_unknown_is_refused(tmp_path):
++    a = make(tmp_path)
++    a.content = types.SimpleNamespace(set_speed=lambda s: setattr(a, "told", s))
++    a.set_switch_speed("careful")
++    assert a.settings.switch_speed == "careful" and a.told == "careful"
++    with pytest.raises(ValueError):
++        a.set_switch_speed("instant")

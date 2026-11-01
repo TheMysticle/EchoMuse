@@ -1,0 +1,228 @@
+--- a/tvdsp.py
++++ b/tvdsp.py
+@@ -19,6 +19,14 @@
+   pumped up.
+   "game" is the same leveller made fast, for quiet cues after loud ones.
+ - Peak compressor: the fast part of "night mode", for gunshots.
++- TV level: makeup gain for a source mastered far quieter than music. A
++  film over the TV's optical output measured -25 to -48 dBFS RMS
++  (2026-10-30), against music the Echo plays unnormalised at around -10, so
++  at one Echo volume the TV was 10-20 dB under Spotify and the voice. The
++  level raises the leveller's target and its boost ceiling and moves the
++  peak compressor's threshold up with them (never past COMP_CEIL_DB), so
++  the lift is part of the same dynamics rather than a gain in front of them.
++  With dynamics off it is a plain gain into the soft clip.
+ 
+ Zero latency, by construction:
+ 
+@@ -68,6 +76,8 @@
+ FADE_S = 0.02            # the on/off switch crossfades over this long
+ BASS_RELEASE_MS = 200.0
+ CLIP_KNEE = 10 ** (-1 / 20)  # soft safety clip above -1 dBFS
++COMP_CEIL_DB = -3.0      # the TV level never moves the peak compressor above this
++LEVEL_MAX_DB = 24.0
+ 
+ VOICE_HZ, VOICE_Q = 2000.0, 0.9
+ BASS_HZ = 120.0
+@@ -120,12 +130,13 @@
+     call process() from the one stream loop."""
+ 
+     def __init__(self, dialogue_db: float = 0.0, bass_db: float = 0.0,
+-                 dynamics: str = "off", enabled: bool = True) -> None:
++                 dynamics: str = "off", enabled: bool = True,
++                 level_db: float = 0.0) -> None:
+         self._bp = _bandpass(VOICE_HZ, VOICE_Q)
+         self._lp = _lowpass1(BASS_HZ)
+         self._hp = _highpass1(WEIGHT_HZ)
+         self.reset()
+-        self.set(dialogue_db, bass_db, dynamics)
++        self.set(dialogue_db, bass_db, dynamics, level_db)
+         # The on/off switch. Switched off, the processing keeps running and
+         # its output is discarded, so switching back on is instant and
+         # settled (no leveller climbing from 0 dB), which is what makes an
+@@ -134,14 +145,18 @@
+         self.enabled = enabled
+         self._mix = 1.0 if enabled else 0.0
+ 
+-    def set(self, dialogue_db: float, bass_db: float, dynamics: str) -> None:
++    def set(self, dialogue_db: float, bass_db: float, dynamics: str,
++            level_db: float | None = None) -> None:
++        if level_db is not None:
++            self.tv_level_db = max(0.0, min(LEVEL_MAX_DB, float(level_db)))
+         self.dialogue_db = max(0.0, min(9.0, float(dialogue_db)))
+         self.bass_db = max(-12.0, min(0.0, float(bass_db)))
+         self.dynamics = dynamics if dynamics in DYNAMICS else "off"
+ 
+     @property
+     def active(self) -> bool:
+-        return self.dialogue_db > 0 or self.bass_db < 0 or self.dynamics != "off"
++        return (self.dialogue_db > 0 or self.bass_db < 0 or self.dynamics != "off"
++                or self.tv_level_db > 0)
+ 
+     def reset(self) -> None:
+         self._zbp = np.zeros(2)
+@@ -193,6 +208,12 @@
+         g_bass_end = np.empty(len(starts))
+         g_wide_end = np.empty(len(starts))
+         dyn = _DYN.get(self.dynamics)
++        up = self.tv_level_db
++        static = _gain(up)
++        if dyn:
++            dyn = dict(dyn, target_db=dyn["target_db"] + up,
++                       max_boost_db=dyn["max_boost_db"] + up,
++                       comp_thresh_db=min(COMP_CEIL_DB, dyn["comp_thresh_db"] + up))
+         trim = _gain(self.bass_db)
+         bdt = BLOCK / RATE
+         deepest = 0.0
+@@ -204,7 +225,7 @@
+             e = min(s + BLOCK, n)
+             if not dyn:
+                 g_bass_end[i] = trim
+-                g_wide_end[i] = 1.0
++                g_wide_end[i] = static
+                 continue
+             # Bass compressor: on the (trimmed) bass of the centre.
+             bpeak = float(np.max(np.abs(lp[s:e].mean(axis=1)))) * trim
+--- a/streamer.py
++++ b/streamer.py
+@@ -358,6 +358,7 @@
+         self.tv_dialogue_db = 4.0
+         self.tv_bass_db = -12.0
+         self.tv_dynamics = "normal"
++        self.tv_level_db = 10.0
+         try:
+             d = json.loads(self.path.read_text())
+             self.source = d.get("source", "")
+@@ -373,6 +374,7 @@
+             self.tv_dialogue_db = float(d.get("tv_dialogue_db", self.tv_dialogue_db))
+             self.tv_bass_db = float(d.get("tv_bass_db", self.tv_bass_db))
+             self.tv_dynamics = str(d.get("tv_dynamics", self.tv_dynamics))
++            self.tv_level_db = float(d.get("tv_level_db", self.tv_level_db))
+         except (OSError, ValueError):
+             pass
+ 
+@@ -384,7 +386,7 @@
+             "auto_stop_min": self.auto_stop_min,
+             "tv_on": self.tv_on,
+             "tv_dialogue_db": self.tv_dialogue_db, "tv_bass_db": self.tv_bass_db,
+-            "tv_dynamics": self.tv_dynamics,
++            "tv_dynamics": self.tv_dynamics, "tv_level_db": self.tv_level_db,
+         }, indent=1))
+ 
+ 
+@@ -1056,7 +1058,8 @@
+         self.loop = loop
+         self.settings = Settings()
+         self.tv = TvDsp(self.settings.tv_dialogue_db, self.settings.tv_bass_db,
+-                        self.settings.tv_dynamics, self.settings.tv_on)
++                        self.settings.tv_dynamics, self.settings.tv_on,
++                        self.settings.tv_level_db)
+         log.info("transport: %d ms chunks, %d ms capture request, DSCP %s",
+                  CHUNK_MS, CAPTURE_LATENCY_MS, "CS6" if DSCP_ON else "off")
+         self.server: SendspinServer | None = None
+@@ -1470,17 +1473,20 @@
+         self.volsync.members(self._ready_clients if on else ())
+ 
+     def set_tv(self, dialogue_db: float | None, bass_db: float | None,
+-               dynamics: str | None, on: bool | None = None) -> None:
++               dynamics: str | None, on: bool | None = None,
++               level_db: float | None = None) -> None:
+         """TV mode. Takes effect on the next chunk; filter state carries over."""
+         st = self.settings
+         if dynamics is not None and dynamics not in DYNAMICS:
+             raise ValueError(f"dynamics must be one of {', '.join(DYNAMICS)}")
+         self.tv.set(st.tv_dialogue_db if dialogue_db is None else dialogue_db,
+                     st.tv_bass_db if bass_db is None else bass_db,
+-                    st.tv_dynamics if dynamics is None else dynamics)
++                    st.tv_dynamics if dynamics is None else dynamics,
++                    level_db)
+         if on is not None:
+             self.tv.enabled = on
+         st.tv_dialogue_db, st.tv_bass_db, st.tv_dynamics = self.tv.dialogue_db, self.tv.bass_db, self.tv.dynamics
++        st.tv_level_db = self.tv.tv_level_db
+         st.tv_on = self.tv.enabled
+         st.save()
+ 
+@@ -1833,6 +1839,7 @@
+             "tv": {"on": self.tv.enabled,
+                    "dialogueDb": self.tv.dialogue_db, "bassDb": self.tv.bass_db,
+                    "dynamics": self.tv.dynamics, "dynamicsModes": list(DYNAMICS),
++                   "tvLevelDb": self.tv.tv_level_db,
+                    "levelDb": round(self.tv.level_db, 1),
+                    "reductionDb": round(self.tv.reduction_db, 1),
+                    "costMaxMs": round(max(self.tv_ms), 2) if self.tv_ms else None},
+@@ -1926,7 +1933,8 @@
+             app.set_tv(None if body.get("dialogueDb") is None else float(body["dialogueDb"]),
+                        None if body.get("bassDb") is None else float(body["bassDb"]),
+                        body.get("dynamics"),
+-                       None if body.get("on") is None else bool(body["on"]))
++                       None if body.get("on") is None else bool(body["on"]),
++                       None if body.get("tvLevelDb") is None else float(body["tvLevelDb"]))
+         elif action == "autostop":
+             app.set_auto_stop(float(body["min"]))
+         elif action == "volumesync":
+--- a/index.html
++++ b/index.html
+@@ -121,10 +121,11 @@
+       </div>
+       <div>
+         <div><label class="switch"><input type="checkbox" id="tvOn"> <b>TV mode</b></label> <span class="hint" id="tvStat"></span></div>
++        <label>TV level <input type="range" id="tvLvl" min="0" max="24" step="1"> <span id="tvLvlV"></span></label><br>
+         <label>Dialogue lift <input type="range" id="tvDlg" min="0" max="9" step="1"> <span id="tvDlgV"></span></label><br>
+         <label>Bass trim <input type="range" id="tvBass" min="-12" max="0" step="1"> <span id="tvBassV"></span></label><br>
+         <label>Loudness <select id="tvDyn"><option value="off">off</option><option value="normal">level out (TV auto volume)</option><option value="night">night mode (strong)</option><option value="game">fast (gaming)</option></select></label>
+-        <div class="hint" style="margin-top:6px">Applied to the TV audio here, before it is sent; adds no delay. Dialogue lift raises 2 kHz in the centre only, where speech is mixed. Bass trim takes back some of the Echo's own bass boost. Loudness rides quiet and loud scenes toward one level and holds gunshots down; "fast" follows within a fraction of a second, so quiet sounds come back right after loud ones. Switching TV mode off and on is instant, to compare.</div>
++        <div class="hint" style="margin-top:6px">Applied to the TV audio here, before it is sent; adds no delay. TV level lifts the TV toward music and voice at the same Echo volume (films are mastered 10-20 dB quieter than music). Dialogue lift raises 2 kHz in the centre only, where speech is mixed. Bass trim takes back some of the Echo's own bass boost. Loudness rides quiet and loud scenes toward one level and holds gunshots down; "fast" follows within a fraction of a second, so quiet sounds come back right after loud ones. Switching TV mode off and on is instant, to compare.</div>
+       </div>
+       <div>
+         <label>Auto stream: let the players go after <input type="number" id="autostop" min="0" max="1440" step="1" style="width:4em"> min without sound</label>
+@@ -239,6 +240,8 @@
+   if (document.activeElement !== $('autostop')) $('autostop').value = String(s.autoStopMin);
+   if (s.tv) {
+     $('tvOn').checked = !!s.tv.on;
++    if (document.activeElement !== $('tvLvl')) $('tvLvl').value = String(s.tv.tvLevelDb);
++    $('tvLvlV').textContent = '+' + s.tv.tvLevelDb + ' dB';
+     if (document.activeElement !== $('tvDlg')) $('tvDlg').value = String(s.tv.dialogueDb);
+     if (document.activeElement !== $('tvBass')) $('tvBass').value = String(s.tv.bassDb);
+     if (document.activeElement !== $('tvDyn')) $('tvDyn').value = s.tv.dynamics;
+@@ -339,6 +342,7 @@
+ $('autostop').onchange = () => post('autostop', {min: +$('autostop').value || 0});
+ $('volsync').onchange =() => post('volumesync', {on: $('volsync').checked});
+ $('tvOn').onchange = () => post('tv', {on: $('tvOn').checked});
++$('tvLvl').onchange = () => post('tv', {tvLevelDb: +$('tvLvl').value});
+ $('tvDlg').onchange =() => post('tv', {dialogueDb: +$('tvDlg').value});
+ $('tvBass').onchange = () => post('tv', {bassDb: +$('tvBass').value});
+ $('tvDyn').onchange = () => post('tv', {dynamics: $('tvDyn').value});
+--- a/test_tvdsp.py
++++ b/test_tvdsp.py
+@@ -169,3 +169,30 @@
+     y = run(d, np.concatenate([tone(1000, -40, 2.0), tone(1000, -1, 0.3)]))
+     assert 20 * np.log10(np.max(np.abs(y[2 * RATE + 96:]))) < -3
+     assert np.max(np.abs(y)) <= 1.0
++
++
++def test_level_off_by_default_keeps_off_bit_exact():
++    d = TvDsp()
++    x = (tone(1000, -30, 0.1) * 32767).astype("<i2").tobytes()
++    assert d.process(x) == x
++
++
++def test_level_with_dynamics_off_is_a_plain_gain():
++    x = tone(1000, -40, 0.5)
++    y = run(TvDsp(level_db=12.0), x)
++    assert abs(level(y) - level(x) - 12.0) < 0.05
++
++
++def test_level_lifts_a_quiet_film_toward_music():
++    # A quiet scene at -38 dB: "normal" alone stops at its +6 dB ceiling.
++    x = tone(1000, -38, 20.0)
++    plain = level(run(TvDsp(dynamics="normal"), x))
++    lifted = level(run(TvDsp(dynamics="normal", level_db=10.0), x))
++    assert lifted - plain > 9.0
++
++
++def test_level_never_lets_a_peak_through_full_scale():
++    quiet = tone(1000, -38, 10.0)
++    bang = tone(200, -1, 0.3)
++    y = run(TvDsp(dynamics="normal", level_db=24.0), np.concatenate([quiet, bang]))
++    assert np.max(np.abs(y)) < 1.0

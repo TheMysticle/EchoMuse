@@ -1,0 +1,202 @@
+--- a/tvdsp.py
++++ b/tvdsp.py
+@@ -96,6 +96,11 @@
+ LEVEL_MAX_DB = 24.0
+ 
+ VOICE_HZ, VOICE_Q = 2000.0, 0.9
++# Voice clean-up: the chest of a voice, cut in the centre only. Recordings of
++# the same film passages on both systems had Echo voices 7-10 dB heavier at
++# 100-300 Hz against 2-4 kHz than the TV (2026-10-31). Its own control, not part
++# of the dialogue lift, because a kick and a bass guitar are in the centre too.
++CUT_HZ, CUT_Q, CUT_MAX_DB = 250.0, 0.9, 6.0
+ BASS_HZ = 120.0
+ WEIGHT_HZ = 100.0        # leveller ignores rumble when judging loudness
+ 
+@@ -192,8 +197,10 @@
+ 
+     def __init__(self, dialogue_db: float = 0.0, bass_db: float = 0.0,
+                  dynamics: str = "off", enabled: bool = True,
+-                 level_db: float = 0.0, room_eq: bool = False) -> None:
++                 level_db: float = 0.0, room_eq: bool = False, voice_cut_db: float = 0.0) -> None:
+         self._bp = _bandpass(VOICE_HZ, VOICE_Q)
++        self._cut = _bandpass(CUT_HZ, CUT_Q)
++        self.set_voice_cut(voice_cut_db)
+         self._lp = _lowpass1(BASS_HZ)
+         self._hp = _highpass1(WEIGHT_HZ)
+         self.volume = QUIET_FROM
+@@ -218,6 +225,9 @@
+         self.bass_db = max(-12.0, min(0.0, float(bass_db)))
+         self.dynamics = dynamics if dynamics in DYNAMICS else "off"
+ 
++    def set_voice_cut(self, db: float) -> None:
++        self.voice_cut_db = max(0.0, min(CUT_MAX_DB, float(db)))
++
+     def set_volume(self, volume: int | None) -> None:
+         """The players' volume, for the quiet lift. The filter state carries over."""
+         if volume is None or volume == self.volume:
+@@ -227,11 +237,12 @@
+ 
+     @property
+     def active(self) -> bool:
+-        return (self.dialogue_db > 0 or self.bass_db < 0 or self.dynamics != "off"
++        return (self.dialogue_db > 0 or self.voice_cut_db > 0 or self.bass_db < 0 or self.dynamics != "off"
+                 or self.tv_level_db > 0 or self.room_eq or self._eq_mix > 0)
+ 
+     def reset(self) -> None:
+         self._zbp = np.zeros(2)
++        self._zcut = np.zeros(2)
+         self._zlp = np.zeros((1, 2))
+         self._zhp = np.zeros(1)
+         self._zeq = np.zeros((len(ROOM_SOS) + 2, 2, 2))
+@@ -284,6 +295,11 @@
+         bp, self._zbp = lfilter(*self._bp, mid, zi=self._zbp)
+         if self.dialogue_db > 0:
+             y += ((_gain(self.dialogue_db) - 1) * bp)[:, None]
++        # Clean-up, the same way down. Runs at 0 so that raising it starts from
++        # settled state, but at 0 nothing is added to the signal.
++        cut, self._zcut = lfilter(*self._cut, mid, zi=self._zcut)
++        if self.voice_cut_db > 0:
++            y += ((_gain(-self.voice_cut_db) - 1) * cut)[:, None]
+ 
+         # Bass band, for the trim and the bass compressor.
+         lp, self._zlp = lfilter(*self._lp, x, axis=0, zi=self._zlp)
+@@ -347,7 +363,7 @@
+         if not (g_wide == 1.0).all():
+             y *= g_wide[:, None]
+             return _soft_clip(y)
+-        return y if self.dialogue_db <= 0 else _soft_clip(y)
++        return y if self.dialogue_db <= 0 and self.voice_cut_db <= 0 else _soft_clip(y)
+ 
+     @staticmethod
+     def _ramp(ends: np.ndarray, start: float, starts: list[int], n: int) -> np.ndarray:
+--- a/streamer.py
++++ b/streamer.py
+@@ -361,6 +361,7 @@
+         self.tv_dynamics = "normal"
+         self.tv_level_db = 10.0
+         self.tv_room_eq = True
++        self.tv_voice_cut_db = 0.0
+         try:
+             d = json.loads(self.path.read_text())
+             self.source = d.get("source", "")
+@@ -378,6 +379,7 @@
+             self.tv_dynamics = str(d.get("tv_dynamics", self.tv_dynamics))
+             self.tv_level_db = float(d.get("tv_level_db", self.tv_level_db))
+             self.tv_room_eq = bool(d.get("tv_room_eq", self.tv_room_eq))
++            self.tv_voice_cut_db = float(d.get("tv_voice_cut_db", self.tv_voice_cut_db))
+         except (OSError, ValueError):
+             pass
+ 
+@@ -390,7 +392,7 @@
+             "tv_on": self.tv_on,
+             "tv_dialogue_db": self.tv_dialogue_db, "tv_bass_db": self.tv_bass_db,
+             "tv_dynamics": self.tv_dynamics, "tv_level_db": self.tv_level_db,
+-            "tv_room_eq": self.tv_room_eq,
++            "tv_room_eq": self.tv_room_eq, "tv_voice_cut_db": self.tv_voice_cut_db,
+         }, indent=1))
+ 
+ 
+@@ -1107,7 +1109,8 @@
+         self.settings = Settings()
+         self.tv = TvDsp(self.settings.tv_dialogue_db, self.settings.tv_bass_db,
+                         self.settings.tv_dynamics, self.settings.tv_on,
+-                        self.settings.tv_level_db, self.settings.tv_room_eq)
++                        self.settings.tv_level_db, self.settings.tv_room_eq,
++                        self.settings.tv_voice_cut_db)
+         log.info("transport: %d ms chunks, %d ms capture request, DSCP %s",
+                  CHUNK_MS, CAPTURE_LATENCY_MS, "CS6" if DSCP_ON else "off")
+         self.server: SendspinServer | None = None
+@@ -1531,7 +1534,8 @@
+ 
+     def set_tv(self, dialogue_db: float | None, bass_db: float | None,
+                dynamics: str | None, on: bool | None = None,
+-               level_db: float | None = None, room_eq: bool | None = None) -> None:
++               level_db: float | None = None, room_eq: bool | None = None,
++               voice_cut_db: float | None = None) -> None:
+         """TV mode. Takes effect on the next chunk; filter state carries over."""
+         st = self.settings
+         if dynamics is not None and dynamics not in DYNAMICS:
+@@ -1547,6 +1551,9 @@
+         if room_eq is not None:
+             self.tv.room_eq = room_eq
+         st.tv_room_eq = self.tv.room_eq
++        if voice_cut_db is not None:
++            self.tv.set_voice_cut(voice_cut_db)
++        st.tv_voice_cut_db = self.tv.voice_cut_db
+         st.tv_on = self.tv.enabled
+         st.save()
+ 
+@@ -1901,7 +1908,7 @@
+             "tv": {"on": self.tv.enabled,
+                    "dialogueDb": self.tv.dialogue_db, "bassDb": self.tv.bass_db,
+                    "dynamics": self.tv.dynamics, "dynamicsModes": list(DYNAMICS),
+-                   "tvLevelDb": self.tv.tv_level_db, "roomEq": self.tv.room_eq,
++                   "tvLevelDb": self.tv.tv_level_db, "roomEq": self.tv.room_eq, "voiceCutDb": self.tv.voice_cut_db,
+                    "levelDb": round(self.tv.level_db, 1),
+                    "reductionDb": round(self.tv.reduction_db, 1),
+                    "costMaxMs": round(max(self.tv_ms), 2) if self.tv_ms else None},
+@@ -1997,7 +2004,8 @@
+                        body.get("dynamics"),
+                        None if body.get("on") is None else bool(body["on"]),
+                        None if body.get("tvLevelDb") is None else float(body["tvLevelDb"]),
+-                       None if body.get("roomEq") is None else bool(body["roomEq"]))
++                       None if body.get("roomEq") is None else bool(body["roomEq"]),
++                       None if body.get("voiceCutDb") is None else float(body["voiceCutDb"]))
+         elif action == "autostop":
+             app.set_auto_stop(float(body["min"]))
+         elif action == "volumesync":
+--- a/index.html
++++ b/index.html
+@@ -124,9 +124,10 @@
+         <label class="switch"><input type="checkbox" id="tvRoom"> Room tuning</label><br>
+         <label>TV level <input type="range" id="tvLvl" min="0" max="24" step="1"> <span id="tvLvlV"></span></label><br>
+         <label>Dialogue lift <input type="range" id="tvDlg" min="0" max="9" step="1"> <span id="tvDlgV"></span></label><br>
++        <label>Voice clean-up <input type="range" id="tvCut" min="0" max="6" step="1"> <span id="tvCutV"></span></label><br>
+         <label>Bass trim <input type="range" id="tvBass" min="-12" max="0" step="1"> <span id="tvBassV"></span></label><br>
+         <label>Loudness <select id="tvDyn"><option value="off">off</option><option value="normal">level out (TV auto volume)</option><option value="night">night mode (strong)</option><option value="game">fast (gaming)</option></select></label>
+-        <div class="hint" style="margin-top:6px">Applied to the TV audio here, before it is sent; adds no delay. Room tuning is the correction measured at the seat on this pair; switch it to compare. TV level lifts the TV toward music and voice at the same Echo volume (films are mastered 10-20 dB quieter than music). Dialogue lift raises 2 kHz in the centre only, where speech is mixed. Bass trim takes back some of the Echo's own bass boost. Loudness rides quiet and loud scenes toward one level and holds gunshots down; "fast" follows within a fraction of a second, so quiet sounds come back right after loud ones. Switching TV mode off and on is instant, to compare.</div>
++        <div class="hint" style="margin-top:6px">Applied to the TV audio here, before it is sent; adds no delay. Room tuning is the correction measured at the seat on this pair; switch it to compare. TV level lifts the TV toward music and voice at the same Echo volume (films are mastered 10-20 dB quieter than music). Dialogue lift raises 2 kHz in the centre only, where speech is mixed. Voice clean-up turns down the chest of voices around 250 Hz, in the centre only; at 0 it does nothing, and for music leave it there, because kick and bass are in the centre too. Bass trim takes back some of the Echo's own bass boost. Loudness rides quiet and loud scenes toward one level and holds gunshots down; "fast" follows within a fraction of a second, so quiet sounds come back right after loud ones. Switching TV mode off and on is instant, to compare.</div>
+       </div>
+       <div>
+         <label>Auto stream: let the players go after <input type="number" id="autostop" min="0" max="1440" step="1" style="width:4em"> min without sound</label>
+@@ -248,6 +249,8 @@
+     if (document.activeElement !== $('tvBass')) $('tvBass').value = String(s.tv.bassDb);
+     if (document.activeElement !== $('tvDyn')) $('tvDyn').value = s.tv.dynamics;
+     $('tvDlgV').textContent = '+' + s.tv.dialogueDb + ' dB';
++    if (document.activeElement !== $('tvCut')) $('tvCut').value = String(s.tv.voiceCutDb);
++    $('tvCutV').textContent = s.tv.voiceCutDb ? '-' + s.tv.voiceCutDb + ' dB' : 'off';
+     $('tvBassV').textContent = s.tv.bassDb + ' dB';
+     $('tvStat').textContent = !s.tv.on ? 'off: the Echoes get the TV sound untouched' : s.tv.dynamics === 'off' ? '' :
+       'leveller ' + (s.tv.levelDb >= 0 ? '+' : '') + s.tv.levelDb + ' dB, peaks cut ' + s.tv.reductionDb + ' dB' +
+@@ -347,6 +350,7 @@
+ $('tvRoom').onchange = () => post('tv', {roomEq: $('tvRoom').checked});
+ $('tvLvl').onchange = () => post('tv', {tvLevelDb: +$('tvLvl').value});
+ $('tvDlg').onchange =() => post('tv', {dialogueDb: +$('tvDlg').value});
++$('tvCut').onchange =() => post('tv', {voiceCutDb: +$('tvCut').value});
+ $('tvBass').onchange = () => post('tv', {bassDb: +$('tvBass').value});
+ $('tvDyn').onchange = () => post('tv', {dynamics: $('tvDyn').value});
+ $('refresh').onclick = () => post('refresh');
+--- a/test_tvdsp.py
++++ b/test_tvdsp.py
+@@ -256,3 +256,21 @@
+     d = TvDsp(dynamics="normal", room_eq=True, level_db=24.0)
+     y = run(d, np.concatenate([tone(1700, -38, 5.0), tone(1700, -1, 0.3)]))
+     assert np.max(np.abs(y)) < 1.0
++
++
++def test_voice_cut_lowers_the_centre_and_not_the_sides():
++    centre, wide = tone(250, -20), tone(250, -20, side=True)
++    assert abs(level(run(TvDsp(voice_cut_db=4.0), centre)) - level(centre) + 4.0) < 0.3
++    assert abs(level(run(TvDsp(voice_cut_db=4.0), wide)[RATE // 2:]) - level(wide)) < 0.05
++
++
++def test_voice_cut_leaves_speech_consonants_alone():
++    x = tone(3000, -20)
++    assert abs(level(run(TvDsp(voice_cut_db=6.0), x)[RATE // 2:]) - level(x)) < 0.6
++
++
++def test_voice_cut_adds_no_delay():
++    x = np.zeros((RATE // 10, 2))
++    x[0] = 0.5
++    y = run(TvDsp(voice_cut_db=6.0), x)
++    assert int(np.argmax(np.abs(y[:, 0]))) == 0

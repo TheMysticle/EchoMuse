@@ -1,0 +1,217 @@
+--- a/contentdetect.py
++++ b/contentdetect.py
+@@ -88,6 +88,12 @@
+         self.state = "not music"
+         self.speed = speed
+ 
++    @property
++    def ready(self) -> bool:
++        """Enough windows to have an opinion. A fresh start would otherwise report
++        "not music" in the middle of a song and take the preset with it."""
++        return self.state == "music" or len(self.recent) >= RULES[self.speed][0]
++
+     def set_speed(self, speed: str) -> None:
+         """A new rule starts counting afresh and holds the decision until it has enough."""
+         if speed != self.speed:
+@@ -116,7 +122,7 @@
+         self.cap = cap
+         self.last_at = float("-inf")
+         self.last_label = ""
+-        self.last_state = ""
++        self.last_state = "not music"
+ 
+     def wanted(self, now: float, label: str, state: str) -> str | None:
+         """Why this window should be kept, or None."""
+@@ -218,7 +224,8 @@
+         music, speech = float(scores[MN10_MUSIC]), float(scores[MN10_SPEECH])
+         label = label_of(music, speech)
+         state = decision.push(label)
+-        print("D " + state, flush=True)
++        if decision.ready:  # a detector just started has no evidence, so it stays silent
++            print("D " + state, flush=True)
+         t = time.time()
+         rec = {"t": round(t, 1), "model": "mn10", "label": label, "decision": state, "speed": decision.speed,
+                "music": round(music, 3), "speech": round(speech, 3), "rms_db": round(db, 1),
+@@ -324,35 +331,46 @@
+ _SAMPLE = re.compile(r"^\d{8}-\d{6}\.wav$")
+ 
+ 
+-def read_log(folder: Path, limit: int = 20000) -> dict:
+-    records, marks = [], {}
+-    try:
+-        lines = (folder / LOG_NAME).read_text().splitlines()[-limit:]
+-    except OSError:
+-        lines = []
+-    for line in lines:
+-        try:
+-            records.append(json.loads(line))
+-        except ValueError:
+-            pass
++def read_meta(folder: Path) -> dict:
++    """Everything the page wants but the log. Small, and it stays small."""
++    marks, switches = {}, []
+     try:
+         for line in (folder / MARKS_NAME).read_text().splitlines():
+             m = json.loads(line)
+             marks[m["sample"]] = m["verdict"]
+     except (OSError, ValueError, KeyError):
+         pass
+-    switches = []
+     try:
+         for line in (folder / SWITCHES_NAME).read_text().splitlines()[-200:]:
+             switches.append(json.loads(line))
+     except (OSError, ValueError):
+         pass
+-    have = {f.name for f in folder.glob("*.wav")}
+-    for r in records:
+-        if r.get("sample") not in have:
+-            r.pop("sample", None)
+-    return {"records": records, "marks": marks, "switches": switches, "saving": not (folder / OFF_NAME).exists(),
+-            "bytes": sum(f.stat().st_size for f in folder.glob("*.wav")), "capBytes": MAX_SAMPLE_BYTES}
++    clips = list(folder.glob("*.wav"))
++    return {"records": [], "clips": [f.name for f in clips], "marks": marks, "switches": switches,
++            "saving": not (folder / OFF_NAME).exists(),
++            "bytes": sum(f.stat().st_size for f in clips), "capBytes": MAX_SAMPLE_BYTES}
++
++
++def read_log_from(folder: Path, offset: int) -> tuple[bytes, int, bool]:
++    """Whole lines of the log after a byte offset, the offset to ask from next, and
++    whether the log was rotated so that the reader must start again.
++
++    NEVER parse the log in this process. This runs beside the stream, and parsing
++    it line by line for the page's 15 s refresh held the GIL for 70 ms with 2,400
++    lines and growing, then 12 ms more encoding it on the stream's own loop: the
++    stream's lead fell from 45 ms to about 30 in exactly the 10 s windows holding a
++    refresh (2026-10-31), and the cost grew with the log. The browser parses it."""
++    try:
++        with open(folder / LOG_NAME, "rb") as fh:
++            size = fh.seek(0, os.SEEK_END)
++            reset = offset < 0 or offset > size
++            start = 0 if reset else offset
++            fh.seek(start)
++            data = fh.read()
++    except OSError:
++        return b"", 0, offset != 0
++    end = data.rfind(b"\n") + 1  # a line still being written waits for the next refresh
++    return data[:end], start + end, reset
+ 
+ 
+ def add_routes(app, folder: Path) -> None:
+@@ -365,7 +383,16 @@
+         return web.FileResponse(page)
+ 
+     async def data(_):
+-        return web.json_response(await asyncio.to_thread(read_log, folder))
++        return web.json_response(await asyncio.to_thread(read_meta, folder))
++
++    async def log_lines(request):
++        try:
++            offset = int(request.query.get("from", "0"))
++        except ValueError:
++            raise web.HTTPBadRequest()
++        body, next_offset, reset = await asyncio.to_thread(read_log_from, folder, offset)
++        return web.Response(body=body, content_type="text/plain",
++                            headers={"X-Log-Next": str(next_offset), "X-Log-Reset": "1" if reset else "0"})
+ 
+     async def sample(request):
+         name = request.match_info["name"]
+@@ -398,6 +425,7 @@
+ 
+     app.router.add_get("/content", show)
+     app.router.add_get("/content/data", data)
++    app.router.add_get("/content/log", log_lines)
+     app.router.add_get("/content/sample/{name}", sample)
+     app.router.add_post("/content/mark", mark)
+     app.router.add_post("/content/saving", saving)
+--- a/content.html
++++ b/content.html
+@@ -55,7 +55,14 @@
+   <audio controls preload="none" src="/content/sample/${q}"></audio>
+   <div class="row"><button class="right ${v==='right'?'on':''}" data-v="right">Decision right</button><button class="wrong ${v==='wrong'?'on':''}" data-v="wrong">Decision wrong</button></div></div>`}).join('')||'<div class="mute" style="padding:12px 0">No clips here yet. They appear once the TV has sound.</div>';
+ }
+-async function load(){if(document.querySelector('#clips audio')&&[...document.querySelectorAll('#clips audio')].some(a=>!a.paused))return;try{D=await (await fetch('/content/data')).json();render()}catch(e){}}
++let rows=[],logFrom=0;
++async function load(){if(document.querySelector('#clips audio')&&[...document.querySelectorAll('#clips audio')].some(a=>!a.paused))return;try{
++  const lr=await fetch('/content/log?from='+logFrom);const text=await lr.text();
++  if(lr.headers.get('X-Log-Reset')==='1')rows=[];
++  logFrom=+lr.headers.get('X-Log-Next')||0;
++  for(const l of text.split('\n')){if(!l)continue;try{rows.push(JSON.parse(l))}catch(e){}}
++  D=await (await fetch('/content/data')).json();const have=new Set(D.clips);
++  D.records=rows.map(r=>r.sample&&!have.has(r.sample)?{...r,sample:undefined}:r);render()}catch(e){}}
+ const post=(p,b)=>fetch(p,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b||{})});
+ $('clips').addEventListener('click',async e=>{const v=e.target.dataset.v;if(!v)return;const s=e.target.closest('.clip').dataset.s;const nv=D.marks[s]===v?null:v;await post('/content/mark',{sample:s,verdict:nv});if(nv)D.marks[s]=nv;else delete D.marks[s];render()});
+ $('range').onchange=render;$('filter').onchange=render;
+--- a/test_contentdetect.py
++++ b/test_contentdetect.py
+@@ -3,7 +3,7 @@
+ import time
+ 
+ from contentdetect import (HOP_BYTES, MARKS_NAME, ONE_THREAD, SPEED_MARK, WINDOW_BYTES, ContentDetector, Decision, SampleStore,
+-                           label_of, log_mel, read_log)
++                           label_of, log_mel, read_log_from, read_meta)
+ 
+ 
+ def test_labels():
+@@ -59,7 +59,7 @@
+ 
+ def test_samples_on_a_change_and_rate_limited(tmp_path):
+     s = SampleStore(tmp_path)
+-    assert s.wanted(0, "speech", "not music") == "decision changed"
++    assert s.wanted(0, "speech", "not music") == "label changed"
+     assert s.wanted(5, "music", "not music") is None      # under a minute since the last
+     assert s.wanted(70, "speech", "not music") == "label changed"
+     assert s.wanted(75, "music", "music") == "decision changed"
+@@ -93,16 +93,46 @@
+     assert d.full is first and d.dropped == 1
+ 
+ 
+-def test_log_hides_deleted_clips_and_latest_mark_wins(tmp_path):
++def test_log_is_read_in_whole_lines_from_an_offset(tmp_path):
++    (tmp_path / "content.jsonl").write_bytes(b'{"t":1}\n{"t":2}\n{"t":3')
++    body, nxt, reset = read_log_from(tmp_path, 0)
++    assert body == b'{"t":1}\n{"t":2}\n' and nxt == len(body) and not reset
++    assert read_log_from(tmp_path, nxt)[0] == b""
++    (tmp_path / "content.jsonl").write_bytes(b'{"t":1}\n{"t":2}\n{"t":3}\n')
++    assert read_log_from(tmp_path, nxt)[0] == b'{"t":3}\n'
++
++
++def test_a_rotated_log_tells_the_reader_to_start_again(tmp_path):
++    (tmp_path / "content.jsonl").write_bytes(b'{"t":9}\n')
++    body, nxt, reset = read_log_from(tmp_path, 10_000)
++    assert reset and body == b'{"t":9}\n' and nxt == 8
++
++
++def test_the_streamer_process_never_parses_the_log():
++    import inspect
++    assert "json.loads" not in inspect.getsource(read_log_from).split('"""')[2]
++
++
++def test_a_new_detector_has_no_opinion_until_it_has_the_windows():
++    d = Decision("fast")
++    assert d.push("music") == "not music" and not d.ready
++    for _ in range(3):
++        d.push("music")
++    assert d.ready and d.state == "music"
++    d = Decision("fast")
++    for _ in range(4):
++        d.push("speech")
++        assert not d.ready
++    d.push("speech")
++    assert d.ready
++
++
++def test_meta_lists_clips_and_latest_mark_wins(tmp_path):
+     (tmp_path / "20260101-000000.wav").write_bytes(b"x")
+-    rows = [{"t": 1, "label": "music", "sample": "20260101-000000.wav"},
+-            {"t": 2, "label": "music", "sample": "20260102-000000.wav"}]
+-    (tmp_path / "content.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows) + "broken\n")
+     (tmp_path / MARKS_NAME).write_text(
+         '{"sample":"20260101-000000.wav","verdict":"right"}\n{"sample":"20260101-000000.wav","verdict":"wrong"}\n')
+-    d = read_log(tmp_path)
+-    assert d["records"][0]["sample"] == "20260101-000000.wav" and "sample" not in d["records"][1]
+-    assert d["marks"]["20260101-000000.wav"] == "wrong"
++    d = read_meta(tmp_path)
++    assert d["clips"] == ["20260101-000000.wav"] and d["marks"]["20260101-000000.wav"] == "wrong" and d["records"] == []
+ 
+ 
+ def test_the_worker_is_told_one_thread():
