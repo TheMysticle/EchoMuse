@@ -20,7 +20,7 @@ def adapt(text):
         if text.count(old) != 1:
             raise ValueError("Upstream adapter anchor changed: " + old[:70])
         text = text.replace(old, new)
-    replace('from __future__ import annotations', 'from __future__ import annotations\n\nfrom app import echomuse\nfrom app import fast_path\nfrom app import mcp_bridge\nfrom app import tool_scope')
+    replace('from __future__ import annotations', 'from __future__ import annotations\n\nfrom app import echomuse\nfrom app import fast_path\nfrom app import heard_check\nfrom app import mcp_bridge\nfrom app import tool_scope')
     replace('    await websocket.send_text(_va_pipecat_protocol(config).hello())', '''    hello = json.loads(_va_pipecat_protocol(config).hello())
     hello["echomuse"] = {"scheduler": bool(session_options.get("scheduler", {}).get("schedules")), "stop": bool(session_options.get("scheduler")), "barge_in": bool(session_options.get("barge_in")), "device_endpoint": _runtime_mode(flow) == "composed"}
     await websocket.send_text(json.dumps(hello))''')
@@ -57,6 +57,61 @@ def adapt(text):
             local_tool_schemas.append(echomuse.continuation_schema(protocol))
     tools_schema = _merge_tools_schema(mcp_tools_schema, local_tool_schemas)
     context_for_memory = None''')
+    # Gemini Live acts on audio it misheard or that was not meant for it
+    # (heard_check.py). Every tool handler is wrapped as it is registered, and
+    # the transcript Gemini sends alongside is kept per user turn to judge it.
+    replace(
+        '''        """Do not count a normal long-lived session renewal as a rapid failure."""
+''',
+        '''        """Do not count a normal long-lived session renewal as a rapid failure."""
+
+        def register_function(self, function_name, handler, **kwargs):
+            super().register_function(function_name, heard_check.gated(self, handler), **kwargs)
+
+        async def _handle_msg_input_transcription(self, message):
+            sc = getattr(message, "server_content", None)
+            text = getattr(getattr(sc, "input_transcription", None), "text", None)
+            if text:
+                heard_check.state_of(self).user_text(text)
+            await super()._handle_msg_input_transcription(message)
+
+        async def _handle_msg_output_transcription(self, message):
+            sc = getattr(message, "server_content", None)
+            text = getattr(getattr(sc, "output_transcription", None), "text", None)
+            if text:
+                heard_check.state_of(self).bot_text_out(text)
+            await super()._handle_msg_output_transcription(message)
+
+        async def _handle_msg_model_turn(self, message):
+            sc = getattr(message, "server_content", None)
+            parts = getattr(getattr(sc, "model_turn", None), "parts", None) or []
+            text = "".join(p.text for p in parts if getattr(p, "text", None) and not getattr(p, "thought", False))
+            if text:
+                heard_check.state_of(self).bot_text_out(text)
+            await super()._handle_msg_model_turn(message)
+
+        async def _handle_msg_turn_complete(self, message):
+            heard_check.state_of(self).bot_text_out("")
+            await super()._handle_msg_turn_complete(message)
+''',
+    )
+    replace(
+        '''            flow.id,
+        )
+
+        if bridge and mcp_tools_schema:
+            await bridge.register_tools_schema(mcp_tools_schema, llm)
+''',
+        '''            flow.id,
+        )
+
+        if bridge and mcp_tools_schema:
+            await bridge.register_tools_schema(mcp_tools_schema, llm)
+            if provider_kind == "gemini":
+                asyncio.create_task(heard_check.load_names(
+                    heard_check.state_of(llm), bridge, mcp_tools_schema.standard_tools))
+''',
+    )
     replace('local_turn_detection=bool(_enabled_step(flow, "vad")),', 'local_turn_detection=bool(_enabled_step(flow, "vad") or session_body.get("echomuse", {}).get("barge_in")),')
     # Pipecat defaults this to True, unlike Deepgram's API. Censoring STT
     # corrupts literal music titles before HA's local search sees them.
@@ -1112,7 +1167,7 @@ def main():
     path.write_text(adapt_session_memory(path.read_text(encoding='utf-8')), encoding='utf-8')
     shutil.copyfile(Path(__file__).with_name('echomuse.py'), args.out/'app/echomuse.py')
     for name in ('sherpa_stt.py', 'piper_wyoming_tts.py', 'energy_vad.py', 'fast_path.py', 'local_commands.py', 'tool_scope.py', 'tool_selector.py',
-                 'schedule_language.py', 'schedule_dialogue.py', 'schedule_select.py', 'schedule_mcp.py', 'weather_commands.py', 'audio_tail.py'):
+                 'schedule_language.py', 'schedule_dialogue.py', 'schedule_select.py', 'schedule_mcp.py', 'weather_commands.py', 'audio_tail.py', 'heard_check.py'):
         shutil.copyfile(Path(__file__).with_name(name), args.out/'app'/name)
     custom_sentences_src = Path(__file__).with_name('custom_sentences')
     custom_sentences_dst = args.out/'custom_sentences'

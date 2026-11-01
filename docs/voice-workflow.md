@@ -352,6 +352,28 @@ HA's exposure settings and the Pipecat pipeline's MCP tool allowlist to control
 access. [Live validation](voice-workflow-validation.md) verifies that an exposed
 light is discoverable and controllable while a hidden light remains inaccessible.
 
+### Calls on words that were never said
+
+Gemini Live chooses tools from the audio itself, so on a false wake or a
+misheard command it acts on its guess: "internal kitchen master" ran a kitchen
+vacuum script, and Polish conversation in the room paused and turned off a TV.
+The adapter checks each call that changes something against Gemini's own
+transcript of the turn, and refuses one whose device, room or request was not
+said, in English or Polish. Lookups (state, time, weather, schedules list) are
+never checked. A refused call is not run; Gemini is told to say it did not
+catch that.
+
+It adds no delay. Measured against `gemini-3.1-flash-live-preview`, the
+transcript is complete 150–550 ms after you stop speaking and tool calls
+arrive 355–713 ms after that, chained commands in one batch, so the check
+always has the whole sentence. Device aliases come from Home Assistant, so
+"kitchen lights" still works for a light named Kitchen Master. It cannot tell
+who a real request was addressed to: "Mum, will you clean the kitchen?" still
+runs a script called *Clean the kitchen*.
+
+Refusals are logged as `Heard check refused …` with what was heard. Set
+`ECHOMUSE_HEARD_CHECK=off` in the add-on's environment to turn it off.
+
 ### Weather, forecasts and other custom attributes
 
 `GetLiveContext` passes the model each exposed entity's name, domain, state and
