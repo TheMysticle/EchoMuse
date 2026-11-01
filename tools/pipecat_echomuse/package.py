@@ -20,10 +20,24 @@ def adapt(text):
         if text.count(old) != 1:
             raise ValueError("Upstream adapter anchor changed: " + old[:70])
         text = text.replace(old, new)
-    replace('from __future__ import annotations', 'from __future__ import annotations\n\nfrom app import echomuse\nfrom app import fast_path\nfrom app import heard_check\nfrom app import mcp_bridge\nfrom app import tool_scope')
+    replace('from __future__ import annotations', 'from __future__ import annotations\n\nfrom app import brave_search\nfrom app import echomuse\nfrom app import fast_path\nfrom app import heard_check\nfrom app import mcp_bridge\nfrom app import tool_scope')
     replace('    await websocket.send_text(_va_pipecat_protocol(config).hello())', '''    hello = json.loads(_va_pipecat_protocol(config).hello())
     hello["echomuse"] = {"scheduler": bool(session_options.get("scheduler", {}).get("schedules")), "stop": bool(session_options.get("scheduler")), "barge_in": bool(session_options.get("barge_in")), "device_endpoint": _runtime_mode(flow) == "composed"}
     await websocket.send_text(json.dumps(hello))''')
+    replace('    model = integration.default_model or provider.default_model or DEFAULT_WEB_SEARCH_MODEL\n\n    if provider.kind in {"openai", "openai_cloud"}:', '''    if provider.kind == "brave_search":
+        api_key = (provider.api_key or "").strip()
+        if not api_key:
+            logger.warning("Web search is enabled, but {} has no API key", provider.name)
+            return None
+
+        async def runner(query: str) -> str:
+            return await brave_search.search(api_key, query, provider.region)
+
+        return web_search_schema(runner, "brave")
+
+    model = integration.default_model or provider.default_model or DEFAULT_WEB_SEARCH_MODEL
+
+    if provider.kind in {"openai", "openai_cloud"}:''')
     replace('    session_id = str(uuid.uuid4())\n    await websocket.accept()', '''    session_options = echomuse.options(websocket.headers, authenticated=bool(secret))
     session_id = str(uuid.uuid4())
     await websocket.accept()''')
@@ -543,7 +557,7 @@ def adapt_config(text):
     )
     replace(
         '        "home_assistant_mcp",\n        "ha_mcp",\n        "mcp_server",\n    ]',
-        '        "home_assistant_mcp",\n        "ha_mcp",\n        "mcp_server",\n        "sherpa_onnx",\n        "piper_wyoming",\n        "groq",\n        "cerebras",\n    ]',
+        '        "home_assistant_mcp",\n        "ha_mcp",\n        "mcp_server",\n        "sherpa_onnx",\n        "piper_wyoming",\n        "groq",\n        "cerebras",\n        "brave_search",\n    ]',
     )
     replace(
         'DEFAULT_SPEECHMATICS_MODEL = "enhanced"',
@@ -575,6 +589,13 @@ def adapt_config(text):
             api_key=os.getenv("CEREBRAS_API_KEY", ""),
             base_url="https://api.cerebras.ai/v1",
             default_model=DEFAULT_CEREBRAS_MODEL,
+        ),
+        IntegrationConfig(
+            id="brave-search",
+            name="Brave Search",
+            kind="brave_search",
+            enabled=False,
+            api_key=os.getenv("BRAVE_SEARCH_API_KEY", ""),
         ),''',
     )
     replace(
@@ -587,6 +608,20 @@ def adapt_config(text):
 def adapt_text_agent(text):
     """Cerebras also serves the add-on's HA Assist text conversation route."""
     replacements = [
+        ('from app.web_search_tool import WEB_SEARCH_TOOL_NAME,',
+         'from app import brave_search\nfrom app.web_search_tool import WEB_SEARCH_TOOL_NAME,'),
+        ('    model = integration.default_model or provider.default_model or DEFAULT_WEB_SEARCH_MODEL\n    if provider.kind in {"openai", "openai_cloud"}:',
+         '''    model = integration.default_model or provider.default_model or DEFAULT_WEB_SEARCH_MODEL
+    if provider.kind == "brave_search":
+        api_key = (provider.api_key or "").strip()
+        if not api_key:
+            return None
+        model = "brave"
+
+        async def runner(query: str) -> str:
+            return await brave_search.search(api_key, query, provider.region)
+
+    elif provider.kind in {"openai", "openai_cloud"}:'''),
         ('        "openai_compatible",\n        "ollama",',
          '        "openai_compatible",\n        "cerebras",\n        "ollama",'),
         ('    if provider_kind in {"gemini", "gemini_cloud"}:\n        api_key =',
@@ -702,7 +737,23 @@ def adapt_ui(text):
     )
     replace(
         '  ["ollama", "Ollama", Cpu],\n  ["local_runtime", "Local runtime", Cpu],\n  ["web_search", "Web Search", Search],',
-        '  ["ollama", "Ollama", Cpu],\n  ["groq", "Groq", Cloud],\n  ["cerebras", "Cerebras Cloud", Cloud],\n  ["local_runtime", "Local runtime", Cpu],\n  ["sherpa_onnx", "sherpa-onnx (local STT)", Cpu],\n  ["piper_wyoming", "Piper/Wyoming (local TTS)", Cpu],\n  ["web_search", "Web Search", Search],',
+        '  ["ollama", "Ollama", Cpu],\n  ["groq", "Groq", Cloud],\n  ["cerebras", "Cerebras Cloud", Cloud],\n  ["local_runtime", "Local runtime", Cpu],\n  ["sherpa_onnx", "sherpa-onnx (local STT)", Cpu],\n  ["piper_wyoming", "Piper/Wyoming (local TTS)", Cpu],\n  ["web_search", "Web Search", Search],\n  ["brave_search", "Brave Search", Search],',
+    )
+    replace(
+        'const webSearchProviderKinds = ["openai_cloud", "gemini_cloud"];',
+        'const webSearchProviderKinds = ["openai_cloud", "gemini_cloud", "brave_search"];',
+    )
+    replace(
+        '      <Field label={t("Cloud LLM provider")}>\n        <select\n          value={selectedProvider?.id || ""}',
+        '      <Field label={t("Search provider")}>\n        <select\n          value={selectedProvider?.id || ""}',
+    )
+    replace(
+        '      <Field label={t("Search model")}>\n        <input\n          autoComplete="off"\n          list={listId}',
+        '      {selectedProvider?.kind !== "brave_search" && <Field label={t("Search model")}>\n        <input\n          autoComplete="off"\n          list={listId}',
+    )
+    replace(
+        '        </datalist>\n      </Field>\n      <div className="empty-state wide">\n        OpenAI uses the Responses web search tool. Gemini uses Google Search grounding. Credentials stay in the selected provider integration.',
+        '        </datalist>\n      </Field>}\n      <div className="empty-state wide">\n        OpenAI uses the Responses web search tool. Gemini uses Google Search grounding. Brave Search returns web and news results for the model to read. Credentials stay in the selected provider integration.',
     )
     replace(
         '  stt: ["soniox", "deepgram", "speechmatics", "gradium", "openai_cloud"],',
@@ -722,7 +773,7 @@ def adapt_ui(text):
     )
     replace(
         '      "anthropic",\n      "azure_openai",\n      "soniox",\n      "deepgram",\n      "cartesia",\n      "gradium",\n      "speechmatics",\n      "elevenlabs",\n      "google_imagen",\n      "fal_image",\n    ].includes(integration.kind)',
-        '      "anthropic",\n      "azure_openai",\n      "soniox",\n      "deepgram",\n      "cartesia",\n      "gradium",\n      "speechmatics",\n      "elevenlabs",\n      "google_imagen",\n      "fal_image",\n      "groq",\n      "cerebras",\n    ].includes(integration.kind)',
+        '      "anthropic",\n      "azure_openai",\n      "soniox",\n      "deepgram",\n      "cartesia",\n      "gradium",\n      "speechmatics",\n      "elevenlabs",\n      "google_imagen",\n      "fal_image",\n      "groq",\n      "cerebras",\n      "brave_search",\n    ].includes(integration.kind)',
     )
     replace(
         '  if (integration.kind === "azure_openai") {',
@@ -752,6 +803,15 @@ def adapt_ui(text):
           updateIntegration={updateIntegration}
           wide
         />
+      </SettingsSection>
+    );
+  }
+
+  if (integration.kind === "brave_search") {
+    return (
+      <SettingsSection title="Brave Search" status={secretStatus(integration, "api_key")}>
+        <SecretSetting integration={integration} field="api_key" label="API key" updateIntegration={updateIntegration} />
+        <TextSetting integration={integration} field="region" label="Country code (PL or ALL, empty means US)" updateIntegration={updateIntegration} />
       </SettingsSection>
     );
   }
@@ -1166,7 +1226,7 @@ def main():
     path = args.out/'app/session_memory.py'
     path.write_text(adapt_session_memory(path.read_text(encoding='utf-8')), encoding='utf-8')
     shutil.copyfile(Path(__file__).with_name('echomuse.py'), args.out/'app/echomuse.py')
-    for name in ('sherpa_stt.py', 'piper_wyoming_tts.py', 'energy_vad.py', 'fast_path.py', 'local_commands.py', 'tool_scope.py', 'tool_selector.py',
+    for name in ('brave_search.py', 'sherpa_stt.py', 'piper_wyoming_tts.py', 'energy_vad.py', 'fast_path.py', 'local_commands.py', 'tool_scope.py', 'tool_selector.py',
                  'schedule_language.py', 'schedule_dialogue.py', 'schedule_select.py', 'schedule_mcp.py', 'weather_commands.py', 'audio_tail.py', 'heard_check.py'):
         shutil.copyfile(Path(__file__).with_name(name), args.out/'app'/name)
     custom_sentences_src = Path(__file__).with_name('custom_sentences')

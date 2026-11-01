@@ -414,6 +414,21 @@ description is what makes the model choose it; keep the "ANY question about the
 weather" wording. With a real `weather` entity exposed the model can answer
 current conditions from `GetLiveContext` alone, but not a forecast.
 
+## Web search with Brave
+
+The Pipecat flow's **Web Search** step can use the Brave Search API instead of a
+Gemini or OpenAI model. In the add-on, enable the **Brave Search** integration,
+enter its API key, and choose it as **Search provider** on the Web Search
+integration. Its country code is optional: Brave assumes `US` when it is empty.
+
+Questions that mention news or headlines use Brave's news search limited to the
+last 24 hours, then its web search if that finds nothing; everything else uses
+web search. Each request counts against the Brave plan, so that fallback costs
+two. Every search logs `web_search brave <endpoint>: <n> results`, and a failure
+logs `web_search failed: brave ...` with Brave's status and code. Results are web
+text handed to a model that can also control the home, so they are labelled as
+untrusted and capped at five short snippets.
+
 ## Generic Pipecat servers
 
 Other endpoint paths default to Pipecat's protobuf WebSocket transport, with
