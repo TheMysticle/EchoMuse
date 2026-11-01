@@ -138,6 +138,7 @@ type Leader struct {
 	encs     map[Channel]*flacEncoder
 	volume   int // percent; -1 until the device says
 	onChange func()
+	onVolume func(pct int)
 
 	src    AudioSource
 	stop   chan struct{}
@@ -323,6 +324,37 @@ func (l *Leader) SetVolume(pct int) {
 		m.sendVolumeLocked(pct)
 	}
 	l.mu.Unlock()
+}
+
+// OnVolume is told when a player's own volume change becomes the group's, so
+// the device can follow; its report of the new level then finds nothing
+// changed. Set before Start.
+func (l *Leader) OnVolume(f func(pct int)) {
+	l.mu.Lock()
+	l.onVolume = f
+	l.mu.Unlock()
+}
+
+// memberVolume makes a player's own change the group's. That player is not sent
+// it back: it already has it, and a press after it would be undone by the echo
+// of the one before.
+func (l *Leader) memberVolume(from *member, pct int) {
+	pct = clamp(pct, 0, 100)
+	l.mu.Lock()
+	from.sentVol = pct
+	if l.volume == pct {
+		l.mu.Unlock()
+		return
+	}
+	l.volume = pct
+	for _, m := range l.members {
+		m.sendVolumeLocked(pct)
+	}
+	f := l.onVolume
+	l.mu.Unlock()
+	if f != nil {
+		f(pct)
+	}
 }
 
 func (l *Leader) volumeNow() int {

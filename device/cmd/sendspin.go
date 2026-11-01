@@ -3,6 +3,7 @@ package main
 import (
 	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/wilbowes/EchoMuse/internal/bindings/speaker"
@@ -76,9 +77,19 @@ func pctToLevel(pct int) int {
 // route. Wired into the volume change callback.
 func sendspinVolumeChanged(level int) {
 	if c := sendspinPlayer(); c != nil {
-		c.SetVolume(levelToPct(level))
+		if volumeFromSpotify.Load() {
+			c.SetVolume(levelToPct(level))
+		} else {
+			c.SetOwnVolume(levelToPct(level))
+		}
 	}
 }
+
+// volumeFromSpotify is set while the Spotify engine's volume is being applied.
+// Spotify can hand back a level it was told earlier, so what comes from it is
+// not a change to pass round a group, where a stale one would start the Echoes
+// correcting each other. Only this Echo's own engine writes it.
+var volumeFromSpotify atomic.Bool
 
 // sendspinLinkDown stops the player when the controller link goes: EchoMuse
 // is one system, and an Echo whose ring says it is disconnected should not

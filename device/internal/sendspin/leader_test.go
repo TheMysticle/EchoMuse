@@ -714,3 +714,125 @@ func TestNothingRunsUntilThereIsAMember(t *testing.T) {
 		t.Errorf("the leader consumed %d periods of audio it had no use for", reads)
 	}
 }
+
+// volumeLog is a player wired as the device wires it: a command becomes the
+// device's level, and the device reports every level back.
+type volumeLog struct {
+	mu  sync.Mutex
+	got []int
+}
+
+func (v *volumeLog) add(pct int) { v.mu.Lock(); v.got = append(v.got, pct); v.mu.Unlock() }
+func (v *volumeLog) list() []int {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return append([]int(nil), v.got...)
+}
+
+func wiredPlayer(t *testing.T, name string) (*Client, int, *volumeLog) {
+	t.Helper()
+	c, port := startPlayer(t, name)
+	v := &volumeLog{}
+	c.OnVolume(func(pct int) { v.add(pct); c.SetOwnVolume(pct) })
+	return c, port, v
+}
+
+// groupOfTwo is a leader at 40 with two players that have joined it.
+func groupOfTwo(t *testing.T) (l *Leader, a, b *Client, av, bv, lv *volumeLog) {
+	t.Helper()
+	a, ap, av := wiredPlayer(t, "a")
+	b, bp, bv := wiredPlayer(t, "b")
+	l = newTestLeader(t)
+	lv = &volumeLog{}
+	l.OnVolume(func(pct int) { lv.add(pct); l.SetVolume(pct) })
+	share(t, l, a)
+	share(t, l, b)
+	l.SetVolume(40)
+	l.SetMembers("G", ChannelMono, []Member{
+		{ID: "a", ClientID: a.ClientID(), Host: "127.0.0.1", Port: ap},
+		{ID: "b", ClientID: b.ClientID(), Host: "127.0.0.1", Port: bp}})
+	waitFor(t, "both ready", 8*time.Second, func() bool {
+		return memberState(l, "a") == StateReady && memberState(l, "b") == StateReady
+	})
+	waitFor(t, "both at 40", 3*time.Second, func() bool {
+		return len(av.list()) == 1 && len(bv.list()) == 1
+	})
+	return
+}
+
+func TestAPlayersOwnVolumeBecomesTheGroups(t *testing.T) {
+	l, a, _, av, bv, lv := groupOfTwo(t)
+	a.SetOwnVolume(25)
+	waitFor(t, "the leader and the other player", 3*time.Second, func() bool {
+		return l.volumeNow() == 25 && len(bv.list()) == 2
+	})
+	time.Sleep(200 * time.Millisecond) // long enough for an echo to show
+	if got := lv.list(); len(got) != 1 || got[0] != 25 {
+		t.Errorf("leader's device told %v, want [25]", got)
+	}
+	if got := bv.list(); got[1] != 25 || len(got) != 2 {
+		t.Errorf("other player told %v, want [40 25]", got)
+	}
+	if got := av.list(); len(got) != 1 {
+		t.Errorf("the player that changed it was told %v, want only the 40 it joined at", got)
+	}
+}
+
+func TestQuickPressesOnAPlayerEndAtTheLast(t *testing.T) {
+	l, a, b, av, _, _ := groupOfTwo(t)
+	for _, v := range []int{39, 38, 37, 36, 35} {
+		a.SetOwnVolume(v)
+	}
+	waitFor(t, "the last press everywhere", 3*time.Second, func() bool {
+		return l.volumeNow() == 35 && b.store.settings().Volume == 35
+	})
+	time.Sleep(200 * time.Millisecond)
+	if v := a.store.settings().Volume; v != 35 || len(av.list()) != 1 {
+		t.Errorf("the player pressed is at %d and was told %v, want 35 and nothing new", v, av.list())
+	}
+}
+
+func TestALeadersVolumeIsNotTakenBackUpFromItsPlayers(t *testing.T) {
+	l, _, _, av, bv, lv := groupOfTwo(t)
+	for _, v := range []int{50, 60, 70, 80} {
+		l.SetVolume(v)
+	}
+	waitFor(t, "players at 80", 3*time.Second, func() bool {
+		a, b := av.list(), bv.list()
+		return a[len(a)-1] == 80 && b[len(b)-1] == 80
+	})
+	time.Sleep(200 * time.Millisecond)
+	if got := lv.list(); len(got) != 0 || l.volumeNow() != 80 {
+		t.Errorf("leader at %d, its device told %v, want 80 and nothing", l.volumeNow(), got)
+	}
+}
+
+func TestJoiningDoesNotMoveTheGroup(t *testing.T) {
+	a, ap, av := wiredPlayer(t, "a")
+	a.SetOwnVolume(90) // its own level before it has a leader
+	l := newTestLeader(t)
+	lv := &volumeLog{}
+	l.OnVolume(lv.add)
+	share(t, l, a)
+	l.SetVolume(40)
+	l.SetMembers("G", ChannelMono, []Member{{ID: "a", ClientID: a.ClientID(), Host: "127.0.0.1", Port: ap}})
+	waitFor(t, "told the group's volume", 8*time.Second, func() bool {
+		got := av.list()
+		return len(got) == 1 && got[0] == 40
+	})
+	time.Sleep(200 * time.Millisecond)
+	if got := lv.list(); len(got) != 0 || l.volumeNow() != 40 {
+		t.Errorf("leader at %d, its device told %v, want 40 and nothing", l.volumeNow(), got)
+	}
+}
+
+func TestAVolumeNotChangedAtTheEchoStaysOnIt(t *testing.T) {
+	// What Spotify hands a player: reported, and not the group's.
+	l, a, _, _, bv, lv := groupOfTwo(t)
+	a.SetVolume(10)
+	waitFor(t, "the report", 3*time.Second, func() bool { return a.store.settings().Volume == 10 })
+	time.Sleep(200 * time.Millisecond)
+	if l.volumeNow() != 40 || len(lv.list()) != 0 || len(bv.list()) != 1 {
+		t.Errorf("leader at %d told %v, other player told %v", l.volumeNow(), lv.list(), bv.list())
+	}
+}

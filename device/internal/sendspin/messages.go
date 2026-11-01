@@ -87,6 +87,12 @@ type playerState struct {
 	RequiredLeadMs    int      `json:"required_lead_time_ms"`
 	MinBufferMs       int      `json:"min_buffer_ms"`
 	SupportedCommands []string `json:"supported_commands"`
+	// VolumeChanged marks a report whose volume somebody changed at this Echo,
+	// as against one answering a command. Sent only to a group's leader, which
+	// makes it the group's volume. Volume alone cannot say which it is: a reply
+	// still on its way when the volume moves again reads as a new change, and
+	// the two Echoes then correct each other for ever.
+	VolumeChanged bool `json:"echomuse_volume_changed,omitempty"`
 }
 
 type clientState struct {

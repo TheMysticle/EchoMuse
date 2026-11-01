@@ -296,7 +296,9 @@ func startSpotifyLocked(spk *speaker.PcmSpeaker, cc *client.ControlClient, vol d
 		if r := config.Get().Snapshot().SpotifyVolumeRing; r != nil {
 			ring = *r
 		}
+		volumeFromSpotify.Store(true)
 		vol.SetVolumeFrom(level, "spotify", ring)
+		volumeFromSpotify.Store(false)
 	})
 	p.OnChange(debounce(300*time.Millisecond, func() { cc.SendSpotifyStatus(p.Status()) }))
 	if ferr := firewall.Open(spotify.DefaultZeroconfPort); ferr != nil {

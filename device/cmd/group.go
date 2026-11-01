@@ -108,6 +108,12 @@ func reconcileGroup(cc *client.ControlClient, vol deviceVolume, push bool) {
 		}
 		l.OnChange(debounce(300*time.Millisecond, func() { cc.SendGroupStatus(l.Status()) }))
 		l.SetVolume(levelToPct(vol.VolumeLevel()))
+		// Somebody changed the volume at another Echo of the group, on purpose,
+		// so the arc shows as it does for the same change at the leader.
+		l.OnVolume(func(pct int) {
+			level := pctToLevel(pct)
+			vol.SetVolumeFrom(level, "group", level != 0 && level != vol.VolumeLevel())
+		})
 		l.SetMembers(lead.Name, sendspin.ParseChannel(lead.Channel), groupMembers(lead))
 		if err := l.Start(sp); err != nil {
 			log.Printf("[group] leader not started: %v", err)

@@ -632,6 +632,8 @@ func (m *member) onState(st clientState) {
 		if !was {
 			m.setState(StateReady, "")
 			m.l.activate(m)
+		} else if st.Player != nil && st.Player.VolumeChanged {
+			m.l.memberVolume(m, st.Player.Volume)
 		}
 		return
 	}

@@ -314,7 +314,15 @@ func (c *Client) OnVolume(f func(v int)) {
 // SetVolume reports the device's volume (0-100) when it changes by any
 // route: its buttons, Home Assistant, or a command this client passed on.
 // Sent to the server only when it differs from what it last heard.
-func (c *Client) SetVolume(v int) {
+func (c *Client) SetVolume(v int) { c.setVolume(v, false) }
+
+// SetOwnVolume is SetVolume for a change made at this Echo, which a group's
+// leader takes up as the group's volume. A command from a server cannot arrive
+// here as one: applySettings stores its value before telling the device, so
+// the device's report of it finds nothing changed.
+func (c *Client) SetOwnVolume(v int) { c.setVolume(v, true) }
+
+func (c *Client) setVolume(v int, own bool) {
 	set := c.store.settings()
 	if set.Volume == v {
 		return
@@ -325,7 +333,11 @@ func (c *Client) SetVolume(v int) {
 	s := c.admitted
 	c.mu.Unlock()
 	if s != nil {
-		s.sendState()
+		if own {
+			s.sendVolumeChanged()
+		} else {
+			s.sendState()
+		}
 	}
 	c.changed()
 }

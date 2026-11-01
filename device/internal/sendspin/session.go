@@ -432,7 +432,14 @@ func (s *session) available() bool { return !s.c.externalFor(s) }
 // sendState reports availability and the player's state: on activation, on
 // a command, when HA takes or releases the music plane. Held while the clock
 // has not converged, and sent from onTime once it has.
-func (s *session) sendState() {
+func (s *session) sendState() { s.report(false) }
+
+// sendVolumeChanged is sendState for a volume changed at this Echo. Held like
+// any report if the clock has not converged, when it goes out unmarked: a
+// player only just joined takes the leader's volume anyway.
+func (s *session) sendVolumeChanged() { s.report(s.groupLed) }
+
+func (s *session) report(volumeChanged bool) {
 	if !s.playerRole() {
 		return
 	}
@@ -455,6 +462,7 @@ func (s *session) sendState() {
 			RequiredLeadMs:    requiredLeadMs,
 			MinBufferMs:       minBufferMs,
 			SupportedCommands: []string{"set_static_delay"},
+			VolumeChanged:     volumeChanged,
 		},
 	})
 }

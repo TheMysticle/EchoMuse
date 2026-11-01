@@ -31,8 +31,10 @@ stamp says, against a clock it keeps matched to the leader's.
 - Pause, skip and stop reach every Echo at once. Starting a song adds about half
   a second. A skip or seek made on the phone reaches the other Echoes about two
   seconds later, because that audio was already on its way.
-- The leader's volume is the group's: the others follow it. Changing a
-  member's volume changes only that Echo.
+- The group has one volume. Changing it on the leader or on any other Echo of
+  the group, with its buttons or from Home Assistant, changes it on all of them.
+  A level set from the Spotify app on an Echo that is not the leader stays on
+  that Echo.
 - If no other Echo is reachable, the leader plays alone, exactly as it does
   without a group.
 
