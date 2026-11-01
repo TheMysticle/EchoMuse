@@ -55,7 +55,7 @@ def adapt(text):
     if session_body.get("echomuse"):
         flow = flow.model_copy(deep=True)
         area = session_body["echomuse"].get("area")
-        area_hint = f" The speaker is in the {area} area; treat that as the room for bare media stop requests." if area else " Use the speaker's current Home Assistant area for bare media stop requests."
+        area_hint = f" The speaker is in the {area.replace('_', ' ')} area; treat that as the room for bare media stop requests, and pass it as player_area to play_media when the user names no room or device." if area else " Use the speaker's current Home Assistant area for bare media stop requests."
         lang_hint = f" Always reply in the language with code {flow.language or 'en'}, the satellite's configured language, unless the user clearly speaks a different language to you. Accented or very short speech is not a reason to switch, and names or titles in another language in tool results or the home setup do not change your reply language."
         if _runtime_mode(flow) == "composed":
             flow.instructions += echomuse.composed_instructions(session_body["echomuse"], flow.language)
