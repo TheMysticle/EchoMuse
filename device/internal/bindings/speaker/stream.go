@@ -53,6 +53,11 @@ type audioStream struct {
 	// and consumed by the pump loop when the channel drains, so a drain at
 	// the natural end of a stream is not misreported as an underrun.
 	eosPending atomic.Bool
+	// flushArmed says eosPending was set by flush and not by a real EOS.
+	// Guarded by mu. A flush with nothing playing has no drain coming to
+	// consume it, so the first period of the next stream clears it there; see
+	// take.
+	flushArmed bool
 
 	// mu guards active and discarding as one unit. They used to be
 	// independent atomics, but flush's check-active-then-arm and endStream's
@@ -183,13 +188,14 @@ func (s *audioStream) arriving(now time.Time, stale time.Duration) bool {
 
 func (s *audioStream) endStream() {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.active = false
 	wasDiscarding := s.discarding
 	s.discarding = false
-	s.mu.Unlock()
 	if wasDiscarding {
 		return
 	}
+	s.flushArmed = false
 	s.eosPending.Store(true)
 }
 
@@ -203,8 +209,9 @@ func (s *audioStream) flush() {
 	if s.active {
 		s.discarding = true
 	}
-	s.mu.Unlock()
+	s.flushArmed = true
 	s.eosPending.Store(true)
+	s.mu.Unlock()
 	for {
 		select {
 		case <-s.ch:
@@ -259,6 +266,26 @@ func (s *audioStream) ready(prime int) bool {
 func (s *audioStream) take() []byte {
 	select {
 	case period := <-s.ch:
+		// The first period of a stream, and the only one that takes the lock.
+		// An armed flush here had no drain to consume it: the controller
+		// flushes at every wake, usually with nothing playing, and left armed
+		// it read as this stream's EOS. minDepth never sampled and the first
+		// dip reported the stream complete, hiding an underrun and ending the
+		// turn with audio still to come (2026-10-31, primeWait=11ms
+		// minDepth=-1, then a stray periods=1 stream).
+		//
+		// ready() has already seen eosPending, so this stream still started
+		// without the prime gate. That is deliberate and unchanged: replies
+		// arrive at about realtime, so restoring the gate here would delay
+		// every reply after a flush by most of voicePrebufferMs.
+		if !s.playing {
+			s.mu.Lock()
+			if s.flushArmed {
+				s.flushArmed = false
+				s.eosPending.Store(false)
+			}
+			s.mu.Unlock()
+		}
 		s.playing = true
 		s.periods++
 		s.lastTakeNs.Store(time.Now().UnixNano())
@@ -294,6 +321,9 @@ func (s *audioStream) take() []byte {
 // Returns the stats to report, or nil for an underrun.
 func (s *audioStream) drained() *StreamStats {
 	s.playing = false
+	s.mu.Lock()
+	s.flushArmed = false
+	s.mu.Unlock()
 	if !s.eosPending.Swap(false) {
 		// Mid-stream drain: the WS sender fell behind realtime playback and
 		// a silence gap is being injected — the audible stutter on weak WiFi

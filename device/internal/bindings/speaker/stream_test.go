@@ -230,3 +230,93 @@ func TestArrivingSpansTheWireAndNeverOutlivesIt(t *testing.T) {
 		t.Fatal("the EOS ends it, even while the buffer plays on")
 	}
 }
+
+// A flush with nothing playing, as the controller sends at a wake. Nothing
+// drains it, so it used to read as the next stream's EOS.
+func idleFlushThenStart(t *testing.T, s *audioStream) {
+	t.Helper()
+	s.flush()
+	s.pump(make([]byte, 8), 8)
+	if !s.ready(24) {
+		t.Fatal("a stream after an idle flush must still start at once: holding it for the prime would delay every reply")
+	}
+	if s.take() == nil {
+		t.Fatal("no period to take")
+	}
+}
+
+func TestAnIdleFlushIsNotTheNextStreamsEnd(t *testing.T) {
+	s := newAudioStream(128, make(chan struct{}))
+	idleFlushThenStart(t, s)
+	if st := s.drained(); st != nil {
+		t.Fatalf("first dip reported the stream complete: %+v", st)
+	}
+	if s.underruns != 1 {
+		t.Fatalf("underruns = %d, want the dip counted", s.underruns)
+	}
+}
+
+func TestDepthIsMeasuredAfterAnIdleFlush(t *testing.T) {
+	s := newAudioStream(128, make(chan struct{}))
+	s.flush()
+	for i := 0; i < 3; i++ {
+		s.pump(make([]byte, 8), 8)
+	}
+	s.take()
+	if s.minDepth != 2 {
+		t.Fatalf("minDepth = %d, want 2", s.minDepth)
+	}
+}
+
+func TestARealEndStillEndsAStreamAfterAnIdleFlush(t *testing.T) {
+	s := newAudioStream(128, make(chan struct{}))
+	idleFlushThenStart(t, s)
+	s.endStream()
+	st := s.drained()
+	if st == nil || st.Periods != 1 || st.Underruns != 0 {
+		t.Fatalf("stats = %+v, want one period and no underrun", st)
+	}
+}
+
+func TestAShortClipAfterAnIdleFlushKeepsItsEnd(t *testing.T) {
+	s := newAudioStream(128, make(chan struct{}))
+	s.flush()
+	s.pump(make([]byte, 8), 8) // the whole clip
+	s.endStream()              // its EOS, before the first period is taken
+	if !s.ready(24) {
+		t.Fatal("clip held for the prime")
+	}
+	s.take()
+	if !s.eosPending.Load() {
+		t.Fatal("the clip's real EOS was cleared with the flush")
+	}
+	if st := s.drained(); st == nil {
+		t.Fatal("the clip's end was counted as an underrun")
+	}
+}
+
+func TestAFlushWhilePlayingStillEndsThatStream(t *testing.T) {
+	s := newAudioStream(128, make(chan struct{}))
+	s.pump(make([]byte, 8), 8)
+	s.pump(make([]byte, 8), 8)
+	s.ready(1)
+	s.take()
+	s.flush()
+	if st := s.drained(); st == nil || st.Underruns != 0 {
+		t.Fatalf("a flush mid-playback must read as an ending, got %+v", st)
+	}
+	if s.eosPending.Load() || s.flushArmed {
+		t.Fatal("flush state survived its own drain")
+	}
+}
+
+func TestOnlyTheStreamAfterAnIdleFlushSkipsThePrime(t *testing.T) {
+	s := newAudioStream(128, make(chan struct{}))
+	idleFlushThenStart(t, s)
+	s.endStream()
+	s.drained()
+	s.pump(make([]byte, 8), 8)
+	if s.ready(24) {
+		t.Fatal("a later stream with no flush must wait for the prime as before")
+	}
+}
