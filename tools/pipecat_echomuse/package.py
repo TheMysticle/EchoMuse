@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import time
 
 PIN = "a538d1d1bacc8609061719f0b05c1622147ccb4b"
 ROOT = Path(__file__).resolve().parents[2]
@@ -1255,6 +1256,10 @@ def main():
     pyproject_path.write_text(pyproject, encoding='utf-8')
     build_ui(args.out)
     version = subprocess.check_output(['git', '-C', str(ROOT), 'rev-parse', '--short', 'HEAD'], text=True).strip()
+    # Home Assistant offers an update only when this string changes, so builds of
+    # uncommitted work must not all share the commit's version.
+    if subprocess.check_output(['git', '-C', str(ROOT), 'status', '--porcelain', '.'], text=True).strip():
+        version += '-dirty.' + time.strftime('%Y%m%d%H%M')
     path = args.out/'config.yaml'
     config = path.read_text(encoding='utf-8')
     config = re.sub(r'^image:.*\n', '', config, flags=re.M)
