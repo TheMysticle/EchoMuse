@@ -462,11 +462,13 @@ SILENT_TOOL_REPLY_PROMPT = (
 
 
 class _ReplyWatch:
-    __slots__ = ("pending", "nudged")
+    __slots__ = ("pending", "nudged", "heard")
 
     def __init__(self):
         self.pending = False
         self.nudged = False
+        # Anything audible in this user turn, before or after a tool call.
+        self.heard = False
 
 
 def _reply_watch(service):
@@ -482,6 +484,7 @@ def reply_user_turn(service):
     watch = _reply_watch(service)
     watch.pending = False
     watch.nudged = False
+    watch.heard = False
 
 
 def reply_tool_result(service):
@@ -504,12 +507,16 @@ def reply_model_turn(service, message):
         inline = getattr(part, "inline_data", None)
         if (inline is not None and getattr(inline, "data", None)) or (
                 getattr(part, "text", None) and not getattr(part, "thought", False)):
-            _reply_watch(service).pending = False
+            watch = _reply_watch(service)
+            watch.pending = False
+            watch.heard = True
             return
 
 
 def reply_output_transcription(service):
-    _reply_watch(service).pending = False
+    watch = _reply_watch(service)
+    watch.pending = False
+    watch.heard = True
 
 
 async def answer_silent_tool_turn(service):
@@ -533,11 +540,21 @@ async def answer_silent_tool_turn(service):
     It costs nothing on a turn that spoke. Nothing here
     calls a tool: one the model asks for in reply still goes through the heard
     check against what the user actually said.
+
+    A turn that spoke BEFORE its tool call is not silent either, and nudging it
+    makes Gemini say a second thing: field 2026-11-02 22:22, "set a timer" was
+    answered "for how long?" and then EchoMuseRequestContinuation, whose result
+    Gemini rightly left unanswered; the nudge drew a second reply that was not
+    a question, and the conversation ended before the user could answer. The
+    Echo only spins when the whole user turn has been silent, so that is the
+    test.
     """
     watch = _reply_watch(service)
     if not watch.pending:
         return
     watch.pending = False
+    if watch.heard:
+        return
     from loguru import logger
     if watch.nudged:
         logger.warning("Gemini Live ended its turn silently after a tool result again; not asking twice")

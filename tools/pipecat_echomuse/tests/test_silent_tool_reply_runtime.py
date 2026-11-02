@@ -149,3 +149,16 @@ def test_packaged_service_wires_every_hook():
     for name in ('_handle_user_started_speaking', '_tool_result', '_handle_msg_tool_call',
                  '_handle_msg_turn_complete', '_handle_msg_model_turn'):
         assert body.count(f'async def {name}(') == 1, name
+
+
+@pytest.mark.parametrize('spoken', [turn(AUDIO), 'transcript'])
+def test_a_turn_that_spoke_before_its_tool_call_is_not_silent(spoken):
+    # "Set a timer" -> "For how long?" + EchoMuseRequestContinuation, then the
+    # tool result answered with turn_complete alone: the question was heard.
+    assert run(service(), 'user', spoken, 'call', 'result', 'complete') == []
+
+
+def test_what_was_heard_in_one_turn_does_not_excuse_the_next():
+    live = service()
+    run(live, 'user', turn(AUDIO), 'call', 'result', 'complete')
+    assert run(live, 'user', 'call', 'result', 'complete') == NUDGE
