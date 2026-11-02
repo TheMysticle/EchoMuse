@@ -111,6 +111,14 @@ def test_voice_mode_keeps_the_microphone_open_under_a_reply(fresh_db):
     asyncio.run(main())
 
 
+def controls(d):
+    return [json.loads(c.args[0]) for c in d.control_ws.send.call_args_list]
+
+
+def closes(d):
+    return [m for m in controls(d) if m.get('type') == 'listen_close']
+
+
 def test_microphone_reopens_for_a_clarification_only_once_the_reply_is_heard(fresh_db):
     async def main():
         d = bridge()
@@ -124,12 +132,91 @@ def test_microphone_reopens_for_a_clarification_only_once_the_reply_is_heard(fre
             assert d.workflow.accept_audio and d.workflow.reply_gated   # server is ready; user cannot answer yet
             d.workflow.feed(b'\x03\x00', 1)
             assert d.workflow.queue.empty()
+            assert not any(m == {'type': 'mic_start', 'lock_mic': True} for m in controls(d))
             await until(lambda: any(c.args[0] == b'\x03' for c in d.data_ws.send.call_args_list))
             d.signal_playback_done()
             await until(lambda: not d.workflow.playback_tasks)
             assert not d.workflow.reply_gated and d.workflow.awake
-            d.workflow.feed(b'\x04\x00', 1)
+            # The answer comes on the bounded turn stream, opened only now.
+            await until(lambda: {'type': 'mic_start', 'lock_mic': True} in controls(d))
+            d.workflow.feed(b'\x04\x00', 1)                       # the closed session stays closed
+            assert d.workflow.queue.empty()
+            d.workflow.feed(b'\x04\x00')
             assert not d.workflow.queue.empty()
+            # Its end of speech closes it again and hands back to local listening.
+            assert d.workflow.device_endpoint()
+            await until(lambda: {'type': 'mic_stop'} in controls(d))
+        finally:
+            await finish(d, receiver)
+    asyncio.run(main())
+
+
+def test_wake_mode_closes_the_echo_session_when_the_reply_starts(fresh_db):
+    # The Echo's own 30s max_open ended a short story mid-reply (2026-11-02):
+    # the session streamed, unheard, under the whole answer.
+    async def main():
+        d = bridge()
+        events, receiver = serve(d)
+        try:
+            await d.workflow.wake(1)
+            assert closes(d) == []
+            await events.put(b'\x10\x00' * 2400)
+            await until(lambda: closes(d))
+            assert closes(d) == [{'type': 'listen_close', 'session': 1, 'reason': 'reply'}]
+            assert d.workflow.awake and d.workflow.session is None
+            assert d.listen_session is None
+        finally:
+            await finish(d, receiver)
+    asyncio.run(main())
+
+
+def test_wake_mode_closes_the_echo_session_at_its_own_end_of_speech(fresh_db):
+    async def main():
+        d = bridge()
+        events, receiver = serve(d)
+        try:
+            await d.workflow.wake(1)
+            assert d.workflow.device_endpoint()
+            await until(lambda: closes(d))
+            assert closes(d)[0]['reason'] == 'end_of_speech'
+            # The reply that follows does not close anything twice.
+            await events.put(b'\x10\x00' * 2400)
+            await until(lambda: d.workflow.reply_gated)
+            await asyncio.sleep(.05)
+            assert len(closes(d)) == 1
+        finally:
+            await finish(d, receiver)
+    asyncio.run(main())
+
+
+def test_voice_mode_keeps_the_echo_session_through_the_reply(fresh_db):
+    async def main():
+        d = bridge(interrupt_by='voice')
+        events, receiver = serve(d)
+        try:
+            await d.workflow.wake(1)
+            await events.put(b'\x10\x00' * 2400)
+            await until(lambda: d.workflow.output_queue is not None)
+            await asyncio.sleep(.05)
+            assert closes(d) == [] and d.workflow.session == 1
+        finally:
+            await finish(d, receiver)
+    asyncio.run(main())
+
+
+def test_a_reply_that_ends_the_conversation_opens_no_turn_stream(fresh_db):
+    async def main():
+        d = bridge()
+        events, receiver = serve(d)
+        try:
+            await d.workflow.wake(1)
+            await events.put(b'\x10\x00' * 2400)
+            await events.put(json.dumps({'type': 'phase', 'phase': 'listening', 'follow_up': True}))
+            await until(lambda: any(c.args[0] == b'\x03' for c in d.data_ws.send.call_args_list))
+            d.signal_playback_done()
+            await until(lambda: not d.workflow.awake and not d.workflow.playback_tasks)
+            assert {'type': 'mic_start', 'lock_mic': True} not in controls(d)
+            assert len(closes(d)) == 1
         finally:
             await finish(d, receiver)
     asyncio.run(main())

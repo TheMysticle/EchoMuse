@@ -42,6 +42,7 @@ from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
 from websockets.asyncio.client import connect
 
 import em_resample
+import em_tasks
 
 log = logging.getLogger("echomuse.workflow")
 NATIVE = "home_assistant"
@@ -328,6 +329,11 @@ class Bridge:
         self.wake_sent_epoch = -1
         self.speaker_open = False
         self.button_capture = False
+        # Wake-word interrupting only: the Echo's microphone has been closed
+        # for this conversation (uplink_closed), and a follow-up turn stream is
+        # open in its place (follow_up_stream). See close_uplink.
+        self.uplink_closed = False
+        self.follow_up_stream = False
         self.orphan_since = None
         self.orphan_last = 0.0
         self.orphan_stopped = False
@@ -435,6 +441,8 @@ class Bridge:
         self.accept_audio = True
         self.session = session
         self.endpointed = False
+        self.uplink_closed = False
+        self.follow_up_stream = False
         self.session_started = asyncio.get_running_loop().time()
         self.session_hard_deadline = self.session_started + SESSION_MAX_S
         self.turn = {"t0": self.session_started, "wake": wake_info, "button": button,
@@ -505,7 +513,53 @@ class Bridge:
         log.info("[%s] Pipecat session %s: the Echo heard the talker stop; sending %.1fs of "
                  "silence so the server ends the turn", self.device.device_id, self.session,
                  ENDPOINT_SILENCE_S)
+        em_tasks.spawn(self.close_uplink("end_of_speech"))
         return True
+
+    async def close_uplink(self, reason):
+        """Stop the Echo streaming once the talker has finished (wake-word interrupting).
+
+        With interrupting set to the wake word, nothing the microphone hears
+        after the talker stops reaches the server: the endpoint drops it and
+        reply_gated drops it while the answer plays. The Echo's session stayed
+        open regardless, so the Echo kept streaming to the controller through
+        the whole reply, against docs/listening.md ("nothing streams during the
+        reply unless the wake word is heard"), and its own 30s max_open then
+        ended any exchange longer than that mid-reply (Lounge, 2026-11-02: a
+        short story cut at 29.9s). Closing it hands the Echo back to local
+        listening, which is what hears a barge-in, exactly as the native path
+        does at end of speech; a follow-up reopens a bounded turn stream
+        (reopen_uplink). Voice interrupting keeps the session: the server
+        needs the audio to hear a talker over the reply, and lives with the cap.
+        """
+        if not self.awake or self.interrupt_effective != INTERRUPT_WAKE or self.button_capture:
+            return
+        if self.session is not None:
+            old, self.session = self.session, None
+            self.uplink_closed = True
+            log.info("[%s] Pipecat session %s: closing the Echo's microphone (%s); "
+                     "it listens locally for the wake word", self.device.device_id, old, reason)
+            await self.device.listen_close(old, reason)
+        elif self.follow_up_stream:
+            self.follow_up_stream = False
+            self.uplink_closed = True
+            await self.device.mic_stop()
+
+    async def reopen_uplink(self):
+        """After a reply that asked something, open the bounded turn stream for the answer.
+
+        The same stream the native path uses for a follow-up: the Echo gates it
+        on speech, ends it itself after 5s of nothing, and sends end of speech,
+        which arrives here as device_endpoint and closes it again.
+        """
+        if (not self.awake or not self.uplink_closed or self.follow_up_stream
+                or self.device.muted):
+            return
+        self.uplink_closed = False
+        self.follow_up_stream = True
+        log.info("[%s] Pipecat: reply asked a question; opening the Echo's turn stream "
+                 "for the answer", self.device.device_id)
+        await self.device.mic_start_turn()
 
     @property
     def speaking(self):
@@ -650,6 +704,10 @@ class Bridge:
         if not drain:
             self.session_epoch += 1
         old_session, self.session = self.session, None
+        self.uplink_closed = False
+        if self.follow_up_stream:
+            self.follow_up_stream = False
+            await self.device.mic_stop()
         while not self.queue.empty():
             self.queue.get_nowait()
         if old_session is not None:
@@ -927,6 +985,7 @@ class Bridge:
                             # not when the server finished sending it.
                             self.endpointed = False
                             self.touch()
+                            await self.reopen_uplink()
                 except asyncio.CancelledError:
                     raise
                 except Exception:
@@ -937,6 +996,10 @@ class Bridge:
                 finally:
                     self.playback_tasks.discard(asyncio.current_task())
             self.mark("first_audio")
+            # Whatever the talker says from here is dropped (reply_gated), so
+            # stop the Echo sending it. Covers an Echo whose endpointer did not
+            # fire, which is most turns.
+            em_tasks.spawn(self.close_uplink("reply"))
             task = asyncio.create_task(play())
             # Retrieve errors even if the remote connection closes first.
             task.add_done_callback(lambda done: None if done.cancelled() else done.exception())

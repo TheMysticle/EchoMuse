@@ -107,7 +107,13 @@ def test_clarification_after_an_endpointed_question_hears_the_answer(fresh_db):
             await until(lambda: any(c.args[0] == b'\x03' for c in d.data_ws.send.call_args_list))
             d.signal_playback_done()
             await until(lambda: not d.workflow.playback_tasks)
+            # The Echo's session closed at end of speech; the answer arrives on
+            # the bounded turn stream opened once the question has been heard.
+            await until(lambda: any(json.loads(c.args[0]) == {'type': 'mic_start', 'lock_mic': True}
+                                    for c in d.control_ws.send.call_args_list))
             d.workflow.feed(SPEECH, 1)
+            assert d.workflow.queue.empty()
+            d.workflow.feed(SPEECH)
             assert not d.workflow.queue.empty()
         finally:
             receiver.cancel()
