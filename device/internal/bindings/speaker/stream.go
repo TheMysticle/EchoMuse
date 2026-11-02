@@ -189,13 +189,22 @@ func (s *audioStream) arriving(now time.Time, stale time.Duration) bool {
 func (s *audioStream) endStream() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	wasActive := s.active
 	s.active = false
 	wasDiscarding := s.discarding
 	s.discarding = false
 	if wasDiscarding {
 		return
 	}
-	s.flushArmed = false
+	// An EOS with no period since the last one ends nothing. The controller
+	// sends one straight after the flush at every wake (cancel_output:
+	// speaker_flush, then 0x03), so it is the common case, and it must be
+	// disarmed by the next stream exactly as the flush is: left as a real EOS
+	// it let that reply skip the startup buffer and read its first dip as its
+	// end. Measured 2026-11-02 on the Living Room pair: every reply where the
+	// EOS followed the flush split mid-sentence with a ~190ms gap, the one
+	// where it came first did not.
+	s.flushArmed = !wasActive
 	s.eosPending.Store(true)
 }
 
@@ -258,7 +267,21 @@ func (s *audioStream) ready(prime int) bool {
 	if s.playing {
 		return true
 	}
-	return n >= prime || s.eosPending.Load()
+	if n >= prime {
+		return true
+	}
+	if !s.eosPending.Load() {
+		return false
+	}
+	// Only a stream's own EOS releases a short clip early. One left by a flush
+	// or by an EOS with no stream behind it (flushArmed) says nothing about
+	// this stream, and honouring it skipped voicePrebufferMs for every reply
+	// after a wake: on the Living Room pair the configured 256ms buffer was
+	// in force on 4 of 524 replies (median wait 12-32ms, 2026-11-02).
+	s.mu.Lock()
+	stale := s.flushArmed
+	s.mu.Unlock()
+	return !stale
 }
 
 // take removes one period, updating the consumption-side accounting.
@@ -274,10 +297,9 @@ func (s *audioStream) take() []byte {
 		// turn with audio still to come (2026-10-31, primeWait=11ms
 		// minDepth=-1, then a stray periods=1 stream).
 		//
-		// ready() has already seen eosPending, so this stream still started
-		// without the prime gate. That is deliberate and unchanged: replies
-		// arrive at about realtime, so restoring the gate here would delay
-		// every reply after a flush by most of voicePrebufferMs.
+		// ready() does not count a stale EOS, so this stream waited for its
+		// prime like any other (voicePrebufferMs is the setting that trades
+		// start delay against stutter, and a wake must not bypass it).
 		if !s.playing {
 			s.mu.Lock()
 			if s.flushArmed {

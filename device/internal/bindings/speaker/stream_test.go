@@ -232,13 +232,14 @@ func TestArrivingSpansTheWireAndNeverOutlivesIt(t *testing.T) {
 }
 
 // A flush with nothing playing, as the controller sends at a wake. Nothing
-// drains it, so it used to read as the next stream's EOS.
+// drains it, so it used to read as the next stream's EOS. The stream after it
+// waits for its prime like any other (here a prime of one period).
 func idleFlushThenStart(t *testing.T, s *audioStream) {
 	t.Helper()
 	s.flush()
 	s.pump(make([]byte, 8), 8)
-	if !s.ready(24) {
-		t.Fatal("a stream after an idle flush must still start at once: holding it for the prime would delay every reply")
+	if !s.ready(1) {
+		t.Fatal("a primed stream after an idle flush must start")
 	}
 	if s.take() == nil {
 		t.Fatal("no period to take")
@@ -310,13 +311,82 @@ func TestAFlushWhilePlayingStillEndsThatStream(t *testing.T) {
 	}
 }
 
-func TestOnlyTheStreamAfterAnIdleFlushSkipsThePrime(t *testing.T) {
+// The controller's wake sequence (cancel_output) is speaker_flush then a bare
+// 0x03 EOS, and either can land first. Field log 2026-11-02, Living Room:
+// with the EOS second every reply skipped the 256ms buffer and split
+// mid-sentence; with it first the reply played whole.
+func wake(s *audioStream, eosFirst bool) {
+	if eosFirst {
+		s.endStream()
+		s.flush()
+	} else {
+		s.flush()
+		s.endStream()
+	}
+}
+
+func TestAWakeDoesNotLetTheReplySkipItsBuffer(t *testing.T) {
+	for _, eosFirst := range []bool{false, true} {
+		s := newAudioStream(128, make(chan struct{}))
+		wake(s, eosFirst)
+		pumpN(t, s, 2)
+		if s.ready(3) {
+			t.Fatalf("eosFirst=%v: reply started on 2 of 3 buffered periods", eosFirst)
+		}
+		pumpN(t, s, 1)
+		if !s.ready(3) {
+			t.Fatalf("eosFirst=%v: primed reply did not start", eosFirst)
+		}
+	}
+}
+
+func TestAfterAWakeTheFirstDipIsAnUnderrunNotTheEnd(t *testing.T) {
+	for _, eosFirst := range []bool{false, true} {
+		s := newAudioStream(128, make(chan struct{}))
+		wake(s, eosFirst)
+		pumpN(t, s, 3)
+		for s.ready(3) {
+			s.take()
+		}
+		if st := s.drained(); st != nil {
+			t.Fatalf("eosFirst=%v: first dip reported the reply complete: %+v", eosFirst, st)
+		}
+		if s.minDepth != 0 {
+			t.Fatalf("eosFirst=%v: minDepth=%d, want the dip measured", eosFirst, s.minDepth)
+		}
+	}
+}
+
+func TestAReplyEndingAfterAWakeStillReportsItsEnd(t *testing.T) {
 	s := newAudioStream(128, make(chan struct{}))
-	idleFlushThenStart(t, s)
+	wake(s, false)
+	pumpN(t, s, 5)
 	s.endStream()
-	s.drained()
-	s.pump(make([]byte, 8), 8)
-	if s.ready(24) {
-		t.Fatal("a later stream with no flush must wait for the prime as before")
+	for s.ready(3) {
+		s.take()
+	}
+	st := s.drained()
+	if st == nil || st.Periods != 5 || st.Underruns != 0 {
+		t.Fatalf("stats = %+v, want 5 periods and no underrun", st)
+	}
+	// And nothing stale is left for the reply after it.
+	pumpN(t, s, 2)
+	if s.ready(3) {
+		t.Fatal("the next reply skipped its buffer")
+	}
+}
+
+func TestAnEosOverATailStillPlayingDoesNotCutIt(t *testing.T) {
+	s := newAudioStream(128, make(chan struct{}))
+	pumpN(t, s, 4)
+	s.endStream()
+	s.ready(1)
+	s.take()
+	s.endStream() // a bare EOS while the tail plays
+	for s.ready(1) {
+		s.take()
+	}
+	if st := s.drained(); st == nil || st.Periods != 4 {
+		t.Fatalf("tail stats = %+v, want all 4 periods", st)
 	}
 }
