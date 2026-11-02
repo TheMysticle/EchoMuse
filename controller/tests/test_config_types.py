@@ -201,3 +201,17 @@ def test_voice_prebuffer_rejects_invalid_values(value):
 @pytest.mark.parametrize("value", [128, 256, 300, 512, 1024])
 def test_voice_prebuffer_accepts_supported_margins(value):
     assert not T.problems({"voicePrebufferMs": value}, {})
+
+
+def test_dashboard_buffer_choices_are_all_accepted():
+    # Each offered value must pass the validator, and the validator's floor must
+    # be offered: a saved value the list lacks displays as a different choice.
+    import re
+    from pathlib import Path
+    src = (Path(__file__).resolve().parents[1] / "static/dashboard.jsx").read_text(encoding="utf-8")
+    block = src[src.index('label="Voice playback buffer"'):]
+    block = block[:block.index("onChange=")]
+    offered = [int(v) for v in re.findall(r"value: '(\d+)'", block)]
+    assert offered and min(offered) == 128
+    for value in offered:
+        assert not T.problems({"voicePrebufferMs": value}, {}), value

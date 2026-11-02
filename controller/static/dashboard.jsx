@@ -10491,6 +10491,7 @@ function DeviceConfigForm({ config, onChange, disabled, sections, onScopeChange,
                 disabled={!voicePrebufferCapable}
                 value={String(config.voicePrebufferMs ?? 1024)}
                 options={[
+                  { value: '128', label: '128 ms — fastest' },
                   { value: '256', label: '256 ms — fast' },
                   { value: '512', label: '512 ms — balanced' },
                   { value: '1024', label: '1024 ms — maximum protection (default)' },
