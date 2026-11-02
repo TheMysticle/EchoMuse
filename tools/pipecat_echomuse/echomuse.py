@@ -400,6 +400,105 @@ async def keep_connection(service, run, config):
             service.create_task(service._reconnect(), "echomuse_gemini_reconnect")
 
 
+SILENT_TOOL_REPLY_PROMPT = (
+    "(The tool result above is final. Tell the user the outcome now in one "
+    "short spoken sentence, in the language they spoke to you.)")
+
+
+class _ReplyWatch:
+    __slots__ = ("pending", "nudged")
+
+    def __init__(self):
+        self.pending = False
+        self.nudged = False
+
+
+def _reply_watch(service):
+    watch = getattr(service, "_echomuse_reply_watch", None)
+    if watch is None:
+        watch = _ReplyWatch()
+        service._echomuse_reply_watch = watch
+    return watch
+
+
+def reply_user_turn(service):
+    """A new user turn: forget the last turn's tool result and its nudge."""
+    watch = _reply_watch(service)
+    watch.pending = False
+    watch.nudged = False
+
+
+def reply_tool_result(service):
+    _reply_watch(service).pending = True
+
+
+def reply_tool_call(service):
+    # The model went on to another tool; its result will arm the watch again.
+    _reply_watch(service).pending = False
+
+
+def reply_model_turn(service, message):
+    """Clear the watch on anything the user would hear or read.
+
+    A thought is neither, so a turn holding only thoughts still counts as silent.
+    """
+    content = getattr(message, "server_content", None)
+    parts = getattr(getattr(content, "model_turn", None), "parts", None) or []
+    for part in parts:
+        inline = getattr(part, "inline_data", None)
+        if (inline is not None and getattr(inline, "data", None)) or (
+                getattr(part, "text", None) and not getattr(part, "thought", False)):
+            _reply_watch(service).pending = False
+            return
+
+
+def reply_output_transcription(service):
+    _reply_watch(service).pending = False
+
+
+async def answer_silent_tool_turn(service):
+    """Ask Gemini Live to speak when it ended a turn after a tool result in silence.
+
+    Field log 2026-11-02 (both Living Room Echoes, gemini-3.1-flash-live-preview):
+    4 of 58 tool turns since 2026-11-01 did the action and then never spoke.
+    In each one Gemini answered the tool result with turn_complete alone (11 to 26
+    completion tokens, no model_turn: Pipecat's TTFB was still running), and in
+    each one the Echo kept thinking until the session was interrupted 29.4 to
+    29.9s after the user started speaking. In all 54 tool turns that spoke, the
+    first message after the tool result was model output, never turn_complete,
+    so that order is the test here and spoken turns are untouched.
+
+    The nudge is sent once per user turn as bare realtime text. Never inside an
+    activity window, though Pipecat sends audio that way when it runs Gemini's
+    activity detection by hand (local VAD, as on the Echoes): probed against
+    gemini-3.1-flash-live-preview on 2026-11-02, activity_start + text +
+    activity_end is refused with "1007 Precondition check failed", which closes
+    the session, while text alone is answered with activity detection off.
+    It costs nothing on a turn that spoke. Nothing here
+    calls a tool: one the model asks for in reply still goes through the heard
+    check against what the user actually said.
+    """
+    watch = _reply_watch(service)
+    if not watch.pending:
+        return
+    watch.pending = False
+    from loguru import logger
+    if watch.nudged:
+        logger.warning("Gemini Live ended its turn silently after a tool result again; not asking twice")
+        return
+    session = getattr(service, "_session", None)
+    if (session is None or getattr(service, "_disconnecting", False)
+            or getattr(service, "_user_is_speaking", False)):
+        return
+    watch.nudged = True
+    logger.warning("Gemini Live ended its turn after a tool result without speaking; asking it to answer")
+    try:
+        await session.send_realtime_input(text=SILENT_TOOL_REPLY_PROMPT)
+        await service.start_ttfb_metrics()
+    except Exception as error:
+        await service._handle_send_error(error)
+
+
 AREA_MISSING = "The area does not exist"
 
 

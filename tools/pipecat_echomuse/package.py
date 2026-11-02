@@ -95,6 +95,7 @@ def adapt(text):
             text = getattr(getattr(sc, "output_transcription", None), "text", None)
             if text:
                 heard_check.state_of(self).bot_text_out(text)
+                echomuse.reply_output_transcription(self)
             await super()._handle_msg_output_transcription(message)
 
         async def _handle_msg_model_turn(self, message):
@@ -103,11 +104,22 @@ def adapt(text):
             text = "".join(p.text for p in parts if getattr(p, "text", None) and not getattr(p, "thought", False))
             if text:
                 heard_check.state_of(self).bot_text_out(text)
+            echomuse.reply_model_turn(self, message)
             await super()._handle_msg_model_turn(message)
 
         async def _handle_msg_turn_complete(self, message):
             heard_check.state_of(self).bot_text_out("")
             await super()._handle_msg_turn_complete(message)
+            await echomuse.answer_silent_tool_turn(self)
+
+        async def _handle_msg_tool_call(self, message):
+            echomuse.reply_tool_call(self)
+            await super()._handle_msg_tool_call(message)
+
+        async def _tool_result(self, tool_call_id, tool_name, tool_result_message):
+            if not getattr(self, "_disconnecting", False) and getattr(self, "_session", None):
+                echomuse.reply_tool_result(self)
+            await super()._tool_result(tool_call_id, tool_name, tool_result_message)
 ''',
     )
     replace(
@@ -125,6 +137,16 @@ def adapt(text):
             if provider_kind == "gemini":
                 asyncio.create_task(heard_check.load_names(
                     heard_check.state_of(llm), bridge, mcp_tools_schema.standard_tools))
+''',
+    )
+    # Gemini Live sometimes answers a tool result with turn_complete and no
+    # speech, leaving the Echo thinking until the session times out
+    # (echomuse.answer_silent_tool_turn). A new user turn resets that watch.
+    replace(
+        '''            await super()._handle_user_started_speaking(frame)
+''',
+        '''            echomuse.reply_user_turn(self)
+            await super()._handle_user_started_speaking(frame)
 ''',
     )
     replace('local_turn_detection=bool(_enabled_step(flow, "vad")),', 'local_turn_detection=bool(_enabled_step(flow, "vad") or session_body.get("echomuse", {}).get("barge_in")),')
