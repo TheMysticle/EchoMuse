@@ -65,6 +65,7 @@ def adapt(text):
     is_esphome_satellite''')
     replace('    local_tool_schemas = [schema for schema in [_web_search_tool_schema(config, flow)] if schema]\n    tools_schema = _merge_tools_schema(mcp_tools_schema, local_tool_schemas)\n    context_for_memory = None', '''    local_tool_schemas = [schema for schema in [_web_search_tool_schema(config, flow)] if schema]
     if session_body.get("echomuse") and session_body["transport"] == "va-pipecat":
+        echomuse.pace_ahead(transport.output())
         params = getattr(transport.input(), "_params", None)
         serializer = getattr(params, "serializer", None)
         protocol = getattr(serializer, "protocol", None)

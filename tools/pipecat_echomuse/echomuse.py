@@ -400,6 +400,62 @@ async def keep_connection(service, run, config):
             service.create_task(service._reconnect(), "echomuse_gemini_reconnect")
 
 
+VOICE_LEAD_S = 0.5
+
+
+def pace_ahead(output, lead_s=VOICE_LEAD_S):
+    """Send reply audio up to `lead_s` ahead of real time instead of at it.
+
+    Pipecat's websocket output sleeps after every chunk for
+    `audio_chunk_size / sample_rate / 2` seconds. audio_chunk_size is in BYTES,
+    so for 16-bit mono that is exactly the chunk's duration: replies left the
+    add-on at 1.0x however fast they were made. Gemini Live makes them at
+    3.2-3.7x (probed 2026-11-02, gemini-3.1-flash-live-preview: 11.45s of audio
+    in 3.13s), and the Echo saw them arrive at 1.0x (recvSpan = audio length),
+    so its queue never held more than a period or two and every 80ms delivery
+    gap was a stutter waiting to happen. That is the only reason the Echo needs
+    a startup buffer at all.
+
+    Here a chunk is sent at once while the audio already sent is less than
+    `lead_s` ahead of real time, measured from the first chunk of a burst. The
+    lead is bounded on purpose: the controller holds voice to 4s ahead and the
+    Echo queues ~5.4s, and Pipecat infers "bot stopped speaking" from the last
+    send, so that event comes up to `lead_s` before the Echo finishes; the
+    controller already waits for the Echo's own playback report before ending
+    a turn or reopening the mic. An interruption (Pipecat zeroes
+    `_next_send_time`) or an idle gap starts the clock again; a barge still
+    flushes the Echo through the controller as before.
+
+    Only EchoMuse va-pipecat sessions are paced this way: another satellite may
+    not hold half a second of audio. Returns whether the transport was patched.
+    """
+    import time
+
+    if not hasattr(output, "_write_audio_sleep") or not hasattr(output, "_next_send_time"):
+        return False
+    clock = {"origin": 0.0, "sent": 0.0}
+
+    def chunk_seconds():
+        channels = getattr(getattr(output, "_params", None), "audio_out_channels", 1) or 1
+        rate = getattr(output, "sample_rate", 0) or 0
+        size = getattr(output, "audio_chunk_size", 0) or 0
+        return size / (rate * 2 * channels) if rate else 0.0
+
+    async def write_audio_sleep():
+        now = time.monotonic()
+        if output._next_send_time == 0 or now >= clock["origin"] + clock["sent"]:
+            # New burst, or after an interruption: real time starts now.
+            clock["origin"], clock["sent"] = now, 0.0
+            output._next_send_time = 1
+        clock["sent"] += chunk_seconds()
+        ahead = clock["origin"] + clock["sent"] - now
+        if ahead > lead_s:
+            await asyncio.sleep(ahead - lead_s)
+
+    output._write_audio_sleep = write_audio_sleep
+    return True
+
+
 SILENT_TOOL_REPLY_PROMPT = (
     "(The tool result above is final. Tell the user the outcome now in one "
     "short spoken sentence, in the language they spoke to you.)")
