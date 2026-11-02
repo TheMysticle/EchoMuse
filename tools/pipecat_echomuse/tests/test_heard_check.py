@@ -123,6 +123,45 @@ def test_a_clarification_answer_is_judged_with_its_question():
     assert hc.check("EchoMuseCreate", {"kind": "alarm"}, s.transcript(), NAMES)[0]
 
 
+def test_a_chain_of_clarifications_keeps_the_request_that_started_it():
+    # 2026-11-02, Lounge: refused as "no schedule words were said" when only
+    # the turn before the answer counted.
+    s = hc.HeardState()
+    s.user_text("Set an alarm.")
+    s.bot_text_out("What time?")
+    s.user_text("10 a.m.")
+    s.bot_text_out("Is that for tomorrow or another day?")
+    s.user_text("Can I have borrow")            # "tomorrow", as transcribed
+    assert hc.check("EchoMuseCreate", {"kind": "alarm"}, s.transcript(), NAMES)[0]
+
+
+def test_a_continuation_call_marks_a_question_without_a_question_mark():
+    s = hc.HeardState()
+    s.user_text("Set an alarm.")
+    s.question_asked()
+    s.bot_text_out("Tell me the time")
+    s.user_text("ten")
+    assert hc.check("EchoMuseCreate", {"kind": "alarm"}, s.transcript(), NAMES)[0]
+
+
+def test_the_chain_ends_at_a_plain_reply():
+    s = hc.HeardState()
+    s.user_text("Set an alarm.")
+    s.bot_text_out("What time?")
+    s.user_text("10 a.m.")
+    s.bot_text_out("Alarm set.")
+    s.user_text("thanks")
+    assert s.transcript() == "thanks"
+
+
+def test_the_gate_marks_a_continuation_call_as_a_question():
+    service = SimpleNamespace()
+    gate = hc.gated(service, lambda params: asyncio.sleep(0))
+    hc.state_of(service).user_text("Set an alarm.")
+    asyncio.run(gate(_params("EchoMuseRequestContinuation", {}, [])))
+    assert hc.state_of(service).asked
+
+
 def test_a_new_turn_after_a_plain_reply_starts_from_nothing():
     s = hc.HeardState()
     s.user_text("Set an alarm for midday")

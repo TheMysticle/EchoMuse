@@ -343,7 +343,9 @@ async def load_names(state: "HeardState", bridge, tools) -> None:
 # --- the per-session state the Gemini Live service carries ----------------
 
 # A clarification's answer ("yes", "the kitchen one") is checked with the
-# question's turn included, for this long after it.
+# question's turn included, for this long after it. A chain of questions keeps
+# every turn of it: "set an alarm" / when? / "10am" / which day? / "tomorrow"
+# was refused when only the last turn before the answer counted (2026-11-02).
 FOLLOW_UP_SECONDS = 30.0
 # How long a call waits for a transcript that has not arrived at all. Never
 # reached in the 54 measured sessions.
@@ -357,13 +359,27 @@ class HeardState:
         self.previous_at = 0.0
         self.bot_since_user = False
         self.bot_text = ""
+        self.asked = False
         self.names = Names()
+
+    def question_asked(self) -> None:
+        """The model asked for a clarification (EchoMuseRequestContinuation).
+
+        Its transcript need not end in "?": the tool is the surer sign.
+        """
+        self.asked = True
 
     def user_text(self, text: str) -> None:
         if self.bot_since_user:
-            asked = self.bot_text.rstrip().endswith("?")
-            self.previous, self.previous_at = (self.turn, time.monotonic()) if asked else ("", 0.0)
-            self.turn, self.bot_text, self.bot_since_user = "", "", False
+            asked = self.asked or self.bot_text.rstrip().endswith("?")
+            if asked:
+                now = time.monotonic()
+                chain = self.previous if now - self.previous_at < FOLLOW_UP_SECONDS else ""
+                self.previous = (chain + " " + self.turn).strip()
+                self.previous_at = now
+            else:
+                self.previous, self.previous_at = "", 0.0
+            self.turn, self.bot_text, self.bot_since_user, self.asked = "", "", False, False
         self.turn += text
 
     def bot_text_out(self, text: str) -> None:
@@ -405,6 +421,8 @@ def gated(service, handler):
     @functools.wraps(handler)
     async def gate(params):
         tool = params.function_name or ""
+        if tool == "EchoMuseRequestContinuation":
+            state_of(service).question_asked()
         if READ_ONLY.search(tool):
             return await handler(params)
         state = state_of(service)
