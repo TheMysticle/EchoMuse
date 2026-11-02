@@ -289,7 +289,37 @@ def command(name, args, now, items=()):
         local = datetime.fromtimestamp(due, zone)
         item["rule"] = {"days": sorted(set(days or [])), "interval": interval or 0,
                         "hour": local.hour, "minute": local.minute}
+    same = duplicate_of(item, items)
+    if same is not None:
+        return {"action": "exists", "item": same}
     return {"action": "create", "item": item, "request": uuid.uuid4().hex}
+
+
+LIVE_STATES = ("scheduled", "snoozed", "paused")
+
+
+def duplicate_of(item, items):
+    """An alarm or reminder already set for the same moment with the same words.
+
+    A clarification can reach the model after it has already made the item:
+    "set an alarm for 10am" was saved, the model asked "tomorrow or another
+    day?" in the same turn, and the answer saved it again (two identical
+    10:00 alarms, 2026-11-02). Asking for the same thing twice is never a
+    request for two of them, so the second call is answered with the first.
+    Timers are left alone: two of the same length are made seconds apart and
+    are not the same moment.
+    """
+    if item["kind"] == "timer":
+        return None
+    for other in items or ():
+        if (other.get("kind") == item["kind"] and other.get("state") in LIVE_STATES
+                and other.get("enabled", True)
+                and (other.get("label") or other.get("kind")) == item["label"]
+                and (other.get("message") or "") == item["message"]
+                and (other.get("rule") or None) == (item.get("rule") or None)
+                and (item.get("rule") or other.get("due") == item["due"])):
+            return other
+    return None
 
 
 async def handle(request, devices):
@@ -347,10 +377,16 @@ async def handle(request, devices):
                 raise ValueError("Local schedules are disabled or unavailable on this speaker")
             now = int(datetime.now(timezone.utc).timestamp())
             current = []
-            if name == "EchoMuseAction" and args.get("action") == "edit":
+            if (name == "EchoMuseAction" and args.get("action") == "edit") or name == "EchoMuseCreate":
                 current = (await live.schedule.request(live.send_control, {"action": "list"}))["items"]
             cmd = command(name, args, now, current)
-            snapshot = await live.schedule.request(live.send_control, cmd)
+            existing = None
+            if cmd["action"] == "exists":
+                # Already set: answer with the speaker's own list, send nothing.
+                existing = cmd["item"].get("id")
+                snapshot = {"items": current}
+            else:
+                snapshot = await live.schedule.request(live.send_control, cmd)
             if name == "EchoMuseList":
                 # A finished reminder lingers on the speaker for its retention; to
                 # the model it read as one still to do.
@@ -361,6 +397,9 @@ async def handle(request, devices):
             snapshot = llm_snapshot(snapshot)
             zones = {item["timezone"] for item in snapshot.get("items", []) if item.get("timezone")}
             content = {"device_acknowledged": True, "now_utc": datetime.fromtimestamp(now, timezone.utc).isoformat(), "timezone": os.environ.get("TZ") or (next(iter(zones)) if len(zones) == 1 else None), "snapshot": snapshot}
+            if existing:
+                content["already_scheduled"] = existing
+                content["note"] = "This was already set; nothing new was created. Confirm it once."
             if name == "EchoMuseCreate" and args["kind"] == "reminder":
                 content["speech"] = "Uses the speaker's sound fallback unless reminder speech is cached by Home Assistant."
             result = {"content": [{"type": "text", "text": json.dumps(content)}], "isError": False}

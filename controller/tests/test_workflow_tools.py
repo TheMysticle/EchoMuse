@@ -58,7 +58,7 @@ def test_mcp_auth_source_scope_device_ack_and_failure(database):
             cmd=message['command']
             sent.append(cmd)
             items=bridge.snapshot['items']
-            if cmd['action']=='create': items=[*items,cmd['item']]
+            if cmd['action']=='create': items=[*items,{**cmd['item'],'state':'scheduled'}]
             bridge.receive({'id':message['id'],'snapshot':{'owner':'A','revision':bridge.snapshot['revision']+1,'items':items}})
         live=SimpleNamespace(capabilities=['local_schedule'],schedule=bridge,send_control=send,workflow=SimpleNamespace(active=True,config={"local_schedules":True}))
         key=keys.issue('A',voice=True)
@@ -81,7 +81,15 @@ def test_mcp_auth_source_scope_device_ack_and_failure(database):
                 assert result['isError'] is False
                 assert json.loads(result['content'][0]['text'])['device_acknowledged']
                 assert sent[-1]['owner']=='A' and sent[-1]['item']['duration']==300
-                response=await call('tools/call',{'name':'EchoMuseAction','arguments':{'action':'snooze','id':sent[-1]['item']['id'],'seconds':600}})
+                timer_id=sent[-1]['item']['id']
+                alarm={'kind':'alarm','when':'2099-01-01T10:00:00+00:00','timezone':'UTC'}
+                first=(await call('tools/call',{'name':'EchoMuseCreate','arguments':alarm}))
+                assert not (await first.json())['result']['isError']
+                creates=[c for c in sent if c['action']=='create']
+                again=json.loads((await (await call('tools/call',{'name':'EchoMuseCreate','arguments':alarm})).json())['result']['content'][0]['text'])
+                assert again['already_scheduled']==creates[-1]['item']['id']
+                assert [c for c in sent if c['action']=='create']==creates   # nothing new sent
+                response=await call('tools/call',{'name':'EchoMuseAction','arguments':{'action':'snooze','id':timer_id,'seconds':600}})
                 assert not (await response.json())['result']['isError']
                 response=await call('tools/call',{'name':'EchoMuseCreate','arguments':{'kind':'timer','duration_seconds':300,'timezone':'UTC','device_id':'B'}})
                 assert (await response.json())['result']['isError']
@@ -354,3 +362,50 @@ def test_llm_snapshot_drops_the_speakers_bookkeeping_and_keeps_what_is_read():
     assert len(json.dumps(view)) < len(json.dumps(full)) / 2
     assert full["items"][0]["speech"]                       # the speaker's own copy is untouched
     assert t.llm_snapshot({"items": []}) == {"items": []}   # an older speaker's smaller snapshot
+
+
+def _live(item, **over):
+    # An item as the speaker lists it: its own fields plus a state.
+    return {**item, 'state': 'scheduled', **over}
+
+
+def test_the_same_alarm_asked_for_twice_is_answered_with_the_first():
+    # 2026-11-02: "set an alarm for 10am" was saved, the model asked which day
+    # in the same turn, and the answer saved a second, identical 10:00 alarm.
+    args = {'kind': 'alarm', 'when': '2026-10-18T10:00:00+02:00', 'timezone': 'Europe/Warsaw'}
+    first = tools.command('EchoMuseCreate', args, NOW)['item']
+    again = tools.command('EchoMuseCreate', args, NOW, [_live(first)])
+    assert again['action'] == 'exists' and again['item']['id'] == first['id']
+
+
+@pytest.mark.parametrize('change', [
+    {'when': '2026-10-18T10:05:00+02:00'},     # another time
+    {'label': 'gym'},                           # another name
+    {'kind': 'reminder', 'message': 'call'},    # another kind
+])
+def test_a_different_alarm_is_still_created(change):
+    base = {'kind': 'alarm', 'when': '2026-10-18T10:00:00+02:00', 'timezone': 'Europe/Warsaw'}
+    first = tools.command('EchoMuseCreate', base, NOW)['item']
+    assert tools.command('EchoMuseCreate', {**base, **change}, NOW, [_live(first)])['action'] == 'create'
+
+
+@pytest.mark.parametrize('state', ['completed', 'canceled', 'ringing'])
+def test_one_that_is_over_does_not_count(state):
+    args = {'kind': 'alarm', 'when': '2026-10-18T10:00:00+02:00', 'timezone': 'Europe/Warsaw'}
+    first = tools.command('EchoMuseCreate', args, NOW)['item']
+    assert tools.command('EchoMuseCreate', args, NOW, [_live(first, state=state)])['action'] == 'create'
+
+
+def test_two_timers_of_one_length_are_both_made():
+    args = {'kind': 'timer', 'duration_seconds': 300, 'timezone': 'Europe/Warsaw'}
+    first = tools.command('EchoMuseCreate', args, NOW)['item']
+    assert tools.command('EchoMuseCreate', args, NOW, [_live(first)])['action'] == 'create'
+
+
+def test_a_repeating_alarm_matches_on_its_rule():
+    args = {'kind': 'alarm', 'when': '2026-10-18T08:00:00+02:00', 'timezone': 'Europe/Warsaw',
+            'repeat_days': [1, 2, 3, 4, 5]}
+    first = tools.command('EchoMuseCreate', args, NOW)['item']
+    assert tools.command('EchoMuseCreate', args, NOW, [_live(first, due=0)])['action'] == 'exists'
+    weekend = {**args, 'repeat_days': [0, 6]}
+    assert tools.command('EchoMuseCreate', weekend, NOW, [_live(first, due=0)])['action'] == 'create'
