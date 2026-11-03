@@ -5623,8 +5623,8 @@ async def handle_control(ws: WebSocketServerProtocol, secure: bool = False):
             # not hear it, and telling HA it finished successfully would be
             # untrue — it is the one thing the announcement reply reports.
             return not _d.cancel_event.is_set()
-        async def _send_volume_set(level: int, _d=_device_ref) -> None:
-            await _d.send_control({"type": "volume_set", "level": level})
+        async def _send_volume_set(level: int, muted: bool | None = None, _d=_device_ref) -> None:
+            await _d.send_control({"type": "volume_set", "level": level} | ({} if muted is None else {"muted": muted}))
         async def _ring_alarm(_d=_device_ref) -> None:
             await start_timer_alarm(_d)
         async def _stop_alarm(_d=_device_ref) -> None:

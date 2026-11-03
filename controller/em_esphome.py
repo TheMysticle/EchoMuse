@@ -622,7 +622,7 @@ class EchoMuseSatellite(SatelliteServerProtocol):
         if level is None:
             return
         if server._send_volume_set is not None:
-            em_tasks.spawn(server._send_volume_set(level))
+            em_tasks.spawn(server._send_volume_set(level, muted=mute))  # muted: the Echo's mute ring
         else:
             log.warning(f"[{self._log_name}] mute requested but device not connected")
 
@@ -3388,7 +3388,7 @@ async def device_connected(
     push TTS) when no voice turn is active. Provided by the controller
     as a closure over the Device object.
 
-    send_volume_set: async callable(level: int) — sends a volume_set
+    send_volume_set: async callable(level: int, muted: bool | None = None) — sends a volume_set
     control-plane message to the physical device. Provided by the controller
     as a closure over the Device object. Used by the satellite to forward
     HA MediaPlayerCommandRequest volume changes down to the device.

@@ -572,7 +572,47 @@ func (vc *volumeController) showLEDs(level int) {
 	if atMin {
 		hold += minPulseExtra
 	}
+	vc.holdDisplay(lc, hold)
+}
 
+// outputMuteR/G/B is the output-mute ring: a deep indigo. Every other colour
+// on this ring is taken — red is the MIC mute (and must keep meaning "the
+// microphones are off"), cyan the volume arc, orange the link, white pending
+// approval, and the scenes' listening rings are green, light blue (80,150,200)
+// and magenta. Indigo reads as "blue, but not the arc", and is dim enough to
+// read as "quiet" at a glance.
+const (
+	outputMuteR = 40
+	outputMuteG = 0
+	outputMuteB = 170
+)
+
+// showOutputMuteLEDs fills the ring in the output-mute colour for the
+// display window: Home Assistant muted the SPEAKER (em_output_mute), which an
+// empty volume arc cannot say. Same hold, expiry and mic-mute restore as the
+// arc, so it yields to a button press and hands the ring back exactly as the
+// arc does.
+func (vc *volumeController) showOutputMuteLEDs() {
+	lc := vc.ledCtrl()
+	if lc == nil {
+		return
+	}
+	vc.stopMinPulse()
+	leds := make([]led.Led, numLEDs)
+	for i := range leds {
+		leds[i] = led.Led{ID: i, R: outputMuteR, G: outputMuteG, B: outputMuteB}
+	}
+	if err := lc.SetLEDs(leds...); err != nil {
+		log.Printf("Output mute LED set failed: %v", err)
+		return
+	}
+	vc.holdDisplay(lc, volumeLEDSecs*time.Second)
+}
+
+// holdDisplay makes the ring the volume display's for `hold`, then hands it
+// back: the red mic-mute ring if muted, else whatever the controller last
+// painted.
+func (vc *volumeController) holdDisplay(lc led.Controller, hold time.Duration) {
 	// Cancel any existing clear timer and start a new one
 	vc.mu.Lock()
 	vc.displayActive = true

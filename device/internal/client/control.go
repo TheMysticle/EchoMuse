@@ -98,7 +98,12 @@ type MicStartCallback func(lockMic bool)
 type MicStopCallback func()
 type StateCallback func()
 type ConfigAppliedCallback func(msg config.ConfigMessage)
-type VolumeSetCallback func(level int)
+
+// VolumeSetCallback receives a volume_set. muted is nil for an ordinary
+// volume, and true/false when Home Assistant's media-player mute or unmute
+// produced the level (the controller's em_output_mute), so the ring can say
+// "muted" rather than draw an empty arc.
+type VolumeSetCallback func(level int, muted *bool)
 type BeamLockCallback func(lock bool)
 
 // ListenCallback receives listen_ack / listen_close, by type.
@@ -888,10 +893,11 @@ func (c *ControlClient) connect(ctx context.Context, server *discovery.ServerInf
 			// level is an integer in the device's native tinymix range, capped
 			// at the codec's unity gain — see internal/server/volume.go.
 			var msg struct {
-				Level int `json:"level"`
+				Level int   `json:"level"`
+				Muted *bool `json:"muted,omitempty"`
 			}
 			if err := json.Unmarshal(raw, &msg); err == nil && c.volumeSetCallback != nil {
-				c.volumeSetCallback(msg.Level)
+				c.volumeSetCallback(msg.Level, msg.Muted)
 			}
 
 		case "config":

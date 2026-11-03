@@ -10896,7 +10896,7 @@ function DeviceConfigForm({ config, onChange, disabled, sections, onScopeChange,
         </div>
         <div style={{ marginTop: 'var(--space-7)', ...inputStyle }}>
           <Toggle label="Remote volume arc"
-            sub={remoteVolumeArcCapable ? 'shows the cyan level arc for non-zero Home Assistant and other remote volume changes' : 'needs newer firmware on this Echo'}
+            sub={remoteVolumeArcCapable ? 'shows the cyan level arc for Home Assistant and other remote volume changes, and an indigo ring when Home Assistant mutes the speaker' : 'needs newer firmware on this Echo'}
             disabled={!remoteVolumeArcCapable}
             value={config.remoteVolumeArc ?? false}
             onChange={v => set('remoteVolumeArc', v)}/>

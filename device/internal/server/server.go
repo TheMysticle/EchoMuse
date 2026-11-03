@@ -204,6 +204,21 @@ func (s *Server) SetVolume(level int) {
 	s.SetVolumeFrom(level, "controller", showRing)
 }
 
+// MuteOutput applies Home Assistant's media-player mute: the level the
+// controller sends (0), and — under the same remoteVolumeArc setting that
+// governs the arc for HA volume changes — the output-mute ring for the
+// display window. Unmute needs nothing here: it arrives as the restored,
+// non-zero level and SetVolume draws the ordinary cyan arc for it.
+//
+// Shown even when the level does not move (muting at volume 0), because the
+// mute is the event being acknowledged, not the level.
+func (s *Server) MuteOutput(level int) {
+	s.SetVolumeFrom(clampVolumeLevel(level), "mute", false)
+	if s.remoteVolumeArc.Load() {
+		s.volume.showOutputMuteLEDs()
+	}
+}
+
 // SetRemoteVolumeArc applies the runtime config controlling feedback for live
 // remote volume changes. It deliberately does not affect physical buttons or
 // the silent boot-time SeedVolume path.

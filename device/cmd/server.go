@@ -869,7 +869,11 @@ func main() {
 	// Volume set from controller (HA MediaPlayerCommandRequest forwarded down).
 	// Calls Set() which applies the volume, updates LEDs, and fires the change
 	// callback above — so SendVolumeState fires automatically, closing the loop.
-	controlClient.OnVolumeSet(func(level int) {
+	controlClient.OnVolumeSet(func(level int, muted *bool) {
+		if muted != nil && *muted {
+			s.MuteOutput(level)
+			return
+		}
 		s.SetVolume(level)
 	})
 
