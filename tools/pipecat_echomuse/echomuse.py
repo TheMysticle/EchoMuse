@@ -127,7 +127,8 @@ def clock_rule(zone, now=None):
         rule += (f" until {later.strftime('%-d %B %Y %H:%M')} UTC, "
                  f"then {_utc_offset(later.astimezone(tz).utcoffset())}")
     return (rule + ". Whenever you tell or use the current time, date or weekday, convert your clock to "
-            "household time first, the date too near midnight; never say a UTC time. If unsure, call GetDateTime.")
+            "household time first, the date too near midnight, and say it plainly as the time: never say a UTC time, "
+            "and never mention UTC, offsets or the words household time. If unsure, call GetDateTime.")
 
 
 def options(headers, authenticated):
