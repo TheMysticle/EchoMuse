@@ -79,6 +79,16 @@ class OutputMute:
             return True, None
         return False, min(DEVICE_MAX, restore + BUTTON_STEP)
 
+    def device_state(self, muted: bool) -> None:
+        """The Echo reported its own output mute. Firmware announcing
+        `output_mute` keeps the mute itself (it holds the volume, persists it,
+        and shares it over Sendspin and with its group), so its report is the
+        truth: including a mute HA never asked for, from the TV streamer or
+        the Echo leading its group, and an unmute by its volume-up button.
+        Nothing is restored from here for such an Echo."""
+        self.muted = bool(muted)
+        self._restore = None
+
     def on_reconnect(self) -> int | None:
         """Level to send after the device reconnects: it boots at its stored
         startupVolume, which is the pre-mute level, so a mute must be

@@ -1,8 +1,8 @@
 {
  "files": {
-  "em_controller.py": 6483,
+  "em_controller.py": 6489,
   "em_db.py": 3442,
-  "em_esphome.py": 3786
+  "em_esphome.py": 3807
  },
  "functions": {
   "em_controller.Device.__init__": 406,
@@ -16,7 +16,7 @@
   "em_device_view.merge_device": 191,
   "em_esphome.EchoMuseSatellite._handle_voice_event": 223,
   "em_esphome.EchoMuseSatellite._stream_mic_audio": 377,
-  "em_esphome.EchoMuseSatellite.handle_message": 386,
+  "em_esphome.EchoMuseSatellite.handle_message": 387,
   "em_esphome.EchoMuseSatellite.run_esphome_voice_turn": 373,
   "em_ota._run_update_locked": 229,
   "em_player.MediaSession._feed": 339,

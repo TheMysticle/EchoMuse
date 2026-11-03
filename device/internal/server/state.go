@@ -23,6 +23,9 @@ var statePath = "/data/local/etc/echomuse/state.json"
 
 type deviceState struct {
 	Muted bool `json:"muted"`
+	// OutputMuted is the SPEAKER's mute (Server.SetOutputMuted), separate
+	// from Muted, which is the microphones'.
+	OutputMuted bool `json:"outputMuted,omitempty"`
 	// Spotify fields are only written when the controller has pushed a
 	// Spotify config. They let the Connect engine restart after a reboot
 	// with no controller yet, when SpotifyStandalone was on.

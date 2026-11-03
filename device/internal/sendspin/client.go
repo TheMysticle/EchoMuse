@@ -66,6 +66,7 @@ type Client struct {
 	// device reports its level back through SetVolume. One volume, whoever
 	// moves it (Wil, 2026-09-30).
 	onVolume func(v int)
+	onMute   func(muted bool)
 
 	srv  *http.Server
 	mdns *zeroconf.Server
@@ -322,6 +323,40 @@ func (c *Client) SetVolume(v int) { c.setVolume(v, false) }
 // the device's report of it finds nothing changed.
 func (c *Client) SetOwnVolume(v int) { c.setVolume(v, true) }
 
+// OnMute hands a server's mute to the device, which mutes its whole output
+// (and shows it), not only this player's audio. Set before Start.
+func (c *Client) OnMute(f func(muted bool)) {
+	c.mu.Lock()
+	c.onMute = f
+	c.mu.Unlock()
+}
+
+// SetMuted reports the device's output mute, as SetVolume/SetOwnVolume do the
+// volume: own for a mute made at this Echo (Home Assistant, its buttons),
+// which a group's leader then takes up as the group's. Before this the Echo
+// reported a mute as volume 0, so a server copying volumes between players
+// muted the others by setting their volume to 0, and nothing showed muted.
+func (c *Client) SetMuted(muted, own bool) {
+	set := c.store.settings()
+	if set.Muted == muted {
+		return
+	}
+	set.Muted = muted
+	c.store.setSettings(set)
+	c.player.setGain(c.gainVolume(set.Volume), set.Muted)
+	c.mu.Lock()
+	s := c.admitted
+	c.mu.Unlock()
+	if s != nil {
+		if own {
+			s.sendVolumeChanged()
+		} else {
+			s.sendState()
+		}
+	}
+	c.changed()
+}
+
 func (c *Client) setVolume(v int, own bool) {
 	set := c.store.settings()
 	if set.Volume == v {
@@ -357,10 +392,13 @@ func (c *Client) applySettings(p playerSettings) {
 	prev := c.store.settings()
 	c.store.setSettings(p)
 	c.mu.Lock()
-	vf := c.onVolume
+	vf, mf := c.onVolume, c.onMute
 	c.mu.Unlock()
 	if vf != nil && p.Volume != prev.Volume {
 		vf(p.Volume)
+	}
+	if mf != nil && p.Muted != prev.Muted {
+		mf(p.Muted)
 	}
 	c.player.setGain(c.gainVolume(p.Volume), p.Muted)
 	c.player.setDelay(p.StaticDelayMs)

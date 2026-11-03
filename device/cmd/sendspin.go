@@ -49,6 +49,10 @@ type deviceVolume interface {
 	// volume arc. Both music producers use it: with five callers and one
 	// shared log line, a volume oscillation could not be attributed at all.
 	SetVolumeFrom(level int, src string, showRing bool)
+	// The speaker's output mute (Server.SetOutputMuted): a server's mute
+	// mutes the Echo, rather than only its Sendspin audio, and shows.
+	OutputMuted() bool
+	SetOutputMuted(muted bool, src string)
 }
 
 const volumeMax = 127
@@ -163,6 +167,8 @@ func applySendspinConfig(spk *speaker.PcmSpeaker, cc *client.ControlClient, vol 
 			// Somebody changed the volume on purpose, at a group's leader or in
 			// Music Assistant, so the arc shows like a phone's slider does.
 			// Never for silence (a mute) or a level the Echo already has.
+			c.OnMute(func(muted bool) { vol.SetOutputMuted(muted, "sendspin") })
+			c.SetMuted(vol.OutputMuted(), false)
 			c.OnVolume(func(pct int) {
 				level := pctToLevel(pct)
 				vol.SetVolumeFrom(level, "sendspin", level != 0 && level != vol.VolumeLevel())

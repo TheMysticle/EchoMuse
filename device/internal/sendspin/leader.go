@@ -139,6 +139,11 @@ type Leader struct {
 	volume   int // percent; -1 until the device says
 	onChange func()
 	onVolume func(pct int)
+	// muted is the group's output mute: -1 until the device says, else 0/1.
+	// It travels like the volume — the leader's own to every member, and a
+	// member's own change becomes the group's.
+	muted  int
+	onMute func(muted bool)
 
 	src    AudioSource
 	stop   chan struct{}
@@ -167,6 +172,7 @@ func NewLeader(cfg LeaderConfig) (*Leader, error) {
 		members: map[string]*member{},
 		encs:    map[Channel]*flacEncoder{},
 		volume:  -1,
+		muted:   -1,
 	}
 	return l, nil
 }
@@ -355,6 +361,54 @@ func (l *Leader) memberVolume(from *member, pct int) {
 	if f != nil {
 		f(pct)
 	}
+}
+
+// SetMute passes the leader's output mute to the group.
+func (l *Leader) SetMute(muted bool) {
+	l.mu.Lock()
+	if l.muted == b2i(muted) {
+		l.mu.Unlock()
+		return
+	}
+	l.muted = b2i(muted)
+	for _, m := range l.members {
+		m.sendMuteLocked(muted)
+	}
+	l.mu.Unlock()
+}
+
+// OnMute is told when a player's own mute becomes the group's, so the leader
+// Echo can follow. Set before Start.
+func (l *Leader) OnMute(f func(muted bool)) {
+	l.mu.Lock()
+	l.onMute = f
+	l.mu.Unlock()
+}
+
+// memberMute is memberVolume for the mute.
+func (l *Leader) memberMute(from *member, muted bool) {
+	l.mu.Lock()
+	from.sentMute = b2i(muted)
+	if l.muted == b2i(muted) {
+		l.mu.Unlock()
+		return
+	}
+	l.muted = b2i(muted)
+	for _, m := range l.members {
+		m.sendMuteLocked(muted)
+	}
+	f := l.onMute
+	l.mu.Unlock()
+	if f != nil {
+		f(muted)
+	}
+}
+
+func b2i(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 func (l *Leader) volumeNow() int {
@@ -686,6 +740,9 @@ func (l *Leader) activate(m *member) {
 	m.enqueueStart()
 	if l.volume >= 0 {
 		m.sendVolumeLocked(l.volume)
+	}
+	if l.muted >= 0 {
+		m.sendMuteLocked(l.muted == 1)
 	}
 	if l.engaged.Load() {
 		now := nowUs()

@@ -614,9 +614,11 @@ class EchoMuseSatellite(SatelliteServerProtocol):
         if server is None:
             return
         om = server.output_mute
-        level = (om.mute(em_volume.ha_volume_to_device(server.volume,
-                                                        server.board_id))
-                 if mute else om.unmute())
+        level = em_volume.ha_volume_to_device(server.volume, server.board_id)
+        if _mutes_itself(server):  # the Echo keeps its level; it reports back
+            om.device_state(mute)
+        else:
+            level = om.mute(level) if mute else om.unmute()
         log.info(f"[{self._log_name}] output {'mute' if mute else 'unmute'}"
                  f"{'' if level is None else f' → level {level}'}")
         if level is None:
@@ -832,7 +834,8 @@ class EchoMuseSatellite(SatelliteServerProtocol):
                 # clips (see em_volume's docstring).
                 level = em_volume.ha_volume_to_device(
                     msg.volume, self._owning_server.board_id)
-                self._owning_server.output_mute.volume_set(level)
+                if level or not _mutes_itself(self._owning_server):
+                    self._owning_server.output_mute.volume_set(level)  # an Echo stays muted at 0
                 log.debug(
                     f"[{self._log_name}] MediaPlayerCommandRequest: "
                     f"volume={msg.volume:.3f} → level={level}"
@@ -3658,19 +3661,37 @@ def update_wake_word(device_id: str, enabled: bool, refresh: bool = False) -> No
         satellite.disconnect()
 
 
+def _mutes_itself(server) -> bool:
+    """Firmware that keeps the output mute itself (`output_mute`)."""
+    return "output_mute" in (getattr(server, "capabilities", None) or [])
+
+
+def update_output_mute(device_id: str, muted: bool) -> None:
+    """The Echo reported its output mute; show it on the HA entity."""
+    server = _servers.get(device_id)
+    if server is None:
+        return
+    server.output_mute.device_state(muted)
+    satellite = server.get_satellite()
+    if satellite is not None:
+        satellite._send_one(satellite._media_state_msg())
+
+
 def output_mute_report(device_id: str, level: int) -> tuple[bool, int | None]:
     """(keep, send) for a device volume report (see
     em_output_mute.device_report). (True, None) when no server exists."""
     server = _servers.get(device_id)
-    if server is None:
-        return True, None
+    if server is None or _mutes_itself(server):
+        return True, None  # for such an Echo a level is a real volume; mute comes apart
     return server.output_mute.device_report(level)
 
 
 def output_mute_on_reconnect(device_id: str) -> int | None:
     """Level to re-send after a reconnect while output-muted, else None."""
     server = _servers.get(device_id)
-    return server.output_mute.on_reconnect() if server is not None else None
+    if server is None or _mutes_itself(server):
+        return None  # an Echo that mutes itself keeps its mute across a reconnect
+    return server.output_mute.on_reconnect()
 
 
 def update_device_volume(device_id: str, volume: float) -> None:

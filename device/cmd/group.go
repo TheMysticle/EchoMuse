@@ -108,6 +108,9 @@ func reconcileGroup(cc *client.ControlClient, vol deviceVolume, push bool) {
 		}
 		l.OnChange(debounce(300*time.Millisecond, func() { cc.SendGroupStatus(l.Status()) }))
 		l.SetVolume(levelToPct(vol.VolumeLevel()))
+		l.SetMute(vol.OutputMuted())
+		// A member muted at itself mutes the group, as its volume does.
+		l.OnMute(func(muted bool) { vol.SetOutputMuted(muted, "group") })
 		// Somebody changed the volume at another Echo of the group, on purpose,
 		// so the arc shows as it does for the same change at the leader.
 		l.OnVolume(func(pct int) {

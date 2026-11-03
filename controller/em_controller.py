@@ -4711,6 +4711,11 @@ async def _on_volume_state(device: Device, msg: dict) -> None:
     esphome.update_device_volume(device_id, device.volume)
 
 
+async def _on_output_mute_state(device: Device, msg: dict) -> None:
+    # The Echo keeps its own output mute (`output_mute`); HA shows its report.
+    esphome.update_output_mute(device.device_id, bool(msg.get("muted")))
+
+
 async def _on_stats(device: Device, msg: dict) -> None:
     device_id = device.device_id
     loop = asyncio.get_event_loop()
@@ -5260,6 +5265,7 @@ CONTROL_HANDLERS = {
     "ambient_light":    _on_ambient_light,
     "mute_state":       _on_mute_state,
     "volume_state":     _on_volume_state,
+    "output_mute_state": _on_output_mute_state,
     "stats":            _on_stats,
     "sendspin_status":  _on_sendspin_status,
     "spotify_status":   _on_spotify_status,

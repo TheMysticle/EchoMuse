@@ -146,6 +146,12 @@ type volumeController struct {
 	isMuted        func() bool // set after construction to avoid circular dependency
 	onVolumeChange func(int)   // set after construction; called after every Set()
 	apply          func(int)   // applies a level to the audio; see SetApply
+	// outMuted is the OUTPUT mute (Home Assistant's media-player mute, or a
+	// Sendspin server's): the speaker is held silent while `level` keeps the
+	// volume to come back to. Nothing reports 0 for it, so neither the
+	// controller's startupVolume nor a Sendspin server's group volume learns
+	// a level nobody chose. Distinct from the MIC mute (muteController).
+	outMuted bool
 	// onDisplayExpire, when set, replaces the default clear-to-black at the
 	// end of the display window: the server wires it to repaint the ring
 	// from its stored controller state, so a volume press mid-turn hands
@@ -211,11 +217,43 @@ func (vc *volumeController) SetPercent(fn func(level int) int) {
 func (vc *volumeController) SetApply(fn func(int)) {
 	vc.mu.Lock()
 	vc.apply = fn
-	level := vc.level
+	level := vc.audibleLocked()
 	vc.mu.Unlock()
 	if fn != nil {
 		fn(level)
 	}
+}
+
+// audibleLocked is the level the speaker plays at: none while output-muted.
+func (vc *volumeController) audibleLocked() int {
+	if vc.outMuted {
+		return volumeMin
+	}
+	return vc.level
+}
+
+// SetOutputMuted holds the speaker silent (or releases it) without moving the
+// volume level. Returns whether the state changed.
+func (vc *volumeController) SetOutputMuted(on bool) bool {
+	vc.mu.Lock()
+	if vc.outMuted == on {
+		vc.mu.Unlock()
+		return false
+	}
+	vc.outMuted = on
+	apply, level := vc.apply, vc.audibleLocked()
+	vc.mu.Unlock()
+	if apply != nil {
+		apply(level)
+	}
+	return true
+}
+
+// OutputMuted reports the output mute.
+func (vc *volumeController) OutputMuted() bool {
+	vc.mu.Lock()
+	defer vc.mu.Unlock()
+	return vc.outMuted
 }
 
 // Set applies a new volume level (0–volumeMax). showRing paints the cyan
@@ -240,13 +278,15 @@ func (vc *volumeController) Set(level int, showRing bool, src string) bool {
 	// first).
 	cb := vc.onVolumeChange
 	apply := vc.apply
+	audible := vc.audibleLocked()
 	vc.mu.Unlock()
 
 	// Applied unconditionally: it is idempotent, and the speaker starts
 	// silent until told a level, so a Set that matches vc.level may still be
-	// the first one the hardware has seen.
+	// the first one the hardware has seen. While output-muted the level moves
+	// and the speaker stays silent.
 	if apply != nil {
-		apply(level)
+		apply(audible)
 	}
 
 	// The ring is unconditional too, and deliberately: an extra Volume Up at
@@ -579,34 +619,22 @@ func (vc *volumeController) showLEDs(level int) {
 // on this ring is taken — red is the MIC mute (and must keep meaning "the
 // microphones are off"), cyan the volume arc, orange the link, white pending
 // approval, and the scenes' listening rings are green, light blue (80,150,200)
-// and magenta. Indigo reads as "blue, but not the arc", and is dim enough to
-// read as "quiet" at a glance.
+// and magenta. Indigo reads as "blue, but not the arc". It stays lit for as
+// long as the mute does, like the mic mute's red, so it is kept dimmer than
+// the arc.
 const (
-	outputMuteR = 40
+	outputMuteR = 24
 	outputMuteG = 0
-	outputMuteB = 170
+	outputMuteB = 110
 )
 
-// showOutputMuteLEDs fills the ring in the output-mute colour for the
-// display window: Home Assistant muted the SPEAKER (em_output_mute), which an
-// empty volume arc cannot say. Same hold, expiry and mic-mute restore as the
-// arc, so it yields to a button press and hands the ring back exactly as the
-// arc does.
-func (vc *volumeController) showOutputMuteLEDs() {
-	lc := vc.ledCtrl()
-	if lc == nil {
-		return
-	}
-	vc.stopMinPulse()
+// outputMuteFrame is the ring while the speaker is output-muted.
+func outputMuteFrame() []led.Led {
 	leds := make([]led.Led, numLEDs)
 	for i := range leds {
 		leds[i] = led.Led{ID: i, R: outputMuteR, G: outputMuteG, B: outputMuteB}
 	}
-	if err := lc.SetLEDs(leds...); err != nil {
-		log.Printf("Output mute LED set failed: %v", err)
-		return
-	}
-	vc.holdDisplay(lc, volumeLEDSecs*time.Second)
+	return leds
 }
 
 // holdDisplay makes the ring the volume display's for `hold`, then hands it

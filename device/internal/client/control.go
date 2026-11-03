@@ -1404,6 +1404,12 @@ func capabilities() []string {
 	// HA's "No wake word" for a privately listening Echo, which would
 	// otherwise keep sending audio on every wake until the close arrived.
 	//
+	// "output_mute": the speaker's mute is the Echo's own state (it keeps
+	// the volume, persists, shows a ring and travels over Sendspin), so the
+	// controller sends a volume_set carrying `muted` instead of level 0 and
+	// reads `output_mute_state` back. Without it, the controller's level-0
+	// mute (em_output_mute).
+	//
 	// "remote_volume_arc": this firmware can show the existing cyan level arc
 	// for live remote volume changes when remoteVolumeArc is enabled. The
 	// setting is off by default, and boot-time volume restore stays silent.
@@ -1425,7 +1431,7 @@ func capabilities() []string {
 	// sendspin status, for the aec_hw_ref reason.
 	caps := []string{"local_schedule", "local_schedule_sounds", "mic", "speaker", "leds", "led_anim", "buttons",
 		"oww_shadow", "oww_trigger", "button_hold", "audio_mix", "voice_prebuffer",
-		"aec_hw_ref", "oww_local_only", "output_chain", "wake_cue", "volume_cue", "remote_volume_arc",
+		"aec_hw_ref", "oww_local_only", "output_chain", "wake_cue", "volume_cue", "remote_volume_arc", "output_mute",
 		"response_level", "wake_mic", "wake_beam", "wake_beam_ara", "wake_beam_turns", "wake_beam_stock", "wake_endpoint", "pairing",
 		"wake_word_off", "sendspin", "ble_connect"}
 	if als.Present() {
@@ -1503,6 +1509,17 @@ func (c *ControlClient) SendAmbientLight(lux int) {
 	_ = c.writeJSON(map[string]interface{}{
 		"type": "ambient_light",
 		"lux":  lux,
+	})
+}
+
+// SendOutputMuteState tells the controller the speaker's output mute, on
+// connect and on every change, whoever made it: Home Assistant, a Sendspin
+// server (the TV streamer muting the room), the Echo leading this one's
+// group, or a volume-up press. The controller shows it on the HA entity.
+func (c *ControlClient) SendOutputMuteState(muted bool) {
+	_ = c.writeJSON(map[string]interface{}{
+		"type":  "output_mute_state",
+		"muted": muted,
 	})
 }
 

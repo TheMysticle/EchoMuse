@@ -44,6 +44,7 @@ const (
 	outStart
 	outClear
 	outVolume
+	outMute
 )
 
 type outMsg struct {
@@ -61,6 +62,9 @@ type member struct {
 	cfg     Member
 	ready   bool
 	sentVol int
+	// sentMute is the last mute sent to (or reported by) this player:
+	// -1 unknown, else 0/1. Guarded by l.mu like sentVol.
+	sentMute int
 
 	qmu      sync.Mutex
 	items    []outMsg
@@ -80,7 +84,7 @@ type member struct {
 
 func newMember(l *Leader, cfg Member) *member {
 	return &member{
-		l: l, cfg: cfg, sentVol: -1,
+		l: l, cfg: cfg, sentVol: -1, sentMute: -1,
 		notify: make(chan struct{}, 1),
 		wake:   make(chan struct{}, 1),
 		state:  StateConnecting,
@@ -207,6 +211,14 @@ func (m *member) sendVolumeLocked(pct int) {
 	m.push(outMsg{kind: outVolume, vol: pct})
 }
 
+func (m *member) sendMuteLocked(muted bool) {
+	if !m.ready || m.sentMute == b2i(muted) {
+		return
+	}
+	m.sentMute = b2i(muted)
+	m.push(outMsg{kind: outMute, vol: b2i(muted)})
+}
+
 // clearQueue drops audio not yet sent and tells the player to drop what it
 // holds. Start and volume messages stay: a clear must not leave a player
 // that is about to be sent audio without ever having been told the format.
@@ -220,6 +232,7 @@ func (m *member) clearQueue() {
 func (m *member) clearQueueQuiet() {
 	m.dropAudio()
 	m.sentVol = -1
+	m.sentMute = -1
 }
 
 func (m *member) dropAudio() {
@@ -543,6 +556,9 @@ func (m *member) write(c *leaderConn, it outMsg) error {
 	case outVolume:
 		v := it.vol
 		return c.sendJSON("server/command", serverCommand{Player: &playerCommand{Command: "volume", Volume: &v}})
+	case outMute:
+		mu := it.vol == 1
+		return c.sendJSON("server/command", serverCommand{Player: &playerCommand{Command: "mute", Mute: &mu}})
 	}
 	return nil
 }
@@ -634,6 +650,7 @@ func (m *member) onState(st clientState) {
 			m.l.activate(m)
 		} else if st.Player != nil && st.Player.VolumeChanged {
 			m.l.memberVolume(m, st.Player.Volume)
+			m.l.memberMute(m, st.Player.Muted)
 		}
 		return
 	}

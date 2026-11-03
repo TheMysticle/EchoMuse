@@ -84,6 +84,10 @@ type Server struct {
 	// atomic because config pushes and volume commands arrive on independent
 	// control callbacks. Physical buttons bypass it and always show the arc.
 	remoteVolumeArc atomic.Bool
+
+	// onOutputMute is told when the output mute changes, and by whom (see
+	// SetOutputMuted). Set once at start-up from cmd.
+	onOutputMute func(muted bool, src string)
 }
 
 func NewServer(buttonController buttons.Controller, microphone mic.Microphone, speaker speaker.Speaker) *Server {
@@ -127,6 +131,15 @@ func NewServer(buttonController buttons.Controller, microphone mic.Microphone, s
 	if st, ok := loadDeviceState(statePath); ok && st.Muted {
 		server.mute.RestoreMuted() // ADC only; LEDs painted after init below
 	}
+	// A persisted OUTPUT mute comes back too: it is the Echo's own state now
+	// (the controller and any Sendspin server follow what it reports), so it
+	// must survive a reboot as it did when the controller re-sent level 0.
+	if st, ok := loadDeviceState(statePath); ok && st.OutputMuted {
+		server.volume.SetOutputMuted(true) // speaker not wired yet; SetApply applies it
+	}
+	// Unmuting the mic hands the ring back to what is under it, which is the
+	// output-mute ring when that is on, rather than clearing to black.
+	server.mute.repaint = server.restoreRing
 	server.mute.persist = func() {
 		// Locked read-modify-write: preserves the Spotify / wake-word
 		// fields and cannot interleave with their writers.
@@ -168,6 +181,8 @@ func NewServer(buttonController buttons.Controller, microphone mic.Microphone, s
 		if server.mute.IsMuted() {
 			server.mute.showMuteLEDs()
 			setMuteButtonLED(true)
+		} else if server.volume.OutputMuted() {
+			server.paintBaseLEDs()
 		}
 		// Amazon's privacy driver boots unmuted whatever we restored.
 		server.mute.reconcilePrivacySoon()
@@ -180,13 +195,22 @@ func NewServer(buttonController buttons.Controller, microphone mic.Microphone, s
 // A button press makes the device's level authoritative (see volumeSeeded):
 // its change report updates the controller's stored value, and a config
 // push arriving later this run must not override it.
+//
+// Volume up on an output-muted Echo unmutes it one step above the level from
+// before the mute, which is what a muted speaker's volume-up normally does.
 func (s *Server) VolumeStepUp() bool {
 	s.volumeSeeded.Store(true)
+	s.SetOutputMuted(false, "button")
 	return s.volume.StepUp()
 }
 
 // VolumeStepDown decreases volume one step — called by button handler.
+// On an output-muted Echo it does nothing: going quieter than muted is not a
+// thing, and stepping the hidden level down would only surprise the unmute.
 func (s *Server) VolumeStepDown() bool {
+	if s.volume.OutputMuted() {
+		return false
+	}
 	s.volumeSeeded.Store(true)
 	return s.volume.StepDown()
 }
@@ -201,23 +225,42 @@ func (s *Server) SetVolume(level int) {
 	// HA represents mute as volume zero. Do not replace the mute indication
 	// with an empty cyan arc and a two-second black hold.
 	showRing := s.remoteVolumeArc.Load() && level != 0 && level != s.volume.Get()
+	// An explicit volume from Home Assistant ends an output mute, as on any
+	// media player (em_output_mute.volume_set is the controller's half).
+	if level != 0 {
+		s.SetOutputMuted(false, "controller")
+	}
 	s.SetVolumeFrom(level, "controller", showRing)
 }
 
-// MuteOutput applies Home Assistant's media-player mute: the level the
-// controller sends (0), and — under the same remoteVolumeArc setting that
-// governs the arc for HA volume changes — the output-mute ring for the
-// display window. Unmute needs nothing here: it arrives as the restored,
-// non-zero level and SetVolume draws the ordinary cyan arc for it.
+// SetOutputMuted mutes or unmutes the SPEAKER (not the microphones): the
+// output goes silent, the volume level is kept for the unmute, and the ring
+// shows the output-mute colour for as long as it lasts, whenever nothing
+// else owns the ring. Persisted, so it survives a reboot.
 //
-// Shown even when the level does not move (muting at volume 0), because the
-// mute is the event being acknowledged, not the level.
-func (s *Server) MuteOutput(level int) {
-	s.SetVolumeFrom(clampVolumeLevel(level), "mute", false)
-	if s.remoteVolumeArc.Load() {
-		s.volume.showOutputMuteLEDs()
+// src says who asked — "controller" (Home Assistant's mute), "sendspin" (a
+// Sendspin server: the TV streamer muting the room), "group" (the Echo
+// leading this one's group), "button" (volume up on a muted Echo). It goes to
+// the callback so each party is told of a change it did not make itself;
+// telling the one that made it is harmless (each ignores a repeat) but noisy.
+func (s *Server) SetOutputMuted(on bool, src string) {
+	if !s.volume.SetOutputMuted(on) {
+		return
+	}
+	log.Printf("Output %s (%s)", map[bool]string{true: "muted", false: "unmuted"}[on], src)
+	updateDeviceState(func(st *deviceState) { st.OutputMuted = on })
+	s.restoreRing()
+	if f := s.onOutputMute; f != nil {
+		f(on, src)
 	}
 }
+
+// OutputMuted reports the speaker's mute.
+func (s *Server) OutputMuted() bool { return s.volume.OutputMuted() }
+
+// OnOutputMute wires the callback SetOutputMuted reports to. Call once at
+// start-up, before anything can mute.
+func (s *Server) OnOutputMute(f func(muted bool, src string)) { s.onOutputMute = f }
 
 // SetRemoteVolumeArc applies the runtime config controlling feedback for live
 // remote volume changes. It deliberately does not affect physical buttons or
@@ -613,7 +656,22 @@ func (s *Server) paintBaseLEDs() {
 		leds[i] = base[i]
 		leds[i].ID = i
 	}
+	if s.volume.OutputMuted() && ringDark(leds) && !s.voiceOwnsRing() {
+		leds = outputMuteFrame()
+	}
 	if err := lc.SetLEDs(leds...); err != nil {
 		log.Printf("SetLEDs error: %v", err)
 	}
+}
+
+// ringDark reports a frame with every LED off: the idle ring, which is where
+// the output-mute ring shows. Anything the controller or a turn paints wins
+// over it, and it comes back when they clear.
+func ringDark(leds []led.Led) bool {
+	for _, l := range leds {
+		if l.R != 0 || l.G != 0 || l.B != 0 {
+			return false
+		}
+	}
+	return true
 }

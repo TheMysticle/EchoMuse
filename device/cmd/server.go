@@ -646,6 +646,7 @@ func main() {
 		if s.VolumeSeeded() {
 			controlClient.SendVolumeState(s.VolumeLevel())
 		}
+		controlClient.SendOutputMuteState(s.OutputMuted())
 		s.StopAnim() // fresh controller session owns the ring from here
 		if muted {
 			// Orange pulse overwrote the red ring — restore it.
@@ -870,11 +871,31 @@ func main() {
 	// Calls Set() which applies the volume, updates LEDs, and fires the change
 	// callback above — so SendVolumeState fires automatically, closing the loop.
 	controlClient.OnVolumeSet(func(level int, muted *bool) {
-		if muted != nil && *muted {
-			s.MuteOutput(level)
-			return
+		// `muted` is Home Assistant's mute or unmute; the level that rides
+		// with it is ignored on a mute (the Echo keeps its own) and is the
+		// level to play at on an unmute.
+		if muted != nil {
+			s.SetOutputMuted(*muted, "controller")
+			if *muted {
+				return
+			}
 		}
 		s.SetVolume(level)
+	})
+
+	// The output mute travels everywhere the volume does: to the controller
+	// (HA's entity), to a Sendspin server this Echo plays for (so the TV
+	// streamer mutes the room rather than setting everyone's volume to 0),
+	// and from a group's leader to its members. Each is told only of a mute
+	// it did not make, though each would ignore its own echo anyway.
+	s.OnOutputMute(func(muted bool, src string) {
+		controlClient.SendOutputMuteState(muted)
+		if c := sendspinPlayer(); c != nil {
+			c.SetMuted(muted, src != "sendspin")
+		}
+		if l := groupLeader(); l != nil && src != "group" {
+			l.SetMute(muted)
+		}
 	})
 
 	// Heap-profile dump on SIGUSR1 — the ~1MB/h leak hunt (2026-07-17).

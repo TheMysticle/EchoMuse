@@ -20,6 +20,10 @@ type muteController struct {
 	// onMuteChange: that one is the controller-notification hook wired by
 	// cmd, this one is internal.
 	persist func()
+	// repaint, when set, replaces clearing the ring on unmute: the server
+	// hands it back to what is under the red ring (the output-mute ring, or
+	// whatever the controller last painted).
+	repaint func()
 }
 
 func newMuteController(ledGetter func() led.Controller, onMuteChange func(muted bool)) *muteController {
@@ -151,6 +155,10 @@ func (m *muteController) showMuteLEDs() {
 }
 
 func (m *muteController) clearLEDs() {
+	if m.repaint != nil {
+		m.repaint()
+		return
+	}
 	lc := m.ledCtrl()
 	if lc == nil {
 		return

@@ -836,3 +836,36 @@ func TestAVolumeNotChangedAtTheEchoStaysOnIt(t *testing.T) {
 		t.Errorf("leader at %d told %v, other player told %v", l.volumeNow(), lv.list(), bv.list())
 	}
 }
+
+// A mute travels like the volume: the leader's to every member (on joining
+// too), and a member's own becomes the group's. Before, a mute travelled as
+// volume 0, so nothing in the group knew it was muted.
+func TestMuteReachesThePlayerAndAMembersOwnMuteBecomesTheGroups(t *testing.T) {
+	c, port := startPlayer(t, "p")
+	var mu sync.Mutex
+	var got []bool
+	c.OnMute(func(m bool) { mu.Lock(); got = append(got, m); mu.Unlock() })
+	l := newTestLeader(t)
+	var lead []bool
+	l.OnMute(func(m bool) { mu.Lock(); lead = append(lead, m); mu.Unlock() })
+	share(t, l, c)
+	l.SetMute(true) // before the player is there: it is told on joining
+	l.SetMembers("G", ChannelMono, []Member{{ID: "a", ClientID: c.ClientID(), Host: "127.0.0.1", Port: port}})
+	waitFor(t, "ready", 8*time.Second, func() bool { return memberState(l, "a") == StateReady })
+	waitFor(t, "mute", 3*time.Second, func() bool { mu.Lock(); defer mu.Unlock(); return len(got) == 1 && got[0] })
+	l.SetMute(true) // unchanged: not sent again
+	l.SetMute(false)
+	waitFor(t, "unmute", 3*time.Second, func() bool { mu.Lock(); defer mu.Unlock(); return len(got) == 2 && !got[1] })
+
+	c.SetMuted(true, true) // muted at the member Echo itself
+	waitFor(t, "the group to take the member's mute", 3*time.Second, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(lead) == 1 && lead[0]
+	})
+	mu.Lock()
+	defer mu.Unlock()
+	if len(got) != 2 {
+		t.Errorf("the member was sent its own mute back: %v", got)
+	}
+}

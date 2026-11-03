@@ -1,0 +1,159 @@
+--- a/streamer.py
++++ b/streamer.py
+@@ -469,6 +469,63 @@
+         return out
+ 
+ 
++class MuteSync:
++    """Keeps the players in the stream muted together, as VolumeSync keeps
++    their volume.
++
++    A player that changes its mute (Home Assistant's mute on an Echo, the
++    page) has it copied to the others. Before EchoMuse firmware reported its
++    mute as a mute, it reported volume 0, so VolumeSync muted the room by
++    setting everyone's volume to 0 and nothing showed muted. What a player
++    says as it joins, and its answer to a mute it was sent, are not changes.
++    Only a CHANGE of a player's mute counts: the event that carries it fires
++    for every volume report too.
++    """
++
++    JOIN_GRACE_S = VolumeSync.JOIN_GRACE_S
++    ANSWER_S = VolumeSync.ANSWER_S
++
++    def __init__(self, clock=time.monotonic) -> None:
++        self.clock = clock
++        self._joined: dict[str, float] = {}
++        self._last: dict[str, bool] = {}
++        self._sent: dict[str, tuple[bool, float]] = {}
++
++    def members(self, ids) -> None:
++        now = self.clock()
++        ids = set(ids)
++        for i in ids:
++            self._joined.setdefault(i, now)
++        for i in list(self._joined):
++            if i not in ids:
++                del self._joined[i]
++                self._last.pop(i, None)
++                self._sent.pop(i, None)
++
++    def reported(self, who: str, muted: bool, mutes: dict[str, bool | None]) -> dict[str, bool]:
++        """A player reported its state. mutes holds every member's last
++        report. Returns {player: muted} to send."""
++        now = self.clock()
++        prev = self._last.get(who)
++        self._last[who] = muted
++        joined = self._joined.get(who)
++        if joined is None or now - joined < self.JOIN_GRACE_S:
++            return {}
++        if prev is None or prev == muted:
++            return {}
++        sent = self._sent.pop(who, None)
++        if sent and sent[0] == muted and now - sent[1] < self.ANSWER_S:
++            return {}
++        out = {}
++        for other in self._joined:
++            if other == who or mutes.get(other) == muted:
++                continue
++            out[other] = muted
++            self._sent[other] = (muted, now)
++            self._last[other] = muted
++        return out
++
++
+ class AutoStop:
+     """Auto stream: let the players go after `minutes` without sound, and
+     take them back the moment sound returns.
+@@ -1158,6 +1215,7 @@
+         self._ready_ids: set[str] = set()  # ready players at the last grouping pass
+         self._ready_clients: dict[str, object] = {}  # the same, by client id
+         self.volsync = VolumeSync()
++        self.mutesync = MuteSync()
+         self.auto = AutoStop(self.settings.auto_stop_min)
+         self._vol_watch: dict[str, tuple[object, object]] = {}  # client id -> (client, unsubscribe)
+         self._applied_lead = 0
+@@ -1500,6 +1558,7 @@
+         """Follow the volume of every player in the stream (VolumeSync)."""
+         self._ready_clients = {c.client_id: c for c in ready}
+         self.volsync.members(self._ready_clients if self.settings.volume_sync else ())
++        self.mutesync.members(self._ready_clients if self.settings.volume_sync else ())
+         for c in self._ready_clients.values():
+             r = c.role(PLAYER_ROLE)
+             if r is not None and r.volume is not None:
+@@ -1538,6 +1597,16 @@
+                 continue
+             log.info("volume %d from %s -> %s", v, self._label(client), self._label(self._ready_clients[cid]))
+             r.set_volume(v)
++        mutes = {}
++        for cid, c in self._ready_clients.items():
++            r = c.role(PLAYER_ROLE)
++            mutes[cid] = r.muted if r else None
++        for cid, m in self.mutesync.reported(client.client_id, bool(event.muted), mutes).items():
++            r = self._ready_clients[cid].role(PLAYER_ROLE)
++            if r is None:
++                continue
++            log.info("%s from %s -> %s", "mute" if m else "unmute", self._label(client), self._label(self._ready_clients[cid]))
++            r.set_mute(m)
+ 
+     def _label(self, client) -> str:
+         for key, p in self.discovery.players.items():
+@@ -1550,6 +1619,8 @@
+         self.settings.save()
+         self.volsync = VolumeSync(self.volsync.clock)  # a fresh start: nobody owes an answer
+         self.volsync.members(self._ready_clients if on else ())
++        self.mutesync = MuteSync(self.mutesync.clock)
++        self.mutesync.members(self._ready_clients if on else ())
+ 
+     def set_tv(self, dialogue_db: float | None, bass_db: float | None,
+                dynamics: str | None, on: bool | None = None,
+--- a/test_volume_sync.py
++++ b/test_volume_sync.py
+@@ -121,3 +121,48 @@
+             f()
+             n += 1
+     print(f"{n} passed")
++
++
++# ── MuteSync ───────────────────────────────────────────────────────────────
++
++MuteSync = streamer.MuteSync
++
++
++def mjoined(*ids, muted=False):
++    c = Clock()
++    s = MuteSync(clock=c)
++    s.members(ids)
++    for i in ids:
++        s.reported(i, muted, {})  # the join report: where it already was
++    c.t += MuteSync.JOIN_GRACE_S
++    return s, c
++
++
++def test_a_mute_is_copied_to_the_others():
++    s, _ = mjoined("a", "b", "c")
++    assert s.reported("a", True, {"a": True, "b": False, "c": False}) == {"b": True, "c": True}
++
++
++def test_an_unmute_is_copied_too():
++    s, _ = mjoined("a", "b", muted=True)
++    assert s.reported("a", False, {"a": False, "b": True}) == {"b": False}
++
++
++def test_a_volume_report_with_the_mute_unchanged_is_not_a_mute():
++    s, _ = mjoined("a", "b")
++    assert s.reported("a", False, {"a": False, "b": False}) == {}
++
++
++def test_the_answer_to_a_sent_mute_is_not_copied_back():
++    s, _ = mjoined("a", "b")
++    assert s.reported("a", True, {"a": True, "b": False}) == {"b": True}
++    assert s.reported("b", True, {"a": True, "b": True}) == {}
++
++
++def test_a_player_joining_muted_does_not_mute_the_room():
++    c = Clock()
++    s = MuteSync(clock=c)
++    s.members(["a", "b"])
++    assert s.reported("b", True, {"a": False, "b": True}) == {}
++    c.t += MuteSync.JOIN_GRACE_S
++    assert s.reported("b", True, {"a": False, "b": True}) == {}
