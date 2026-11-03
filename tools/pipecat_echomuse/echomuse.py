@@ -58,6 +58,8 @@ def composed_instructions(settings, language):
         "translated into the user's language: 'lampa podłogowa' means the device listed as Floor Lamp. On an unknown-area "
         "or no-entity-matched error, inspect GetLiveContext and retry "
         "with the real name instead of asking the user. Maximum two GetLiveContext calls per turn; then answer from results or explain failure.",
+        "You do not know the current time, date or weekday; for any question about them call GetDateTime first and answer "
+        "only from its result, never from memory or earlier in the conversation.",
         "Volume numbers are percentages: volume 10 means volume_level 10, never multiply by ten.",
     ])
     return "\n" + "\n".join(rules)

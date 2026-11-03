@@ -438,3 +438,66 @@ def test_everyday_commands_in_both_languages_run(text, tool, args):
 def test_everyday_chatter_is_still_refused(text, tool, args):
     ok, why = hc.check(tool, args, text, HOUSE)
     assert not ok, why
+
+
+# --- a new turn is judged by its own words ----------------------------------
+# 2026-11-03 21:47:57: Gemini called EchoMuseStop for a turn whose transcript
+# never arrived, and the check judged it by the "What time is it?" before it.
+
+def test_a_new_turn_waits_for_its_own_transcript():
+    s = hc.HeardState()
+
+    async def run():
+        s.user_text("What time is it?")
+        s.bot_text_out("It is nine.")
+        s.bot_text_out("")
+        s.user_started()
+
+        async def arrives():
+            await asyncio.sleep(0.1)
+            s.user_text("Stop.")
+        late = asyncio.create_task(arrives())
+        heard = await s.evidence()
+        await late
+        return heard
+    assert asyncio.run(run()) == "Stop."
+    assert hc.check("EchoMuseStop", {}, "Stop.")[0]
+
+
+def test_a_turn_whose_words_never_arrive_is_not_judged_by_the_last_one():
+    s = hc.HeardState()
+
+    async def run():
+        s.user_text("Turn off the floor lamp")
+        s.bot_text_out("Floor lamp off.")
+        s.user_started()
+        return await s.evidence()
+    assert asyncio.run(run()) == ""
+
+
+def test_a_second_call_in_the_same_turn_does_not_wait():
+    s = hc.HeardState()
+
+    async def run():
+        s.user_started()
+        s.user_text("Turn off the bedroom lights and turn on the kitchen")
+        t0 = asyncio.get_running_loop().time()
+        first = await s.evidence()
+        second = await s.evidence()
+        return first, second, asyncio.get_running_loop().time() - t0
+    first, second, took = asyncio.run(run())
+    assert first == second == "Turn off the bedroom lights and turn on the kitchen"
+    assert took < 0.1
+
+
+def test_a_reply_to_a_question_still_carries_the_question():
+    s = hc.HeardState()
+
+    async def run():
+        s.user_started()
+        s.user_text("Set an alarm.")
+        s.bot_text_out("What time?")
+        s.user_started()
+        s.user_text("Ten a.m.")
+        return await s.evidence()
+    assert asyncio.run(run()) == "Set an alarm. Ten a.m."

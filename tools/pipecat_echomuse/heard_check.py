@@ -477,7 +477,18 @@ class HeardState:
         self.bot_since_user = False
         self.bot_text = ""
         self.asked = False
+        self.awaiting = False
         self.names = Names()
+
+    def user_started(self) -> None:
+        """The user began a new turn; its transcript is still to come.
+
+        Until it does, the text held is the PREVIOUS turn's. Judging a call
+        on it refused a request at 21:47:57 on 2026-11-03 by the words of the
+        "What time is it?" before it, because that turn's own transcript had
+        not arrived and evidence() only waited when it held nothing at all.
+        """
+        self.awaiting = True
 
     def question_asked(self) -> None:
         """The model asked for a clarification (EchoMuseRequestContinuation).
@@ -498,6 +509,7 @@ class HeardState:
                 self.previous, self.previous_at = "", 0.0
             self.turn, self.bot_text, self.bot_since_user, self.asked = "", "", False, False
         self.turn += text
+        self.awaiting = False
 
     def bot_text_out(self, text: str) -> None:
         self.bot_since_user = True
@@ -510,8 +522,11 @@ class HeardState:
 
     async def evidence(self) -> str:
         deadline = time.monotonic() + EVIDENCE_WAIT_SECONDS
-        while not self.turn.strip() and time.monotonic() < deadline:
+        while (self.awaiting or not self.turn.strip()) and time.monotonic() < deadline:
             await asyncio.sleep(0.02)
+        if self.awaiting and self.bot_since_user:
+            # This turn's words never came; the last turn's are not evidence for it.
+            return ""
         return self.transcript()
 
 
