@@ -58,8 +58,6 @@ def composed_instructions(settings, language):
         "translated into the user's language: 'lampa podłogowa' means the device listed as Floor Lamp. On an unknown-area "
         "or no-entity-matched error, inspect GetLiveContext and retry "
         "with the real name instead of asking the user. Maximum two GetLiveContext calls per turn; then answer from results or explain failure.",
-        "You do not know the current time, date or weekday; for any question about them call GetDateTime first and answer "
-        "only from its result, never from memory or earlier in the conversation.",
         "Volume numbers are percentages: volume 10 means volume_level 10, never multiply by ten.",
     ])
     return "\n" + "\n".join(rules)
@@ -74,8 +72,62 @@ def timezone_rule(settings):
     """
     zone = settings.get("timezone")
     if not zone:
-        return "Ask if the timezone for a calendar alarm/reminder is unknown."
-    return f"Household time zone: {zone}. Give alarm/reminder times as the local clock time, without an offset."
+        return ("Ask if the timezone for a calendar alarm/reminder is unknown. You do not know the household's "
+                "local time: for any question about the current time, date or weekday, call GetDateTime and "
+                "answer from its result.")
+    return (f"Household time zone: {zone}. Give alarm/reminder times as the local clock time, without an offset. "
+            + clock_rule(zone))
+
+
+def _utc_offset(delta) -> str:
+    minutes = int(delta.total_seconds() // 60)
+    sign = "+" if minutes >= 0 else "-"
+    h, m = divmod(abs(minutes), 60)
+    return f"UTC{sign}{h}" + (f":{m:02d}" if m else "")
+
+
+def clock_rule(zone, now=None):
+    """How to turn Gemini's own clock into household time.
+
+    Gemini Live has a clock, and it runs on UTC: asked the time in Warsaw at
+    21:47 CET it answered exactly an hour behind, minutes and all, with no
+    time anywhere in its context (2026-11-03). Fetching the time with
+    GetDateTime instead costs a tool round trip, about 0.7 s on every time
+    question, so it is given the conversion. Only the zone's offset is
+    written, never a time, so nothing here goes stale while a session runs
+    for hours; and the next clock change is written too, so a session that
+    runs across one still converts correctly.
+    """
+    from datetime import datetime, timedelta, timezone
+    from zoneinfo import ZoneInfo
+    try:
+        tz = ZoneInfo(zone)
+    except Exception:
+        return ("For any question about the current time, date or weekday, call GetDateTime and answer from "
+                "its result.")
+    now = now or datetime.now(timezone.utc)
+    offset = now.astimezone(tz).utcoffset()
+    rule = f"Your own clock runs on UTC; household time is {_utc_offset(offset)}"
+    # The next change of offset within a year: find the day, then the hour.
+    later = None
+    for day in range(1, 367):
+        t = now + timedelta(days=day)
+        if t.astimezone(tz).utcoffset() != offset:
+            lo = t - timedelta(days=1)
+            while t - lo > timedelta(minutes=1):
+                mid = lo + (t - lo) / 2
+                if mid.astimezone(tz).utcoffset() != offset:
+                    t = mid
+                else:
+                    lo = mid
+            later = t.astimezone(timezone.utc).replace(second=0, microsecond=0)
+            break
+    if later is not None:
+        # In UTC, the clock Gemini reads, so the change is unambiguous.
+        rule += (f" until {later.strftime('%-d %B %Y %H:%M')} UTC, "
+                 f"then {_utc_offset(later.astimezone(tz).utcoffset())}")
+    return (rule + ". Whenever you tell or use the current time, date or weekday, convert your clock to "
+            "household time first, the date too near midnight; never say a UTC time. If unsure, call GetDateTime.")
 
 
 def options(headers, authenticated):
