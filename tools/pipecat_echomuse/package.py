@@ -5,6 +5,7 @@ Usage: python tools/pipecat_echomuse/package.py --source /path/to/upstream
 The adapter is kept here; upstream source is not vendored into the repository.
 """
 import argparse
+import json
 from pathlib import Path
 import re
 import shutil
@@ -47,6 +48,7 @@ def adapt(text):
             await echomuse.keep_connection(self, super()._connection_task_handler, config)
 
         async def _handle_connection_error(self, error: Exception) -> bool:
+            echomuse.connection_error(self, error)
             connection_started''')
     replace('    mcp_servers = config.enabled_mcp_servers(mcp_token) if flow.mcp_enabled else []\n    if mcp_servers:\n        bridge = CombinedMCPBridge(mcp_servers, flow.mcp_tool_allowlist)', '''    mcp_servers = config.enabled_mcp_servers(mcp_token) if flow.mcp_enabled else []
     mcp_servers, session_allowlist = echomuse.mcp_options(session_body.get("echomuse", {}), mcp_servers, flow.mcp_tool_allowlist)
@@ -1251,7 +1253,8 @@ def main():
     path.write_text(adapt_session_memory(path.read_text(encoding='utf-8')), encoding='utf-8')
     shutil.copyfile(Path(__file__).with_name('echomuse.py'), args.out/'app/echomuse.py')
     for name in ('brave_search.py', 'sherpa_stt.py', 'piper_wyoming_tts.py', 'energy_vad.py', 'fast_path.py', 'local_commands.py', 'tool_scope.py', 'tool_selector.py',
-                 'schedule_language.py', 'schedule_dialogue.py', 'schedule_select.py', 'schedule_mcp.py', 'weather_commands.py', 'audio_tail.py', 'heard_check.py'):
+                 'schedule_language.py', 'schedule_dialogue.py', 'schedule_select.py', 'schedule_mcp.py', 'weather_commands.py', 'audio_tail.py', 'heard_check.py',
+                 'transcription_languages.py'):
         shutil.copyfile(Path(__file__).with_name(name), args.out/'app'/name)
     custom_sentences_src = Path(__file__).with_name('custom_sentences')
     custom_sentences_dst = args.out/'custom_sentences'
@@ -1289,6 +1292,26 @@ def main():
     config = re.sub(r'^name:.*$', 'name: Pipecat Assist (EchoMuse dev)', config, flags=re.M)
     config = re.sub(r'^slug:.*$', 'slug: pipecat_assist_echomuse', config, flags=re.M)
     config = re.sub(r'^version:.*$', f'version: "0.1.80-em-{version}"', config, flags=re.M)
+    # Which languages Gemini Live transcribes the user in (transcription_languages.py).
+    config = config.replace('  log_level: "INFO"\n', '  log_level: "INFO"\n  transcription_languages: ""\n', 1)
+    config = config.replace('  log_level: list(DEBUG|INFO|WARNING|ERROR)\n',
+                            '  log_level: list(DEBUG|INFO|WARNING|ERROR)\n  transcription_languages: str?\n', 1)
+    assert 'transcription_languages: str?' in config and 'transcription_languages: ""' in config
+    for lang, name, description in (
+        ('en', 'Transcription languages',
+         'Languages you speak to the assistant, as codes separated by commas, for example pl-PL, en-US. '
+         'Gemini Live then transcribes you in one of them instead of guessing, which it often gets wrong '
+         'on short commands. Empty: it guesses.'),
+        ('pl', 'Jezyki transkrypcji',
+         'Jezyki, ktorymi mowisz do asystenta, jako kody oddzielone przecinkami, np. pl-PL, en-US. '
+         'Gemini Live transkrybuje wtedy w jednym z nich zamiast zgadywac, co przy krotkich poleceniach '
+         'czesto sie nie udaje. Puste: zgaduje.'),
+    ):
+        tpath = args.out/'translations'/f'{lang}.yaml'
+        if tpath.exists():
+            tpath.write_text(tpath.read_text(encoding='utf-8').rstrip('\n') + '\n'
+                             f'  transcription_languages:\n    name: {json.dumps(name)}\n    description: {json.dumps(description)}\n',
+                             encoding='utf-8')
     if 'homeassistant_config:ro' not in config:
         # Read-only access to HA's own config dir, mounted at /homeassistant,
         # so the fast-path intent matcher can load the user's actual

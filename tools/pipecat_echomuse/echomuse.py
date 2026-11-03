@@ -3,6 +3,11 @@ import asyncio
 import re
 from urllib.parse import urlsplit
 
+try:
+    from app import transcription_languages
+except ImportError:  # the tests import these modules from the source tree
+    import transcription_languages
+
 PROFILES = {
     # Alarm-stop failure 2026-10-22: every frame stayed below 0.7 (peaks
     # 0.59/0.69), so the live service never received a user-speech start.
@@ -390,16 +395,31 @@ async def keep_connection(service, run, config):
     rebuilding the connection.
     """
     mark_context_results_sent(service)
+    # Every connect builds a fresh config, so the languages go on each one.
+    codes = transcription_languages.apply(config)
+    if codes and not getattr(service, "_em_languages_logged", False):
+        service._em_languages_logged = True
+        from loguru import logger
+        logger.info("Gemini input transcription languages: {}", ", ".join(codes))
+    service._em_live_config = config
     try:
         await run(config)
     except asyncio.CancelledError:
         raise
     except Exception as error:
+        transcription_languages.failed(config, error)
         if getattr(service, "_disconnecting", False):
             raise
         service._session_resumption_handle = None
         if await service._handle_connection_error(error):
             service.create_task(service._reconnect(), "echomuse_gemini_reconnect")
+
+
+def connection_error(service, error) -> None:
+    """A session that dies after connecting reaches Pipecat's error handler
+    rather than keep_connection; if the languages were why, drop them before
+    it reconnects."""
+    transcription_languages.failed(getattr(service, "_em_live_config", None), error)
 
 
 VOICE_LEAD_S = 0.5
