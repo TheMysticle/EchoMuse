@@ -41,6 +41,16 @@ COMMANDS = [
     ("Wyłącz światło w sypialni.", "intent__HassTurnOff", {"area": "sypialnia", "domain": ["light"]}),
     ("Włącz światło w kuchni", "intent__HassTurnOn", {"domain": ["light"], "area": "kitchen"}),
     ("Turn off the living room TV", "intent__HassTurnOff", {"device_class": ["tv"], "area": "Living Room"}),
+    # "Włącz lampę podłogową (w salonie)" as Gemini transcribed it, 2026-11-03:
+    # the verb lost and glued onto the lamp, while Gemini acted on it correctly.
+    ("Wunschlampe podłogową w salonie", "intent__HassTurnOn",
+     {"area": "Living Room", "device_class": ["switch"], "name": "floor lamp"}),
+    ("frontlampę podłogową", "intent__HassTurnOn", {"device_class": ["switch"], "name": "floor lamp"}),
+    ("Włącz lampę podłogową", "intent__HassTurnOn", {"name": "floor lamp"}),
+    ("Wunsch światło w salonie", "intent__HassTurnOn", {"area": "Living Room", "domain": ["light"]}),
+    ("Wunschświatło w kuchni", "intent__HassTurnOn", {"area": "Kitchen", "domain": ["light"]}),
+    ("Wunsch komputer", "intent__HassTurnOn", {"name": "Computer"}),
+    ("Wunsch telewizor", "intent__HassTurnOff", {"name": "TV"}),
     ("Vacuum the kitchen", "script__vacuum_clean_kitchen", {}),
     ("Odkurz kuchnię.", "script__vacuum_clean_kitchen", {}),
     ("Activate movie mode", "script__activate_movie_mode", {}),
@@ -82,6 +92,11 @@ JUNK = [
      "echomuse-local-schedules__EchoMuseCreate", {"kind": "timer", "when": "+10m", "target": "tv"}),
     ("Coming up after the break, why kitchen renovations are costing families more than ever.", "EchoMuseStop", {}),
     ("", "intent__HassTurnOn", {"name": "Kitchen Master"}),
+    # A room alone, even in a short sentence, is not a request.
+    ("Wunsch sypialnię", "intent__HassTurnOff", {"area": "Bedroom"}),
+    # Naming a device is not asking for it once the sentence is long enough to be chatter.
+    ("Widziałeś, że lampa podłogowa w salonie znowu się przewróciła wczoraj?",
+     "intent__HassTurnOff", {"name": "floor lamp"}),
 ]
 
 
@@ -305,3 +320,121 @@ def test_an_empty_title_is_refused():
 ])
 def test_a_play_word_is_evidence_for_play_media_alone(tool, args):
     assert not hc.check(MCP + tool, args, "Play some music", NAMES)[0]
+
+
+# --- the everyday vocabulary, Polish and English ---------------------------
+# Commands as people say them to a house with more kinds of device than ours,
+# clean and with the verb garbled as Gemini's transcriber garbles it ("Wunsch",
+# "Wonts", "Włoncz", "Tun of"), against chatter that must still be refused.
+# Added 2026-11-03 after "Włącz lampę podłogową" was refused twice.
+
+HOUSE = hc.Names(
+    groups=[["Kitchen Master", "Kitchen Lights"], ["Floor Lamp"], ["Computer", "Bazzite PC"], ["OLED", "TV"],
+            ["Bedroom Lights"], ["Desk Lamp"], ["Ceiling Fan"], ["Living Room Blinds"], ["Coffee Machine"],
+            ["Air Purifier"], ["Garage Door"], ["Christmas Tree"], ["Humidifier"], ["LED Strip"]],
+    areas=[["Living Room"], ["Kitchen"], ["Bedroom"], ["Bathroom"], ["Office"], ["Garage"], ["Corridor"]])
+I="assist__intent__"; L="assist__light__"; MP="assist__media_player__"; CL="assist__climate__"; V="assist__vacuum__"
+SPOKEN = [
+ # Polish, clean, many verb forms
+ ("Włącz lampę podłogową", I+"HassTurnOn", {"name":"Floor Lamp"}),
+ ("Wyłącz lampę podłogową", I+"HassTurnOff", {"name":"Floor Lamp"}),
+ ("Włączysz światło w kuchni?", I+"HassTurnOn", {"area":"Kitchen","domain":["light"]}),
+ ("Możesz wyłączyć światło w sypialni", I+"HassTurnOff", {"area":"Bedroom","domain":["light"]}),
+ ("Zgaś światło w łazience", I+"HassTurnOff", {"area":"Bathroom","domain":["light"]}),
+ ("Zgaście światła", I+"HassTurnOff", {"domain":["light"]}),
+ ("Zapal światło w salonie", I+"HassTurnOn", {"area":"Living Room","domain":["light"]}),
+ ("Włącz komputer", I+"HassTurnOn", {"name":"Computer"}),
+ ("Włącz telewizor", I+"HassTurnOn", {"name":"TV"}),
+ ("Wyłącz telewizor w salonie", I+"HassTurnOff", {"name":"TV","area":"Living Room"}),
+ ("Włącz lampkę na biurku", I+"HassTurnOn", {"name":"Desk Lamp"}),
+ ("Włącz wiatrak", I+"HassTurnOn", {"name":"Ceiling Fan"}),
+ ("Włącz wentylator", I+"HassTurnOn", {"name":"Ceiling Fan"}),
+ ("Otwórz rolety w salonie", I+"HassTurnOn", {"name":"Living Room Blinds"}),
+ ("Zamknij rolety", I+"HassTurnOff", {"name":"Living Room Blinds"}),
+ ("Włącz ekspres do kawy", I+"HassTurnOn", {"name":"Coffee Machine"}),
+ ("Włącz oczyszczacz powietrza", I+"HassTurnOn", {"name":"Air Purifier"}),
+ ("Zamknij bramę garażową", I+"HassTurnOff", {"name":"Garage Door"}),
+ ("Zapal choinkę", I+"HassTurnOn", {"name":"Christmas Tree"}),
+ ("Włącz nawilżacz", I+"HassTurnOn", {"name":"Humidifier"}),
+ ("Włącz taśmę LED", I+"HassTurnOn", {"name":"LED Strip"}),
+ ("Wyłącz wszystko w kuchni", I+"HassTurnOff", {"area":"Kitchen"}),
+ ("Wyłącz wszystkie światła", I+"HassTurnOff", {"domain":["light"]}),
+ ("Ustaw lampę podłogową na 30%", L+"HassLightSet", {"name":"Floor Lamp","brightness":30}),
+ ("Przyciemnij światło w salonie", L+"HassLightSet", {"area":"Living Room","brightness":20}),
+ ("Rozjaśnij kuchnię", L+"HassLightSet", {"area":"Kitchen","brightness":100}),
+ ("Zmień kolor lampy na czerwony", L+"HassLightSet", {"name":"Floor Lamp","color":"red"}),
+ ("Ustaw światło na niebieskie", L+"HassLightSet", {"color":"blue","domain":["light"]}),
+ ("Pauza", MP+"HassMediaPause", {}),
+ ("Zatrzymaj muzykę", MP+"HassMediaPause", {}),
+ ("Wznów", MP+"HassMediaUnpause", {}),
+ ("Następna piosenka", MP+"HassMediaNext", {}),
+ ("Pomiń", MP+"HassMediaNext", {}),
+ ("Poprzedni utwór", MP+"HassMediaPrevious", {}),
+ ("Głośniej", "EchoMuseVolume", {"level":60}),
+ ("Ciszej", "EchoMuseVolume", {"level":30}),
+ ("Ustaw głośność na 40", "EchoMuseVolume", {"level":40}),
+ ("Ścisz telewizor", MP+"HassSetVolume", {"name":"TV","volume_level":20}),
+ ("Ustaw temperaturę na 21 stopni", CL+"HassClimateSetTemperature", {"temperature":21}),
+ ("Odkurz kuchnię", V+"HassVacuumStart", {"area":"Kitchen"}),
+ ("Wyślij odkurzacz do stacji", V+"HassVacuumReturnToBase", {}),
+ ("Nastaw minutnik na 10 minut", "EchoMuseCreate", {"kind":"timer"}),
+ ("Obudź mnie o siódmej", "EchoMuseCreate", {"kind":"alarm"}),
+ ("Przypomnij mi o śmieciach", "EchoMuseCreate", {"kind":"reminder"}),
+ ("Stop", "EchoMuseStop", {}), ("Przestań", "EchoMuseStop", {}), ("Wystarczy", "EchoMuseStop", {}),
+ ("Cicho", "EchoMuseStop", {}),
+ # Polish with the verb garbled
+ ("Wunschlampe podłogową", I+"HassTurnOn", {"name":"Floor Lamp"}),
+ ("Wunsch światło w kuchni", I+"HassTurnOn", {"area":"Kitchen","domain":["light"]}),
+ ("Wonts komputer", I+"HassTurnOn", {"name":"Computer"}),
+ ("Wyłonczy telewizor", I+"HassTurnOff", {"name":"TV"}),
+ ("Włoncz wiatrak", I+"HassTurnOn", {"name":"Ceiling Fan"}),
+ ("Ceiling ekspres do kawy", I+"HassTurnOn", {"name":"Coffee Machine"}),
+ # English, clean and garbled
+ ("Turn on the floor lamp", I+"HassTurnOn", {"name":"Floor Lamp"}),
+ ("Switch off the kitchen lights", I+"HassTurnOff", {"name":"Kitchen Master"}),
+ ("Lights off in the bedroom", I+"HassTurnOff", {"area":"Bedroom","domain":["light"]}),
+ ("Kill the lights", I+"HassTurnOff", {"domain":["light"]}),
+ ("Shut off the TV", I+"HassTurnOff", {"name":"TV"}),
+ ("Open the blinds", I+"HassTurnOn", {"name":"Living Room Blinds"}),
+ ("Close the garage door", I+"HassTurnOff", {"name":"Garage Door"}),
+ ("Start the coffee machine", I+"HassTurnOn", {"name":"Coffee Machine"}),
+ ("Can you turn the fan on", I+"HassTurnOn", {"name":"Ceiling Fan"}),
+ ("Turn everything off in the office", I+"HassTurnOff", {"area":"Office"}),
+ ("Dim the living room lights", L+"HassLightSet", {"area":"Living Room","brightness":30}),
+ ("Make the floor lamp red", L+"HassLightSet", {"name":"Floor Lamp","color":"red"}),
+ ("Brighter", L+"HassLightSet", {"brightness":100,"domain":["light"]}),
+ ("Pause", MP+"HassMediaPause", {}), ("Skip", MP+"HassMediaNext", {}), ("Next song", MP+"HassMediaNext", {}),
+ ("Louder", "EchoMuseVolume", {"level":60}), ("Volume up", "EchoMuseVolume", {"level":60}),
+ ("Set the temperature to 21", CL+"HassClimateSetTemperature", {"temperature":21}),
+ ("Vacuum the kitchen", V+"HassVacuumStart", {"area":"Kitchen"}),
+ ("Send the robot home", V+"HassVacuumReturnToBase", {}),
+ ("Set a timer for five minutes", "EchoMuseCreate", {"kind":"timer"}),
+ ("Wake me up at seven", "EchoMuseCreate", {"kind":"alarm"}),
+ ("Remind me to take out the trash", "EchoMuseCreate", {"kind":"reminder"}),
+ ("Stop", "EchoMuseStop", {}), ("Never mind", "EchoMuseStop", {}), ("Shut up", "EchoMuseStop", {}),
+ ("Tun of the floor lamp", I+"HassTurnOn", {"name":"Floor Lamp"}),
+ ("the kitchen lights", I+"HassTurnOff", {"name":"Kitchen Master"}),
+ ("bedroom lights off", I+"HassTurnOff", {"name":"Bedroom Lights"}),
+]
+NOT_FOR_US = [
+ ("Kommst du jetzt in Salon ja?", I+"HassTurnOn", {"area":"Living Room"}),
+ ("Internal kitchen master", I+"HassTurnOn", {"name":"Internal kitchen master"}),
+ ("Ciągle kupić, pomyślałam, że przestaniesz i to bardzo. Nie, nie, twoja.", I+"HassTurnOff", {"name":"TV"}),
+ ("Widziałeś, że lampa podłogowa w salonie znowu się przewróciła wczoraj?", I+"HassTurnOff", {"name":"Floor Lamp"}),
+ ("Mamy nowy kaloryfer w łazience i działa świetnie, naprawdę", I+"HassTurnOn", {"area":"Bathroom"}),
+ ("w kuchni", I+"HassTurnOff", {"area":"Kitchen"}),
+ ("The radiator in the paradise hotel was broken", MP+"HassMediaPause", {}),
+ ("dokładnie tak", V+"HassVacuumReturnToBase", {}),
+]
+
+
+@pytest.mark.parametrize("text,tool,args", SPOKEN)
+def test_everyday_commands_in_both_languages_run(text, tool, args):
+    ok, why = hc.check(tool, args, text, HOUSE)
+    assert ok, why
+
+
+@pytest.mark.parametrize("text,tool,args", NOT_FOR_US)
+def test_everyday_chatter_is_still_refused(text, tool, args):
+    ok, why = hc.check(tool, args, text, HOUSE)
+    assert not ok, why

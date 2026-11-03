@@ -56,7 +56,7 @@ STEMS = {
     "kuchn": "kitchen", "salon": "living room", "pokoj": "room", "sypial": "bedroom",
     "lazienk": "bathroom", "korytarz": "corridor", "przedpok": "corridor",
     "swiatl": "light lights", "swiatel": "light lights", "lamp": "lamp light",
-    "stojac": "floor standing", "telewiz": "tv", "odkurz": "vacuum", "sprzat": "clean",
+    "stojac": "floor standing", "podlog": "floor", "telewiz": "tv", "odkurz": "vacuum", "sprzat": "clean",
     "posprzat": "clean", "komputer": "computer pc", "film": "movie", "kino": "movie",
     "noc": "night", "nocn": "night", "pogod": "weather", "klimatyz": "ac climate",
     "termostat": "thermostat", "nawilz": "humidifier", "budzik": "alarm", "minutnik": "timer",
@@ -66,12 +66,48 @@ STEMS = {
     "wystarcz": "stop", "wycisz": "mute", "nagryw": "recording", "przyciem": "dim",
     "rozjasn": "bright", "jasn": "bright", "procent": "percent", "kolor": "colour",
     "czerwon": "red", "niebiesk": "blue", "zielon": "green", "zolt": "yellow", "bial": "white",
-    "ciepl": "warm", "zimn": "cold",
+    "ciepl": "warm", "zimn": "cold", "obudz": "wake alarm", "pobudk": "wake alarm",
+    "cicho": "quiet", "anuluj": "cancel", "dosc": "enough", "koniec": "stop", "odwolaj": "cancel",
+    "garaz": "garage",
+    # rooms
+    "jadaln": "dining room", "gabinet": "office study", "biur": "office desk", "dzieci": "kids children",
+    "goscin": "guest", "ogrod": "garden", "taras": "terrace patio", "balkon": "balcony",
+    "piwnic": "basement", "strych": "attic", "pralni": "laundry", "wejsci": "entrance",
+    "schod": "stairs", "hall": "hall", "holu": "hall",
+    # things
+    "zarow": "bulb light", "zyrandol": "chandelier ceiling light", "sufit": "ceiling",
+    "lampk": "lamp light", "kinkiet": "wall lamp light", "tasm": "strip led", "pasek": "strip led",
+    "listw": "strip led", "biurk": "desk", "stolik": "table", "lozk": "bed", "szafk": "cabinet",
+    "wentylat": "fan", "wiatrak": "fan", "grzejnik": "heater radiator", "grzalk": "heater",
+    "ogrzew": "heating heat", "kaloryfer": "radiator heater", "oczyszcz": "purifier",
+    "powietrz": "air", "osuszacz": "dehumidifier", "rolet": "blinds blind shade cover",
+    "zaluzj": "blinds blind cover", "zaslon": "curtains curtain cover", "markiz": "awning cover",
+    "brama": "gate", "bram": "gate", "furtk": "gate", "drzwi": "door", "okn": "window",
+    "zamek": "lock", "zamk": "lock", "gniazd": "socket plug outlet", "wtyczk": "plug socket",
+    "glosnik": "speaker", "konsol": "console", "ekspres": "coffee machine", "kaw": "coffee",
+    "czajnik": "kettle", "pralk": "washer washing", "suszark": "dryer", "zmywark": "dishwasher",
+    "drukark": "printer", "kamer": "camera", "monitor": "monitor screen", "ekran": "screen",
+    "projektor": "projector", "router": "router", "choink": "christmas tree", "nastroj": "mood",
+    "tryb": "mode", "scen": "scene", "nocnik": "night", "nocna": "night", "nocny": "night",
+    "akwari": "aquarium", "pomp": "pump", "podlew": "sprinkler irrigation water",
+    "zraszacz": "sprinkler", "oswietl": "lights light lighting",
+    # light
+    "sciemn": "dim", "ciemniej": "dim", "jasniej": "bright brighter", "fiolet": "purple",
+    "rozow": "pink", "pomarancz": "orange", "turkus": "cyan", "jasnosc": "brightness bright",
+    # media and volume
+    "pomin": "skip next", "cofn": "back previous", "podglosn": "volume louder", "scisz": "volume quieter",
+    "piosenk": "song", "utwor": "track song", "radio": "radio", "podcast": "podcast",
+    # climate
+    "temperatur": "temperature", "stopn": "degrees", "stopi": "degrees", "cieplej": "warm heat",
+    "chlodn": "cool", "chlodz": "cool cooling", "grzan": "heat heating", "wilgotn": "humidity",
+    "klima": "ac climate",
+    # vacuum
+    "robot": "robot vacuum", "stacj": "dock base",
 }
 
 # What a call must be about, by tool family, when the tool alone does not say.
 INTENT_WORDS = {
-    "stop": "stop pause cancel enough quiet shut dismiss snooze",
+    "stop": "stop pause cancel enough quiet shut dismiss snooze never nevermind silence",
     "media": "pause stop next skip previous back resume continue play music song track volume louder quieter mute unmute",
     "volume": "volume louder quieter loud quiet up down mute percent",
     # A time alone is not a request for an alarm: "wyłączyłabym go po 10
@@ -87,9 +123,23 @@ INTENT_WORDS = {
 # HassTurnOn/Off act on whatever matches, an area alone included, so the
 # request itself must have been said: "Kommst du jetzt in Salon" names the
 # living room in Polish and asks nothing of it.
-ON_OFF = set("""on off turn switch enable disable activate deactivate open close start stop
-lock unlock shut kill power wlacz wylacz zapal zgas otworz zamknij uruchom odpal zatrzymaj
-wlaczyc wylaczyc zgasic zapalic""".split())
+ON_OFF = set("""on off turn turned switch enable disable activate deactivate open close start
+stop lock unlock shut kill power launch boot run""".split())
+# Polish verbs inflect ("włączysz", "wyłączcie", "zgaście", "zapalmy"), so these
+# are matched as the start of a word, and the two said most also with one slip
+# ("włoncz", "wyłonczyć"), since the transcriber spells what it hears.
+ON_OFF_STEMS = ("wlacz", "wylacz", "wloncz", "wylonc", "wlocz", "wylocz", "zalacz", "zapal", "zgas", "otworz", "otwor", "zamkn",
+                "uruchom", "odpal", "zatrzym", "wystartuj", "aktywuj", "dezaktywuj")
+ON_OFF_FUZZY = ("wlacz", "wylacz", "wlaczyc", "wylaczyc")
+
+
+def on_off_said(transcript: str) -> bool:
+    for w in words(transcript):
+        if w in ON_OFF or w.startswith(ON_OFF_STEMS):
+            return True
+        if len(w) >= 5 and any(_one_edit(w, v) or _one_edit(w[:len(v)], v) for v in ON_OFF_FUZZY):
+            return True
+    return False
 
 # Words that ask for music, after STEMS: "zagraj" and "pusc" arrive here as play.
 PLAY_WORDS = {"play", "listen", "music", "song"}
@@ -110,12 +160,21 @@ def words(text: str) -> list[str]:
 
 
 def heard_words(transcript: str) -> set[str]:
-    """The transcript's words plus the English each Polish stem stands for."""
+    """The transcript's words plus the English each Polish stem stands for.
+
+    A stem of four letters or more also counts INSIDE a word, because Gemini's
+    transcriber glues a word it misheard onto the next one: "Włącz lampę
+    podłogową" came out as "Wunschlampe podłogową" and "frontlampę podłogową"
+    (2026-11-03), and the lamp was in neither as a word of its own. Only at
+    the END of a word, with at most an ending after it, so a stem in the
+    middle of an unrelated word ("radiator", "dokładnie") does not count.
+    """
     out = set()
     for w in words(transcript):
         out.add(w)
         for stem, en in STEMS.items():
-            if w.startswith(stem):
+            if w.startswith(stem) or (len(stem) >= 4 and 0 <= len(w) - w.rfind(stem) - len(stem) <= 3
+                                      and stem in w):
                 out.update(en.split())
     return out
 
@@ -163,6 +222,45 @@ def phrase_heard(phrase: str, heard: set[str]) -> bool:
     return len("".join(toks)) >= 5 and "".join(toks) in joined
 
 
+# The longest utterance read as a bare command to a named device (below).
+SHORT_COMMAND_WORDS = 6
+
+
+def named_command(args: dict, transcript: str, heard: set[str], names: "Names") -> bool:
+    """A short utterance that says the whole target of an on/off call.
+
+    Stands in for the on/off verb, which is the word Gemini's transcriber loses
+    most: it is said first, straight after the wake word, and in Polish it came
+    back as "Wunsch" and "front" while Gemini itself acted on it correctly
+    (2026-11-03, the floor lamp refused twice). Six words or fewer, and either
+    every word of an entity Home Assistant knows ("lampę podłogową",
+    "komputer"), or a room AND what to switch in it ("światło w salonie").
+    A room alone is still not a request: "Kommst du jetzt in Salon ja" named
+    the living room and asked nothing, and "Internal kitchen master" named no
+    entity, so both are still refused.
+    """
+    if len(words(transcript)) > SHORT_COMMAND_WORDS:
+        return False
+    name = args.get("name")
+    if isinstance(name, str) and name.strip():
+        for n in names.by_phrase.get(" ".join(words(name)), []):
+            toks = [t for t in dict.fromkeys(words(n)) if t not in GENERIC]
+            if toks and all(word_heard(t, heard) for t in toks):
+                return True
+        return False
+    area = args.get("area")
+    if not (isinstance(area, str) and area.strip()
+            and any(phrase_heard(n, heard) for n in names.area(area))):
+        return False
+    for key in ("domain", "device_class"):
+        vals = args.get(key) or []
+        vals = [vals] if isinstance(vals, str) else vals
+        if any(word_heard(str(v), heard) or (v == "light" and heard & {"light", "lights", "lamp", "lamps"})
+               for v in vals):
+            return True
+    return False
+
+
 class Names:
     """Every name an entity, script or area goes by in Home Assistant.
 
@@ -187,6 +285,16 @@ class Names:
 
     def area(self, name: str) -> list[str]:
         return self.areas.get(" ".join(words(name)), [name])
+
+
+def request_said(short: str, fam: str | None, transcript: str, heard: set[str]) -> bool:
+    """Whether the words ask for this kind of action, whatever its target."""
+    if short in ("HassTurnOn", "HassTurnOff"):
+        return on_off_said(transcript)
+    if fam:
+        return bool(heard & set(INTENT_WORDS[fam].split())
+                    or (fam in NUMBER_FAMILIES and NUMBER.search(transcript)))
+    return False
 
 
 def family(tool: str) -> str | None:
@@ -226,7 +334,8 @@ def check(tool: str, args: dict, transcript: str, names: Names | None = None) ->
             return True, "script name heard"
         return False, f"none of {cands} was said"
     fam = family(tool)
-    if short in ("HassTurnOn", "HassTurnOff") and not (set(words(transcript)) & ON_OFF):
+    if (short in ("HassTurnOn", "HassTurnOff") and not on_off_said(transcript)
+            and not named_command(args, transcript, heard, names)):
         return False, "no on/off request was said"
     # A device heard is not a request to it: "Virgil TV Paul" paused the TV and
     # "Kommst du jetzt in Salon ja?" set a light called "Salon ja".
@@ -238,6 +347,14 @@ def check(tool: str, args: dict, transcript: str, names: Names | None = None) ->
         cands = names.entity(name)
         if any(phrase_heard(n, heard) for n in cands):
             return True, f"'{name}' heard"
+        # People say part of a name: "the fan" for Ceiling Fan, "rolety" for
+        # Living Room Blinds, "kolor lampy" for Floor Lamp. Part of it is
+        # enough once the request itself was said; which device of several
+        # was meant is Home Assistant's to resolve, not this check's.
+        if request_said(short, fam, transcript, heard) and any(
+                word_heard(t, heard) for n in cands for t in words(n)
+                if t not in GENERIC and len(t) >= 3):
+            return True, f"part of '{name}' heard with the request"
         return False, f"'{name}' was not said"
     if short == "play_media":
         # media_content_id is what HA's tool sends; the other two are older shapes.
