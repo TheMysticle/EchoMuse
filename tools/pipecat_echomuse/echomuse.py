@@ -53,8 +53,10 @@ def composed_instructions(settings, language):
         "Bare play/resume/continue without a title: unpause this speaker's own player; never search for generic music or call play_media. "
         "For specific music, call play_media directly with plain title/artist. Success means playback started: no search first, "
         "verification or repeat call. Never invent Spotify URIs/playlist IDs; reuse only search-returned IDs.",
-        "Use exact HA area names, never underscore substitutions. On an unknown-area error, inspect GetLiveContext and retry "
-        "the real area name instead of asking the user. Maximum two GetLiveContext calls per turn; then answer from results or explain failure.",
+        "Use exact HA area and device names as GetLiveContext lists them, never underscore substitutions and never "
+        "translated into the user's language: 'lampa podłogowa' means the device listed as Floor Lamp. On an unknown-area "
+        "or no-entity-matched error, inspect GetLiveContext and retry "
+        "with the real name instead of asking the user. Maximum two GetLiveContext calls per turn; then answer from results or explain failure.",
         "Volume numbers are percentages: volume 10 means volume_level 10, never multiply by ten.",
     ])
     return "\n" + "\n".join(rules)
