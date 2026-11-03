@@ -55,35 +55,18 @@ def test_prompt_only_refers_to_enabled_scheduler_tools():
     assert 'Reply in pl' in plain and 'Speaker area: Bedroom' in plain
 
 
-# --- the household's time from Gemini's own UTC clock ----------------------
-# 2026-11-03: asked the time in Warsaw at 21:47 CET, Gemini Live answered
-# exactly an hour behind with no time in its context: its clock is UTC.
+# --- the time comes from GetDateTime ---------------------------------------
+# Gemini's own clock is UTC (2026-11-03); converting it was right 22 of 23
+# times, so every time question goes to GetDateTime instead.
 
-def test_the_clock_rule_gives_the_offset_and_the_next_change():
+def test_every_time_question_goes_to_getdatetime():
     import echomuse
-    from datetime import datetime, timezone
-    winter = echomuse.clock_rule("Europe/Warsaw", datetime(2026, 11, 3, 20, 47, tzinfo=timezone.utc))
-    assert "Your own clock runs on UTC; household time is UTC+1 until 28 March 2027 01:00 UTC, then UTC+2" in winter
-    assert "never say a UTC time" in winter
-    summer = echomuse.clock_rule("Europe/Warsaw", datetime(2026, 7, 1, tzinfo=timezone.utc))
-    assert "UTC+2 until 25 October 2026 01:00 UTC, then UTC+1" in summer
-
-
-def test_a_zone_without_clock_changes_and_a_half_hour_offset():
-    import echomuse
-    rule = echomuse.clock_rule("Asia/Kolkata")
-    assert "household time is UTC+5:30." in rule and "until" not in rule
-    assert "UTC-3" in echomuse.clock_rule("America/Sao_Paulo")
+    for rule in (echomuse.timezone_rule({"timezone": "Europe/Warsaw"}), echomuse.timezone_rule({})):
+        assert "call GetDateTime every time it is asked" in rule
+        assert "Never answer from your own clock, which runs on UTC" in rule
 
 
 def test_no_time_is_ever_written_into_the_prompt():
     # A Live session resumes for hours: a written time would go stale.
     import echomuse, re
-    rule = echomuse.timezone_rule({"timezone": "Europe/Warsaw"})
-    assert not re.search(r"\b\d{1,2}:\d\d\b(?! UTC)", rule)
-
-
-def test_an_unknown_zone_falls_back_to_getdatetime():
-    import echomuse
-    assert "call GetDateTime" in echomuse.timezone_rule({})
-    assert echomuse.clock_rule("Not/AZone").startswith("For any question about the current time")
+    assert not re.search(r"\d{1,2}:\d\d", echomuse.timezone_rule({"timezone": "Europe/Warsaw"}))
