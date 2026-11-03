@@ -112,3 +112,34 @@ def test_a_connect_refused_over_the_languages_reconnects_without_them(monkeypatc
     asyncio.run(scenario())
     assert seen == [["pl-PL", "en-US"], None]
     live._handle_connection_error.assert_awaited_once()
+
+
+def test_two_languages_make_the_reply_follow_the_speaker():
+    rule = tl.reply_rule("en", ["pl-PL", "en-US"])
+    assert "Polish and English" in rule
+    assert "latest turn, however short" in rule
+    assert "a command in Polish gets its answer in Polish" in rule
+    assert "If you cannot tell, reply in English" in rule
+
+
+def test_three_languages_are_all_named():
+    assert "Polish, English and German" in tl.reply_rule("pl", ["pl-PL", "en-US", "de-DE"])
+
+
+def test_one_language_or_none_keeps_the_single_language_rule():
+    assert tl.reply_rule("en", ["pl-PL"]) is None
+    assert tl.reply_rule("en", ["en-US", "en-GB"]) is None
+    assert tl.reply_rule("en", []) is None
+
+
+def test_the_fallback_is_a_listed_language():
+    assert "If you cannot tell, reply in Polish" in tl.reply_rule("fr", ["pl-PL", "en-US"])
+
+
+def test_the_composed_prompt_uses_it(monkeypatch):
+    monkeypatch.setattr(tl, "configured", lambda path=tl.OPTIONS_PATH: ["pl-PL", "en-US"])
+    text = echomuse.composed_instructions({}, "en")
+    assert "The household speaks Polish and English" in text
+    assert "Do not switch for accents, short speech" not in text
+    monkeypatch.setattr(tl, "configured", lambda path=tl.OPTIONS_PATH: [])
+    assert "Do not switch for accents, short speech" in echomuse.composed_instructions({}, "en")

@@ -26,6 +26,7 @@ def composed_instructions(settings, language):
         "Only for a required missing detail, call EchoMuseRequestContinuation before asking one short question; "
         "never in the same turn as an action. A clock time with no day is its next occurrence "
         "(today if still ahead, otherwise tomorrow); never ask which day.",
+        (transcription_languages.reply_rule(language) or "").strip() or
         f"Reply in {language or 'en'} unless the user clearly speaks another language. "
         "Do not switch for accents, short speech, foreign names/titles or tool results.",
         (f"Speaker area: {settings['area']}." if settings.get('area') else

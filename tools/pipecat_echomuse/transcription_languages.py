@@ -58,6 +58,43 @@ def parse(raw) -> list[str]:
     return out
 
 
+# English names for the reply rule; a code not listed is given as the code.
+NAMES = {
+    "pl": "Polish", "en": "English", "de": "German", "fr": "French", "es": "Spanish", "it": "Italian",
+    "pt": "Portuguese", "nl": "Dutch", "sv": "Swedish", "no": "Norwegian", "nb": "Norwegian", "da": "Danish",
+    "fi": "Finnish", "cs": "Czech", "sk": "Slovak", "uk": "Ukrainian", "ru": "Russian", "lt": "Lithuanian",
+    "lv": "Latvian", "et": "Estonian", "hu": "Hungarian", "ro": "Romanian", "bg": "Bulgarian", "hr": "Croatian",
+    "sr": "Serbian", "sl": "Slovenian", "el": "Greek", "tr": "Turkish", "ja": "Japanese", "zh": "Chinese",
+    "ko": "Korean", "hi": "Hindi", "ar": "Arabic", "he": "Hebrew", "vi": "Vietnamese", "th": "Thai",
+    "id": "Indonesian",
+}
+
+
+def reply_rule(language: str | None, codes: list[str] | None = None) -> str | None:
+    """The reply-language instruction when the household speaks more than one
+    language; None leaves the add-on's single-language rule in place.
+
+    The native-audio Live models choose their reply language themselves and
+    take no language setting; only the instructions steer it. The add-on's
+    own rule says to keep the configured language and not to switch for
+    "very short speech", which is every voice command, so Polish commands
+    were answered in English (2026-11-03). With the languages listed here the
+    transcript is reliable, so the rule can follow the speaker instead.
+    """
+    codes = configured() if codes is None else codes
+    langs = list(dict.fromkeys(c.split("-")[0] for c in codes))
+    if len(langs) < 2:
+        return None
+    names = [NAMES.get(l, l) for l in langs]
+    base = (language or "").split("-")[0].lower()
+    fallback = NAMES.get(base, base) if base in langs else names[0]
+    spoken = ", ".join(names[:-1]) + " and " + names[-1]
+    return (f" The household speaks {spoken}. Reply in whichever of these the user spoke in their latest turn, "
+            f"however short it was: a command in {names[0]} gets its answer in {names[0]}. If you cannot tell, "
+            f"reply in {fallback}. Never reply in a language not listed here. Names or titles in another language "
+            f"in tool results or the home setup do not change your reply language.")
+
+
 def configured(path: str = OPTIONS_PATH) -> list[str]:
     try:
         with open(path, encoding="utf-8") as f:

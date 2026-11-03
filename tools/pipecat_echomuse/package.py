@@ -22,7 +22,7 @@ def adapt(text):
         if text.count(old) != 1:
             raise ValueError("Upstream adapter anchor changed: " + old[:70])
         text = text.replace(old, new)
-    replace('from __future__ import annotations', 'from __future__ import annotations\n\nfrom app import brave_search\nfrom app import echomuse\nfrom app import fast_path\nfrom app import heard_check\nfrom app import mcp_bridge\nfrom app import tool_scope')
+    replace('from __future__ import annotations', 'from __future__ import annotations\n\nfrom app import brave_search\nfrom app import echomuse\nfrom app import fast_path\nfrom app import heard_check\nfrom app import mcp_bridge\nfrom app import transcription_languages\nfrom app import tool_scope')
     replace('    await websocket.send_text(_va_pipecat_protocol(config).hello())', '''    hello = json.loads(_va_pipecat_protocol(config).hello())
     hello["echomuse"] = {"scheduler": bool(session_options.get("scheduler", {}).get("schedules")), "stop": bool(session_options.get("scheduler")), "barge_in": bool(session_options.get("barge_in")), "device_endpoint": _runtime_mode(flow) == "composed"}
     await websocket.send_text(json.dumps(hello))''')
@@ -59,7 +59,7 @@ def adapt(text):
         flow = flow.model_copy(deep=True)
         area = session_body["echomuse"].get("area")
         area_hint = f" The speaker is in the {area.replace('_', ' ')} area; treat that as the room for bare media stop requests, and pass it as player_area to play_media when the user names no room or device." if area else " Use the speaker's current Home Assistant area for bare media stop requests."
-        lang_hint = f" Always reply in the language with code {flow.language or 'en'}, the satellite's configured language, unless the user clearly speaks a different language to you. Accented or very short speech is not a reason to switch, and names or titles in another language in tool results or the home setup do not change your reply language."
+        lang_hint = transcription_languages.reply_rule(flow.language) or f" Always reply in the language with code {flow.language or 'en'}, the satellite's configured language, unless the user clearly speaks a different language to you. Accented or very short speech is not a reason to switch, and names or titles in another language in tool results or the home setup do not change your reply language."
         if _runtime_mode(flow) == "composed":
             flow.instructions += echomuse.composed_instructions(session_body["echomuse"], flow.language)
         else:
