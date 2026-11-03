@@ -487,6 +487,8 @@ class HeardState:
         on it refused a request at 21:47:57 on 2026-11-03 by the words of the
         "What time is it?" before it, because that turn's own transcript had
         not arrived and evidence() only waited when it held nothing at all.
+        It now waits the same 0.5 s for this turn's words; if none come it
+        judges as before, so the wait can only improve a decision.
         """
         self.awaiting = True
 
@@ -524,9 +526,10 @@ class HeardState:
         deadline = time.monotonic() + EVIDENCE_WAIT_SECONDS
         while (self.awaiting or not self.turn.strip()) and time.monotonic() < deadline:
             await asyncio.sleep(0.02)
-        if self.awaiting and self.bot_since_user:
-            # This turn's words never came; the last turn's are not evidence for it.
-            return ""
+        # If this turn's words never came, judge as before, on what is held.
+        # A speech start can be noise or the reply's own echo while a call
+        # from the previous request is still on its way; refusing that call
+        # on "nothing heard" would turn a stray noise into a lost command.
         return self.transcript()
 
 

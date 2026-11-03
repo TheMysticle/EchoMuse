@@ -464,15 +464,17 @@ def test_a_new_turn_waits_for_its_own_transcript():
     assert hc.check("EchoMuseStop", {}, "Stop.")[0]
 
 
-def test_a_turn_whose_words_never_arrive_is_not_judged_by_the_last_one():
+def test_a_speech_start_with_no_words_falls_back_to_what_is_held():
+    # Noise or the reply's echo can start a "turn" while the previous
+    # request's call is still on its way: that call must not be lost.
     s = hc.HeardState()
 
     async def run():
-        s.user_text("Turn off the floor lamp")
-        s.bot_text_out("Floor lamp off.")
+        s.user_text("Turn on the floor lamp")
+        s.bot_text_out("Sure.")
         s.user_started()
         return await s.evidence()
-    assert asyncio.run(run()) == ""
+    assert asyncio.run(run()) == "Turn on the floor lamp"
 
 
 def test_a_second_call_in_the_same_turn_does_not_wait():
