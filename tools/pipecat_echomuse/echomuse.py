@@ -5,7 +5,13 @@ from urllib.parse import urlsplit
 
 try:
     from app import transcription_languages
-except ImportError:  # the tests import these modules from the source tree
+except ImportError:
+    # From the source tree: the add-on's own tests run beside this file, and
+    # the controller's suite loads it by path, where only this file's own
+    # directory can supply its sibling.
+    import os
+    import sys
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import transcription_languages
 
 PROFILES = {
