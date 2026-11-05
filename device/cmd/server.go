@@ -264,7 +264,7 @@ func main() {
 
 	// Private-listening sessions (docs/listening.md). The gate ignores any id
 	// that is not the open session, so a late message cannot touch a new one.
-	controlClient.OnListen(func(kind string, session uint32) {
+	controlClient.OnListen(func(kind string, session uint32, keepDuck bool) {
 		switch kind {
 		case "listen_ack":
 			// The wake sound waits for the ack: it means this Echo won
@@ -276,8 +276,14 @@ func main() {
 			}
 		case "listen_close":
 			// A session the controller closes before confirming a duck is a
-			// wake it did not take (ceded, or refused): un-duck the music.
-			localDuck.Cancel()
+			// wake it did not take (ceded, or refused): un-duck the music —
+			// unless this Echo ducks WITH the winner (keepDuck), when the
+			// controller's own duck follows and confirms this one, and
+			// releasing it here would make the alarm or music go up and back
+			// down. If that duck never comes, LocalDuckHold still ends it.
+			if !keepDuck {
+				localDuck.Cancel()
+			}
 			if dataClient.CloseListen(session) {
 				log.Printf("[listen] session %d closed by the controller", session)
 			}

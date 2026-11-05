@@ -84,8 +84,8 @@ _PROBLEM = {"busy", "unreachable", "error"}
 
 def normalize(raw, *, strict: bool = False) -> list[dict]:
     """
-    Groups as they are kept: `[{id, name, members: [{device_id, channel}],
-    prefer}]`. With `strict` (a save) anything wrong raises ValueError with a
+    Groups as they are kept: `[{id, name, members: [{device_id, channel,
+    duck}], prefer}]`. With `strict` (a save) anything wrong raises ValueError with a
     sentence for the user; without it (a read of what was stored) a bad entry
     is dropped, so one corrupt record cannot stop the controller starting.
     """
@@ -128,8 +128,14 @@ def _normalize_group(g, used: set, names: set) -> dict:
             raise ValueError(f"“{name}”: channel must be mono, left or right")
         if did in used:
             raise ValueError("an Echo can be in only one group")
+        # Whether this Echo ducks with the rest of the group for a voice
+        # turn on any of them (em_duckpeers). Default on: a group is one
+        # stream, and leaving part of it loud under a command defeats the duck.
+        duck = m.get("duck", True)
+        if not isinstance(duck, bool):
+            raise ValueError(f"“{name}”: duck must be true or false")
         used.add(did)
-        members.append({"device_id": did, "channel": channel})
+        members.append({"device_id": did, "channel": channel, "duck": duck})
     prefer = g.get("prefer")
     if prefer is not None and prefer not in {m["device_id"] for m in members}:
         prefer = None

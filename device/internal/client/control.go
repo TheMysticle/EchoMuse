@@ -80,6 +80,13 @@ type controlMessage struct {
 	// Session is the private-listening session a listen_ack or listen_close
 	// refers to (docs/listening.md).
 	Session uint32 `json:"session,omitempty"`
+	// KeepDuck rides a listen_close for a wake this Echo ceded to another
+	// that it ducks WITH (a ringing alarm, a speaker group, a Sendspin
+	// group): the controller is about to hold its duck for the winner's turn,
+	// so releasing the local one here would bring the alarm or the music up
+	// for a round trip and straight back down. Absent from older
+	// controllers: the duck is released, as before.
+	KeepDuck bool `json:"keepDuck,omitempty"`
 }
 
 // ─── Callbacks ────────────────────────────────────────────────────────────────
@@ -106,8 +113,9 @@ type ConfigAppliedCallback func(msg config.ConfigMessage)
 type VolumeSetCallback func(level int, muted *bool)
 type BeamLockCallback func(lock bool)
 
-// ListenCallback receives listen_ack / listen_close, by type.
-type ListenCallback func(kind string, session uint32)
+// ListenCallback receives listen_ack / listen_close, by type, and the
+// close's keepDuck (always false on an ack).
+type ListenCallback func(kind string, session uint32, keepDuck bool)
 
 // WifiChangeCallback receives a wifi_change request, with the SSID as its exact
 // bytes (see internal/wifi/ssid.go). It must return
@@ -1027,7 +1035,7 @@ func (c *ControlClient) connect(ctx context.Context, server *discovery.ServerInf
 		case "listen_ack", "listen_close":
 			var msg controlMessage
 			if err := json.Unmarshal(raw, &msg); err == nil && msg.Session != 0 && c.listenCallback != nil {
-				c.listenCallback(peek.Type, msg.Session)
+				c.listenCallback(peek.Type, msg.Session, msg.KeepDuck)
 			}
 
 		case "play_cue":

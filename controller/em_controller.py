@@ -111,6 +111,7 @@ import em_barge
 import em_listen
 import em_ble_gatt
 import em_wakelevel
+import em_duckpeers
 import em_button
 import em_wakeword
 import em_tap_burst
@@ -1358,17 +1359,20 @@ class Device:
     async def listen_ack(self, session: int):
         await self.send_control({"type": "listen_ack", "session": session})
 
-    async def listen_close(self, session: int | None = None, reason: str = ""):
+    async def listen_close(self, session: int | None = None, reason: str = "",
+                           keep_duck: bool = False):
         """End a private-listening session (the active one by default).
-        Closes it in the router too, so its stragglers are dropped."""
+        Closes it in the router too, so its stragglers are dropped.
+        `keep_duck`: ceded to an Echo it ducks with (em_duckpeers), so keep
+        the local duck rather than bounce it."""
         target = self.listen_router.close(session)
         if session is None and target is None:
             return
         if target == self.listen_session:
             self.listen_session = None
-        await self.send_control({"type": "listen_close",
+        await self.send_control({"type": "listen_close", "reason": reason,
                                  "session": target if target is not None else session,
-                                 "reason": reason})
+                                 **({"keepDuck": True} if keep_duck else {})})
 
     async def beam_lock(self):
         # Lock the beamformer onto the speaker's perimeter mic mid-stream —
@@ -1395,7 +1399,8 @@ class Device:
             winner = await _claim_wake(self, _wake_heard_at(self, ev),
                 _device_level(ev), by="device", over_playback=bool(ev.get("barge")))
             if winner != self.device_id:
-                await self.listen_close(ev["session"], "ceded")
+                await self.listen_close(ev["session"], "ceded",
+                                        keep_duck=em_player.ducks_with(winner, self.device_id))
                 await leds_off(self)
                 return False
         info = {"model": em_oww_models.recorded_model_key(self.oww_model),
@@ -3499,6 +3504,9 @@ async def _claim_wake(device: "Device", heard_at: float | None,
     `over_playback` says this Echo heard the wake over its own speaker, which
     the reading then contains, so the contest is decided on time.
     """
+    # Not only a reply: an alarm or music here is in the reading too (em_duckpeers).
+    over_playback = over_playback or em_duckpeers.playing_here(
+        device, em_player.state(device.device_id) == em_player.PLAYING)
     hold = _arbitration_hold()
     won_by = await em_state.wake_arbiter.contest(
         device.device_id, device.wake_arb_ms / 1000.0,
@@ -3518,6 +3526,12 @@ async def _claim_wake(device: "Device", heard_at: float | None,
             level[0], level[1], device.noise_floor, device.mic_gain_db,
             heard_wall, by))
     return won_by
+
+
+def _duck_companions(device_id: str) -> set:
+    """The other connected Echoes that duck with a turn on device_id (em_duckpeers)."""
+    return em_duckpeers.companions(device_id, em_duckpeers.facts_of(list(em_state.devices.values())),
+                                   em_groups.groups())
 
 
 def _device_level(ev: dict) -> tuple[float, float] | None:
@@ -3604,7 +3618,8 @@ async def _private_wake_turn(device: Device, ev: dict) -> None:
     if not serves or won_by != device.device_id:
         wake_info = device.last_wake
         device.last_wake = None
-        await device.listen_close(session, "no_ha" if not serves else "ceded")
+        await device.listen_close(session, "no_ha" if not serves else "ceded",
+                                  keep_duck=serves and em_player.ducks_with(won_by, device.device_id))
         if not serves:
             await esphome.record_dropped_wake(device, f"wakeword({score:.3f})", wake_info)
             await _leds_turn_end(device)
@@ -3674,7 +3689,8 @@ async def _private_barge(device: Device, ev: dict) -> None:
     )
     device.barge_ceded = verdict.ceded
     if device.barge_ceded:
-        await device.listen_close(session, "ceded")
+        await device.listen_close(session, "ceded",
+                                  keep_duck=serves and em_player.ducks_with(won_by, device.device_id))
         log.info(f"[{device.device_id}] Barge-in ceded to "
                  f"{won_by if serves else 'nothing — no HA'} — stopping playback, "
                  f"not taking the turn")
@@ -6390,6 +6406,7 @@ async def main():
         get_device=em_state.devices.get,
         notify_state=esphome.push_media_state,
     )
+    em_player.set_duck_companions(_duck_companions)
 
     runner = await api.create_runner()
     await runner.setup()

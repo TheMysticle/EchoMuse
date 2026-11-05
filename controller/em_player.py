@@ -209,6 +209,100 @@ def init(get_device, notify_state) -> None:
     _notify_state = notify_state
 
 
+# ── Echoes that duck WITH another's turn (em_duckpeers) ─────────────────────
+#
+# Injected: device_id -> the OTHER device ids that duck while it takes a turn
+# (its speaker group, its Sendspin group, any Echo with an alarm ringing).
+# None: only the Echo taking the turn ducks, as before 2026-11-05.
+_duck_companions = None
+# holder -> the Echoes it ducks besides itself, for as long as it owns its
+# speaker. A device is ducked on the wire while it has an owner of its own OR
+# any holder lists it, and the wire moves only when that answer changes, so
+# overlapping turns on grouped Echoes never send an off while another still
+# needs the duck (the #261 rule, across devices). All bookkeeping happens
+# before the first await, so two turns starting together cannot both see a
+# peer as unducked; the messages then go out concurrently, so every Echo in
+# the set starts its ramp in the same instant rather than one RTT apart.
+_peer_holds: dict[str, frozenset] = {}
+
+
+def set_duck_companions(fn) -> None:
+    global _duck_companions
+    _duck_companions = fn
+
+
+def _peer_held(device_id: str) -> bool:
+    return any(device_id in peers for peers in _peer_holds.values())
+
+
+def _wire_ducked(device_id: str) -> bool:
+    s = _sessions.get(device_id)
+    return (s is not None and s.duck_depth > 0) or _peer_held(device_id)
+
+
+def _companions_of(holder: str) -> frozenset:
+    if _duck_companions is None:
+        return frozenset()
+    try:
+        return frozenset(p for p in _duck_companions(holder) if p != holder)
+    except Exception as e:  # a bad group record must never cost a turn its duck
+        log.warning(f"[{holder}] could not work out which Echoes duck with it: {e}")
+        return frozenset()
+
+
+def ducks_with(holder: str, device_id: str) -> bool:
+    """Whether device_id ducks while holder takes a turn — asked when
+    device_id cedes a wake to holder, so its local duck is kept rather than
+    released and re-applied a round trip later (listen_close keepDuck)."""
+    held = _peer_holds.get(holder)
+    return device_id in (held if held is not None else _companions_of(holder))
+
+
+def _claim_peers(holder: str) -> list:
+    """Start ducking holder's companions. Returns those to send ON to."""
+    if holder in _peer_holds:
+        return []
+    peers = _companions_of(holder)
+    if not peers:
+        return []
+    newly = [p for p in sorted(peers) if not _wire_ducked(p)]
+    _peer_holds[holder] = peers
+    log.info(f"[{holder}] ducking with this turn: {', '.join(sorted(peers))}")
+    return newly
+
+
+def _drop_peers(holder: str) -> list:
+    """Stop ducking holder's companions. Returns those to send OFF to."""
+    peers = _peer_holds.pop(holder, None)
+    if not peers:
+        return []
+    return [p for p in sorted(peers) if not _wire_ducked(p)]
+
+
+async def _send_duck(device_id: str, on: bool, peer_of: str | None = None) -> None:
+    device = _get_device(device_id) if _get_device else None
+    if device is None:
+        return
+    # A peer that cannot mix is left alone: it would have to PAUSE, and
+    # pausing another room's music for this turn is not a duck.
+    if peer_of is not None and not getattr(device, "audio_mix_capable", False):
+        return
+    try:
+        await device.send_control({"type": "duck", "on": on})
+        if peer_of is not None:
+            log.info(f"[{device_id}] duck {'ON' if on else 'released'} with {peer_of}'s turn")
+    except Exception as e:
+        log.warning(f"[{device_id}] {'duck' if on else 'unduck'} failed: {e}")
+
+
+async def _send_ducks(sends: list) -> None:
+    """[(device_id, on, peer_of)] — all at once."""
+    if len(sends) == 1:
+        await _send_duck(*sends[0])
+    elif sends:
+        await asyncio.gather(*(_send_duck(*x) for x in sends))
+
+
 def _session(device_id: str) -> "MediaSession":
     s = _sessions.get(device_id)
     if s is None:
@@ -326,10 +420,14 @@ async def interrupt(device_id: str) -> None:
     # turn's ownership when IT finishes, nor wipe a playback command the
     # user issued during the turn — only the FIRST claim clears stale
     # deferrals from before it started.
-    if s.owner_depth == 0:
+    first = s.owner_depth == 0
+    if first:
         s.pending = None
     s.owner_depth += 1
     s.owned_by_turn = True
+    # The Echoes that duck with this one (em_duckpeers), claimed by the
+    # first owner and released by the last, like ownership itself.
+    sends = [(p, True, device_id) for p in (_claim_peers(device_id) if first else [])]
 
     device = _get_device(device_id) if _get_device else None
     if device is not None and getattr(device, "audio_mix_capable", False):
@@ -345,20 +443,22 @@ async def interrupt(device_id: str) -> None:
         # duck:off while the other was still speaking: music back at full
         # level under an unfinished answer. Each owner holds one count; the
         # wire command goes out only on the 0→1 and 1→0 transitions.
+        # Already ducked on the wire — by an earlier owner here, or with
+        # another Echo's turn — means nothing to send.
+        already = _wire_ducked(device_id)
         s.duck_depth += 1
         # Yield the shared data plane to the response. The music keeps
         # playing from the device's own buffer while the feed holds off.
         s.lead_s = TURN_LEAD_S
-        if s.duck_depth == 1:
-            try:
-                await device.send_control({"type": "duck", "on": True})
-                log.info(f"[{device_id}] duck ON (depth {s.duck_depth})")
-            except Exception as e:
-                log.warning(f"[{device_id}] duck failed: {e}")
+        if not already:
+            sends.insert(0, (device_id, True, None))
+            log.info(f"[{device_id}] duck ON (depth {s.duck_depth})")
         else:
             log.info(f"[{device_id}] duck held (depth {s.duck_depth})")
+        await _send_ducks(sends)
         return
 
+    await _send_ducks(sends)
     if s.state == PLAYING:
         s.resume_after = True
         await s.pause()
@@ -378,6 +478,7 @@ async def resume_interrupted(device_id: str) -> None:
     """
     s = _sessions.get(device_id)
     if s is None:
+        await _send_ducks([(p, False, device_id) for p in _drop_peers(device_id)])
         return
     # #314: same reference counting as the duck — ownership, pending and
     # resume_after are released only by the LAST owner leaving. An earlier
@@ -402,16 +503,18 @@ async def resume_interrupted(device_id: str) -> None:
     ducked_off = was_ducking and s.duck_depth == 0
     s.lead_s = TURN_LEAD_S if s.duck_depth > 0 else LEAD_S
 
+    # Release the duck before settling any deferred command, so the music is
+    # already back at level by the time a stop or pause lands — this Echo's
+    # and its companions' in the same instant. One still ducked with ANOTHER
+    # Echo's turn stays down until that turn ends too.
+    sends = [(p, False, device_id) for p in _drop_peers(device_id)] if last_owner else []
     if ducked_off:
-        # Release the duck before settling any deferred command, so the music
-        # is already back at level by the time a stop or pause lands.
-        device = _get_device(device_id) if _get_device else None
-        if device is not None:
-            try:
-                await device.send_control({"type": "duck", "on": False})
-                log.info(f"[{device_id}] duck released (depth 0)")
-            except Exception as e:
-                log.warning(f"[{device_id}] unduck failed: {e}")
+        if _peer_held(device_id):
+            log.info(f"[{device_id}] duck held for another Echo's turn")
+        else:
+            sends.insert(0, (device_id, False, None))
+            log.info(f"[{device_id}] duck released (depth 0)")
+    await _send_ducks(sends)
 
     if pending is not None:
         kind, url = pending
@@ -480,6 +583,14 @@ def device_gone(device_id: str) -> None:
     s = _sessions.pop(device_id, None)
     if s is not None:
         s.abandon()
+    # Its turn is over with it: release whatever it was ducking elsewhere.
+    # Itself, the device resets its own duck when the link drops.
+    offs = [(p, False, device_id) for p in _drop_peers(device_id)]
+    if offs:
+        try:
+            em_tasks.spawn(_send_ducks(offs), name=f"unduck-peers-{device_id}")
+        except RuntimeError:
+            pass  # no loop: nothing is connected to send to either
 
 
 class MediaSession:

@@ -11517,7 +11517,9 @@ function ChannelPicker({ value, onChange, label }) {
   );
 }
 
-function GroupMemberRow({ cfg, live, pinned, onChannel, onPin, onRemove, canEdit }) {
+function GroupMemberRow({ cfg, live, pinned, onChannel, onDuck, onPin, onRemove, canEdit }) {
+  // Older controllers send no `duck`: every member ducked with the group.
+  const ducks = cfg.duck !== false;
   const st = MEMBER_STATE[live ? live.state : 'idle'] || MEMBER_STATE.idle;
   const name = live ? live.label : cfg.label;
   const isLeader = live && live.role === 'leader';
@@ -11540,6 +11542,13 @@ function GroupMemberRow({ cfg, live, pinned, onChannel, onPin, onRemove, canEdit
       <ChannelPicker value={cfg.channel} label={`Channel for ${name}`} onChange={onChannel}/>
       {canEdit && (
         <>
+          <button className={ducks ? 'em-pill em-pill--small em-pill--accent' : 'em-pill em-pill--small'}
+            aria-pressed={ducks} onClick={onDuck}
+            title={ducks
+              ? 'Turns its music and alarms down while any other ducking Echo in this group hears a command, and turns theirs down for its own. Click to stop.'
+              : 'Ignores voice commands on the rest of this group, and they ignore its own. Click to duck with the group.'}>
+            {ducks ? 'Ducks with group' : 'Ducks alone'}
+          </button>
           <button className="em-pill em-pill--small" aria-pressed={pinned} onClick={onPin}
             title={pinned ? 'Stop preferring this Echo as leader' : 'Prefer this Echo as leader when it is able'}>
             {pinned ? '★ Preferred' : '☆ Prefer'}
@@ -11608,6 +11617,7 @@ function GroupCard({ group, live, devices, busy, onChange, onDelete }) {
             cfg={{ ...m, label: labelOf(m.device_id) }} live={liveMembers[m.device_id]}
             pinned={group.prefer === m.device_id}
             onChannel={channel => setMembers(group.members.map(x => x.device_id === m.device_id ? { ...x, channel } : x))}
+            onDuck={() => setMembers(group.members.map(x => x.device_id === m.device_id ? { ...x, duck: x.duck === false } : x))}
             onPin={() => onChange({ ...group, prefer: group.prefer === m.device_id ? null : m.device_id })}
             onRemove={() => setMembers(group.members.filter(x => x.device_id !== m.device_id),
               group.prefer === m.device_id ? { prefer: null } : {})}/>
@@ -11619,7 +11629,7 @@ function GroupCard({ group, live, devices, busy, onChange, onDelete }) {
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-4)', flexWrap: 'wrap' }}>
         <select className="em-inset em-input" aria-label={`Add an Echo to ${group.name}`} value="" disabled={busy || full}
-          onChange={e => { if (e.target.value) setMembers([...group.members, { device_id: e.target.value, channel: 'mono' }]); }}>
+          onChange={e => { if (e.target.value) setMembers([...group.members, { device_id: e.target.value, channel: 'mono', duck: true }]); }}>
           <option value="">{full ? 'Group is full' : 'Add an Echo…'}</option>
           {free.map(d => (
             <option key={d.device_id} value={d.device_id} disabled={!!d.reason}>
