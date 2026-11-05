@@ -21,6 +21,7 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"github.com/wilbowes/EchoMuse/pkg/board"
 	"math"
 	"math/cmplx"
 	"math/rand"
@@ -249,8 +250,8 @@ func bankExperiment(rawPath, bankPath, tablePath string) {
 		fmt.Println(err)
 		return
 	}
-	bf := beamformer.New()
-	per := make([][]float64, beamformer.NumMics)
+	bf := beamformer.New(board.BiscuitMics())
+	per := make([][]float64, board.BiscuitMics().NumMics())
 	for _, raw := range bufs {
 		ch := bf.MicChannels(raw, 15.85, -1, nil)
 		for m := range per {
@@ -318,7 +319,7 @@ func bankExperiment(rawPath, bankPath, tablePath string) {
 		var r route
 		r.name = c.name
 		for grp := 0; grp < 8; grp++ {
-			b := beamformer.New()
+			b := beamformer.New(board.BiscuitMics())
 			b.SetWakeBeam(true)
 			b.SetWakeBeamAra(false)
 			var out []float64

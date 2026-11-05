@@ -190,7 +190,9 @@ func newVolumeController(ledGetter func() led.Controller) *volumeController {
 		ledCtrl: ledGetter,
 		level:   volumeBoot,
 	}
-	if board.IDOf(board.Current()) == "radar" {
+	// A board that plays its stock tuning steps its buttons through stock's
+	// own levels too, so a press lands where stock's would.
+	if board.CurrentLayout().Speaker.StockTuning != "" {
 		vc.steps = radarVolumeSteps
 	}
 	log.Printf("Volume controller initialised at %d/%d", vc.level, volumeMax)

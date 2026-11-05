@@ -24,50 +24,14 @@ type ServerInfo struct {
 	TLSPort int
 }
 
-// OnMiss, when set, is told after each browse in FindServer that found
-// nothing, with how many in a row have. cmd wires it to wifi.RejoinIfDeaf:
-// an Echo that has stopped hearing multicast finds nothing however often it
-// asks.
+// OnMiss, when set, is told after each discovery round that found no
+// controller, with how many in a row have. cmd wires it to
+// wifi.RejoinIfDeaf: an Echo that has stopped hearing multicast finds
+// nothing however often it asks. client.findController calls it.
 var OnMiss func(consecutive int)
 
-func FindServer(ctx context.Context) (*ServerInfo, error) {
-	backoff := 5 * time.Second
-	maxBackoff := 60 * time.Second
-	misses := 0
-
-	for {
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
-		}
-
-		log.Printf("mDNS: browsing for %s.local...", serviceType)
-		info, err := browse(ctx)
-		if err == nil && info != nil {
-			log.Printf("mDNS: found Clara server at %s", info.Addr)
-			return info, nil
-		}
-
-		log.Printf("mDNS: no server found, retrying in %s", backoff)
-		misses++
-		if OnMiss != nil {
-			OnMiss(misses)
-		}
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-time.After(backoff):
-		}
-
-		backoff *= 2
-		if backoff > maxBackoff {
-			backoff = maxBackoff
-		}
-	}
-}
-
-// FindServerOnce is a single browse round with no retry loop — for
-// callers that want fresher TXT data (e.g. a tls_port that appeared after
-// the endpoint was cached) but have a working fallback if mDNS fails.
+// FindServerOnce is a single browse round with no retry loop. The caller
+// retries, so it can try other addresses between browses (#1081).
 func FindServerOnce(ctx context.Context) (*ServerInfo, error) {
 	return browse(ctx)
 }

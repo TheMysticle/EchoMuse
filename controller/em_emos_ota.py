@@ -134,6 +134,9 @@ class _EmosIO:
 
     def __init__(self, device_id: str, live, override: tuple | None):
         self.device_id, self.live, self.override = device_id, live, override
+        # As its firmware reported it: the packer needs it for a board whose
+        # image carries a recipe (em_emos_build.CMDLINE_RECIPES).
+        self.board = em_state.boards.get(device_id)
 
     async def sh(self, cmd: str, timeout: float) -> str:
         return await _emos_sh(self.live, cmd, timeout)
@@ -144,12 +147,12 @@ class _EmosIO:
         await asyncio.sleep(1.0)
         return "" if sent else str(sent)
 
-    async def payload(self, arch: str, board: str = "biscuit") -> tuple:
+    async def payload(self, arch: str) -> tuple:
         if self.override is not None:
             init_bin, sbin, version, err = select_payload(
-                self.override[0], arch, self.override[1], board)
+                self.override[0], arch, self.override[1], self.board)
         else:
-            init_bin, sbin, version, err = await fetch_payload(arch, board)
+            init_bin, sbin, version, err = await fetch_payload(arch, self.board)
         if err is not None:
             try:
                 reason = json.loads(err.text)["error"]
@@ -281,7 +284,7 @@ SBIN_BOTH_ARCHES = ("em-wifi",)
 PAYLOAD_ASSET = "emos-payload.zip"
 
 
-async def fetch_payload(arch: str, board: str = "biscuit") -> tuple:
+async def fetch_payload(arch: str, board: str | None = None) -> tuple:
     """Everything an emOS image needs for `arch`, from ONE release.
 
     Returns (init, sbin, version, error) — `sbin` being the /sbin tools the
@@ -293,11 +296,6 @@ async def fetch_payload(arch: str, board: str = "biscuit") -> tuple:
     Comes from the release's bundle. A release predating it falls back to its
     loose `init`, which is enough for FireOS 5 — so today's fleet keeps
     provisioning with no new tag. FireOS 6 needs the bundle and says so.
-
-    The board is carried alongside the architecture because Radar's init is
-    named differently from Biscuit's on the same ARM kernel, and a release's
-    `init32` is not interchangeable with a Radar's `init32-radar` even when
-    both target ARM.
     """
     release = await em_releases.fetch_emos()
     if release is None:
@@ -344,20 +342,14 @@ async def fetch_payload(arch: str, board: str = "biscuit") -> tuple:
 
 
 def select_payload(files: dict, arch: str, version: str,
-                     board: str = "biscuit") -> tuple:
+                   board: str | None = None) -> tuple:
     """Pick the init and /sbin tools for `arch` out of a bundle's files.
 
     Split from fetch_payload so an uploaded bundle (the emOS update's
-    dev path and the wizard's /api/provision/emos_image) is selected from
-    by the same rules as a release. The board is carried alongside the
-    architecture because Radar's init is named differently from Biscuit's
-    on the same ARM kernel, and a release's `init32` is not interchangeable
-    with a Radar's `init32-radar` even when both target ARM.
+    dev path) is selected from by the same rules as a release.
     """
-    try:
-        init_name = em_emos_build.init_asset_name(arch, board)
-    except em_emos_build.BuildError as exc:
-        return None, {}, version, em_http.error("unsupported_board", str(exc), 400)
+    init_name = INIT_ASSETS.get(arch,
+                                     INIT_ASSETS[em_emos_build.ARCH_ARM64])
     init = files.get(init_name)
     if init is None:
         return None, {}, version, em_http.error(
@@ -377,7 +369,8 @@ def select_payload(files: dict, arch: str, version: str,
             f"The {init_name} in emOS release {version} is not usable: "
             f"{'; '.join(problems)}", 502)
 
-    # The BINARIES are 32-bit kernel only, i.e. FireOS 6. init prefers
+    # The BINARIES are FireOS 6 only: a 32-bit kernel, or a board known to run
+    # FireOS 6 on an arm64 one (em_emos_build.FIREOS6_BOARDS). init prefers
     # /sbin/wpa_supplicant the moment one exists, so including those in a
     # FireOS 5 image would move the whole fleet off Amazon's working
     # supplicant as a side effect. Same for wpa_cli, which init's reassociate
@@ -387,13 +380,19 @@ def select_payload(files: dict, arch: str, version: str,
     # cannot change which supplicant init starts. Not fatal when missing — a
     # release predating it still builds a FireOS 5 image, exactly as before.
     sbin = {n: files[n] for n in SBIN_BOTH_ARCHES if n in files}
-    if arch == em_emos_build.ARCH_ARM:
+    if (arch == em_emos_build.ARCH_ARM
+            or board in em_emos_build.FIREOS6_BOARDS):
         missing = [n for n in SBIN_ASSETS if n not in files]
         if missing:
+            # Fatal: Amazon's supplicant cannot run under emOS, so the image
+            # would have no WiFi and no way to report it but a cable.
             return None, {}, version, em_http.error(
                 "no_wifi_tools_for_arch",
-                f"Uploaded payload is missing {', '.join(missing)}. A 32-bit "
-                "emOS image needs its own Wi-Fi tools.", 400)
+                f"emOS release {version} carries no {', '.join(missing)}. A "
+                f"FireOS 6 image needs emOS's own userspace — Amazon's "
+                f"supplicant cannot run under emOS and its /system has no "
+                f"busybox — so there is nothing to build a working image "
+                f"from. Cut a newer emos-v* tag.", 404)
         sbin.update({n: files[n] for n in SBIN_ASSETS})
 
     return init, sbin, version, None

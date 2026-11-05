@@ -27,7 +27,7 @@ func TestWakeBeamInfoSaysWhatThePathDid(t *testing.T) {
 	}
 
 	// Off: the single mic is named, and the beam is not.
-	b := New()
+	b := New(biscuit)
 	run(b, t0)
 	has(b.WakeBeamAt(t0), "beam=off", "in=ch6")
 
@@ -94,7 +94,7 @@ func TestWakeBeamInfoReportsCalibrationAsApplied(t *testing.T) {
 	old := micCalDir
 	t.Cleanup(func() { micCalDir = old })
 	micCalDir = t.TempDir() // nothing to read
-	b := New()
+	b := New(biscuit)
 	enableWakeBeam(b)
 	b.fbf.cur, b.fbf.holdLeft = 1, 1<<30
 	run(b, time.Unix(1, 0))
@@ -103,7 +103,7 @@ func TestWakeBeamInfoReportsCalibrationAsApplied(t *testing.T) {
 	}
 
 	micCalDir = writeMicCal(t, radarMicCal[:])
-	b = New()
+	b = New(biscuit)
 	enableWakeBeam(b)
 	b.fbf.cur, b.fbf.holdLeft = 1, 1<<30
 	run(b, time.Unix(1, 0))
@@ -128,7 +128,7 @@ func TestWakeBeamInfoShowsAChangeWithinABatch(t *testing.T) {
 // The lookup is by the crossing's own time: the batch it was in, not the latest
 // one, and nothing from before the record starts.
 func TestWakeBeamAtFindsTheBatchTheCrossingWasIn(t *testing.T) {
-	b := New()
+	b := New(biscuit)
 	enableWakeBeam(b)
 	t0 := time.Unix(2000, 0)
 	for k := 0; k < 6; k++ {
@@ -154,7 +154,7 @@ func TestWakeBeamAtFindsTheBatchTheCrossingWasIn(t *testing.T) {
 
 // The mic goroutine writes and the scorer's callback reads; -race checks it.
 func TestWakeTraceIsSafeAcrossGoroutines(t *testing.T) {
-	b := New()
+	b := New(biscuit)
 	enableWakeBeam(b)
 	var wg sync.WaitGroup
 	wg.Add(1)

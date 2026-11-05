@@ -12,6 +12,7 @@ package main
 import (
 	"encoding/binary"
 	"fmt"
+	"github.com/wilbowes/EchoMuse/pkg/board"
 	"math"
 	"os"
 	"path/filepath"
@@ -43,8 +44,8 @@ func modeSweep(path string) {
 		fmt.Println(err)
 		return
 	}
-	probe := beamformer.New()
-	per := make([][]float64, beamformer.NumMics)
+	probe := beamformer.New(board.BiscuitMics())
+	per := make([][]float64, board.BiscuitMics().NumMics())
 	for _, raw := range bufs {
 		ch := probe.MicChannels(raw, 15.85, -1, nil)
 		for m := range per {
@@ -86,7 +87,7 @@ func modeSweep(path string) {
 				} else {
 					beamformer.ARAKMax = 96
 				}
-				b := beamformer.New()
+				b := beamformer.New(board.BiscuitMics())
 				b.SetWakeBeam(true)
 				b.SetWakeBeamAra(ara != "off")
 				b.SetWakeBeamStock(rule == "stock")

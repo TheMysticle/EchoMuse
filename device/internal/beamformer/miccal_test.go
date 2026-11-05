@@ -10,7 +10,7 @@ import (
 )
 
 // The values read off a Radar unit's /proc/idme on 2026-10-12.
-var radarMicCal = [NumMics]int{16779, 16397, 16501, 16102, 16479, 17018, 15483}
+var radarMicCal = [fbfMics]int{16779, 16397, 16501, 16102, 16479, 17018, 15483}
 
 func writeMicCal(t *testing.T, vals []int) string {
 	t.Helper()
@@ -138,7 +138,7 @@ func TestMicCalIsAppliedToTheSamples(t *testing.T) {
 	t.Cleanup(func() { micCalDir = old })
 	micCalDir = writeMicCal(t, radarMicCal[:])
 
-	b := New()
+	b := New(biscuit)
 	enableWakeBeam(b)
 	x := zeros(NumMics, 2560)
 	for i := range x[centreCh] {
@@ -167,7 +167,7 @@ func TestMicCheckSpreadIsZeroForEqualLevels(t *testing.T) {
 	}
 	c.n = 1000
 	chans := fbfChannels
-	var ones [NumMics]float64
+	var ones [fbfMics]float64
 	for i := range ones {
 		ones[i] = 1
 	}

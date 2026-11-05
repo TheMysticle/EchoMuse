@@ -13,10 +13,10 @@ permissions:
 jobs:
   controller-tests:
     name: Controller unit tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
       # The controller's own imports (aiohttp, websockets, bcrypt, zeroconf,
@@ -48,10 +48,15 @@ jobs:
       - name: Coverage floors
         working-directory: controller
         run: python tools/coverage_floor.py check coverage.json
+      # The bench's scoring rules (#892). Its runs need captures, which stay
+      # off the repository; the rules that score them are tested here.
+      - name: Audio bench metrics
+        working-directory: tools/audio_bench
+        run: python -m pytest test_metrics.py -q
 
   pipecat-runtime-tests:
     name: Pipecat composed runtime regression tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -62,10 +67,10 @@ jobs:
 
   forge-metadata-tests:
     name: ONNX metadata round trip
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
       # Keep runtime/model dependencies out of the lightweight controller suite.
@@ -74,10 +79,10 @@ jobs:
 
   controller-lint:
     name: Controller lint (undefined names)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
       - name: Install pyflakes
@@ -112,10 +117,10 @@ jobs:
 
   dashboard-tests:
     name: Dashboard logic tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # No setup-node step: ubuntu-latest ships a node, and this test needs
+      # No setup-node step: ubuntu-24.04 ships a node, and this test needs
       # nothing beyond the standard library. The dashboard is otherwise
       # untested by construction — it compiles to a single classic script
       # with no module boundary to import across — so this covers the pure
@@ -132,8 +137,10 @@ jobs:
           node controller/tests/web_usb_blocked.test.mjs
           node controller/tests/emos_md5.test.mjs
           node controller/tests/boot_image_length.test.mjs
+          node controller/tests/send_in_chunks.test.mjs
           node controller/tests/number_field.test.mjs
           node controller/tests/unlock_verdict.test.mjs
+          node controller/tests/echo_board.test.mjs
           node controller/tests/slot_choice.test.mjs
           node controller/tests/server_binary.test.mjs
           node controller/tests/fetch_deadline.test.mjs
@@ -167,7 +174,7 @@ jobs:
 
   device-tests:
     name: Device Go tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -194,10 +201,10 @@ jobs:
 
   python-deps-audit:
     name: Python dependency audit
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
       - name: Install pip-audit
@@ -224,7 +231,7 @@ jobs:
 
   device-vulncheck:
     name: Device Go vulnerability check
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -268,7 +275,7 @@ jobs:
 
   controller-image:
     name: Controller image builds
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -359,7 +366,7 @@ jobs:
 
   controller-imports:
     name: Controller modules import and the controller boots
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # WHY THIS EXISTS: the two largest files in the controller have no
@@ -492,9 +499,124 @@ jobs:
         if: always()
         run: docker rm -f em-ci 2>/dev/null || true
 
+  dashboard-console-errors:
+    name: Dashboard console errors (headless Chromium)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # WHY THIS EXISTS: the dashboard is verified by a person opening it and
+      # clicking around, and that misses what a machine can see. A JS exception
+      # during a tab render breaks the tab and nobody reports it until a support
+      # thread; an uncaught promise rejection is worse, because the panel behind
+      # it still looks right. Nothing in the repo ran the dashboard in a browser,
+      # so the class had no guard at all.
+      #
+      # One increment of #293, deliberately: fail the build on a browser console
+      # error across all eleven tabs. Screenshot baselines, axe and functional
+      # control coverage are the other three and are NOT here.
+      #
+      # The boot is the controller-imports job's, unchanged: the same pinned
+      # image via uat/Dockerfile — which layers this PR's Python AND this PR's
+      # compiled dashboard over the published one — the same "Controller ready"
+      # wait with the same 90s ceiling and the same refusal on a traceback. One
+      # way to boot a controller, not two.
+      #
+      # The dashboard source has to be compiled in, which is the whole job: the
+      # image ships the bundle the last release built, so a pass that renders it
+      # reports on a dashboard nobody is changing.
+      - name: Layer this PR's controller source and dashboard onto the published image
+        run: docker build -f uat/Dockerfile -t echomuse-controller:uat .
+      - name: Boot the controller and wait for ready
+        run: |
+          docker network create em-uat-net
+          mkdir -p /tmp/em-uat-data
+          docker run -d --name em-uat --network em-uat-net \
+            -e SERVER_IP=127.0.0.1 \
+            -e DB_PATH=/app/data/echomuse.db \
+            -e DEVICE_APPROVAL=strict \
+            -v /tmp/em-uat-data:/app/data \
+            echomuse-controller:uat
+          # 90s, the same budget and the same reason as controller-imports: a
+          # first start generates the CA and runs every migration on an empty
+          # database, the slowest legitimate boot there is.
+          for i in $(seq 1 90); do
+            if docker logs em-uat 2>&1 | grep -q "Controller ready"; then
+              echo "booted in ${i}s"
+              if docker logs em-uat 2>&1 | grep -q "Traceback"; then
+                echo "::error::traceback during a clean first boot"
+                docker logs em-uat
+                exit 1
+              fi
+              exit 0
+            fi
+            if [ "$(docker inspect -f '{{.State.Status}}' em-uat)" != "running" ]; then
+              echo "::error::controller exited before becoming ready"
+              docker logs em-uat
+              exit 1
+            fi
+            sleep 1
+          done
+          echo "::error::controller did not report ready within 90s"
+          docker logs em-uat
+          exit 1
+      # The browser is the PINNED PLAYWRIGHT IMAGE BY DIGEST, which is the whole
+      # reason for a container rather than `npx playwright install`: the digest
+      # addresses the exact Chromium build (the script prints which), so this
+      # job's baseline cannot move because Google published something, and the
+      # download Playwright does on a normal runner — a floating "latest stable"
+      # Chrome — does not happen at all.
+      #
+      # Only the DRIVER is fetched, at an exact version, and it installs no
+      # browser: PLAYWRIGHT_BROWSERS_PATH already points at the image's. Get a
+      # digest with:
+      #
+      #   docker buildx imagetools inspect mcr.microsoft.com/playwright:v1.63.0-noble
+      #
+      # One browser, one viewport, transitions off. No matrix — #293's cost note
+      # draws the line at "a browser install plus three page loads".
+      #
+      # On the same docker network as the controller rather than through a
+      # published port: nothing is exposed on the runner, and the address is the
+      # container name. The controller needs no published dashboard port to be
+      # driven by this and must never get one by accident.
+      #
+      # The bootstrap token is read out of the controller log because that is
+      # where the controller prints it, and it is the documented way in — the
+      # script exchanges it at /api/setup. Two lines of the box, concatenated.
+      - name: Walk every tab in a headless browser
+        run: |
+          token=$(docker logs em-uat 2>&1 \
+            | sed -n 's/^.*│  *\([0-9a-f]\{32\}\)  *│.*$/\1/p' | tr -d '\n')
+          if [ "${#token}" -ne 64 ]; then
+            echo "::error::no bootstrap token in the controller log"
+            docker logs em-uat
+            exit 1
+          fi
+          docker run --rm --network em-uat-net \
+            -v "$PWD/uat:/uat:ro" \
+            -e EM_UAT_URL=http://em-uat:8768 \
+            -e EM_UAT_BOOTSTRAP="$token" \
+            mcr.microsoft.com/playwright:v1.63.0-noble@sha256:eff16c30e6f3f4af0a03fa4b706120d5e9b0891c344a27d64559aff5900a4a27 \
+            bash -lc '
+              # The driver goes in a scratch directory, and only uat/ is
+              # mounted: npm would otherwise write node_modules into the
+              # checkout. ESM resolves an import from the importing FILE path,
+              # so the script is copied alongside rather than run through
+              # NODE_PATH (which ESM ignores).
+              mkdir -p /tmp/drv
+              cd /tmp/drv
+              npm install --no-save --silent playwright@1.63.0
+              cp /uat/console_check.mjs .
+              node console_check.mjs'
+      - name: Stop the controller
+        if: always()
+        run: |
+          docker rm -f em-uat 2>/dev/null || true
+          docker network rm em-uat-net 2>/dev/null || true
+
   device-firmware-build:
     name: Device and emOS builds (pinned compiler)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -602,7 +724,7 @@ jobs:
 
   emos-checks:
     name: emOS init checks (ring and password)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # WHY THIS EXISTS: emos/ is ~1,900 lines of C that until now nothing in
@@ -653,6 +775,19 @@ jobs:
           /tmp/cmdlinecheck
           cc -O2 -o /tmp/serialcheck emos/init/serialcheck.c
           /tmp/serialcheck
+      # DNS comes from the DHCP lease (#1066), by RFC 2131/2132/3396. A wrong
+      # parse keeps the address and the controller and loses only names.
+      - name: DNS is taken from the lease, by the spec
+        run: |
+          cc -O2 -o /tmp/dnscheck emos/init/dnscheck.c
+          /tmp/dnscheck
+      # Every node in /dev comes from the kernel's uevents. A node with the
+      # wrong numbers opens something else: on the Echo Dot 3 the old table's
+      # ttyGS0 was the jack detector, and the USB console sat silent.
+      - name: Device nodes are made the way the kernel describes them
+        run: |
+          cc -O2 -o /tmp/devcheck emos/init/devcheck.c
+          /tmp/devcheck
       # The trial mark is written by the controller and read by init, and it
       # decides whether an image updated over the network is rolled back. Read
       # as absent, a broken image is promoted; a leftover read as live rolls a
@@ -733,7 +868,7 @@ jobs:
 
   device-vet:
     name: Device go vet
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

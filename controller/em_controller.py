@@ -62,6 +62,7 @@ import hmac
 import json
 import logging
 import os
+import signal
 import socket
 import struct
 import time
@@ -96,6 +97,7 @@ import em_tasks
 import em_workflow
 import em_pacing
 import em_platform
+import em_boards
 import em_tcp
 import em_wsclose
 import em_rttlog
@@ -287,6 +289,9 @@ SPEAKER_PRIME_SECONDS = 1.1
 # turn can run to the spinner's 135s TTL, and this only ever fires when
 # the lock is ALSO free, which no running turn allows.
 OWW_PAUSE_STUCK_S = 180.0
+# Bound on waiting for a barge's claim (hold 250ms, wakeArbitrationMs up to
+# a few hundred); past it the turn loop acts on the barge as it stands.
+BARGE_DECISION_TIMEOUT_S = 3.0
 
 # How long a freshly established data connection gets to deliver its first
 # mic frame before the wake watchdog stops treating the silence as
@@ -729,6 +734,9 @@ class Device:
         # barge_ceded says this device must not run the interrupting turn.
         # Folding them into one flag is how both devices answered.
         self.barge_ceded      = False
+        # Clear while a barge's claim is undecided; see _await_barge_decision.
+        self.barge_decided    = asyncio.Event()
+        self.barge_decided.set()
         # (trigger_label, wake_detail) when the barge that stood down had no
         # pipeline behind it, else None. Carried from _barge_watcher /
         # _private_barge to the turn loop's ceded branch, which is where the
@@ -1068,6 +1076,12 @@ class Device:
         return self.timer_alarm_hold_t > asyncio.get_event_loop().time()
 
     @property
+    def mic_capable(self) -> bool:
+        """Announces "mic" (every firmware did until boards without supported
+        capture). Capabilities not yet known are not read as no mic."""
+        return not self.capabilities or "mic" in self.capabilities
+
+    @property
     def button_hold_capable(self) -> bool:
         """Measures hold time — and so was offered the HA event entity."""
         return "button_hold" in (self.capabilities or [])
@@ -1203,6 +1217,11 @@ class Device:
     def response_level_capable(self) -> bool:
         """Whether firmware can apply the relative voice-response gain."""
         return "response_level" in (self.capabilities or [])
+
+    @property
+    def stock_sound_capable(self) -> bool:
+        """Whether firmware voices its speaker and holds the bass guard on."""
+        return "stock_sound" in (self.capabilities or [])
 
     @property
     def oww_trigger_capable(self) -> bool:
@@ -1876,6 +1895,9 @@ _OUTCOME_ANIM = {
     # declined, here there is no pipeline — so the cue says so in the colour
     # the device already uses for a missing link. See em_scenes.no_ha_anim.
     "no_ha":         "no_ha_anim",
+    # HA chose to say nothing ("never mind"). Without a cue the ring went
+    # from thinking to dark, which read as cut off. See em_scenes.done_anim.
+    "silent_reply":  "done_anim",
 }
 
 # How long the listening ring is held before the no_ha cue replaces it. The
@@ -2126,6 +2148,7 @@ async def _barge_watcher(device: Device, playback_started: asyncio.Event):
                         f"Barge-in during {phase} (score={score:.3f})"
                     )
                     device.barge_detected = True
+                    device.barge_decided.clear()
 
                     # Arbitrate, exactly as a wake crossing does. Until
                     # 2026-09-02 this path claimed nothing, so on a fleet with
@@ -2156,6 +2179,9 @@ async def _barge_watcher(device: Device, playback_started: asyncio.Event):
                     # precedence is a SECOND rule that can disagree with the
                     # first, and would need a way to revoke a claim a
                     # neighbour has already started a turn on.
+                    if in_playback:  # before the claim, as in _private_barge
+                        esphome.note_barged(device.device_id)
+                        await device.send_control({"type": "speaker_flush"})
                     serves = esphome.can_serve_turn(device.device_id)
                     won_by = device.device_id
                     if serves and device.wake_arb_ms > 0 and len(em_state.devices) > 1:
@@ -2219,8 +2245,8 @@ async def _barge_watcher(device: Device, playback_started: asyncio.Event):
                                               device.last_wake)
                         device.last_wake = None
                     device.cancel_event.set()
+                    device.barge_decided.set()
                     if in_playback:
-                        await device.send_control({"type": "speaker_flush"})
                         # HA's run is normally over by now (RUN_END follows
                         # TTS_END, and we only reach playback at TTS_END), but
                         # a barge in the first milliseconds of audio can beat
@@ -2236,14 +2262,14 @@ async def _barge_watcher(device: Device, playback_started: asyncio.Event):
                         # (pipeline_refused, 5 of 5 attempts, 2026-08-17).
                         esphome.cancel_voice_turn(
                             device.device_id, abort_ha=True, reason="barged")
-                    # Wake sound for a barge that won, after the flush so it
-                    # is not heard over the reply it interrupts. A private
-                    # Echo plays its own on the barge session's listen_ack.
+                    # Wake sound for a barge that won, after the flush; a
+                    # private Echo plays its own on the session's listen_ack.
                     if not device.barge_ceded and getattr(device, "wake_sound", False) \
                             and device.wake_cue_capable:
                         await device.play_cue("wake")
                     return
     finally:
+        device.barge_decided.set()
         rms_mean = rms_sum / frames if frames else 0.0
         log.info(
             f"[{device.device_id}] Barge watcher done: {frames} frames "
@@ -3149,6 +3175,7 @@ async def _run_voice_locked(device: Device, trigger_label: str = "unknown",
                     # Watcher spans thinking→playback and is owned here:
                     # every exit path (normal, barge, error, cancel)
                     # must stop it before the next iteration re-arms.
+                    await _await_barge_decision(device)
                     await stop_watcher()
                     # On barge the mic stays up: the user's follow-up
                     # command is already flowing into voice_queue and a
@@ -3415,7 +3442,9 @@ async def wake_word_listener(device: Device):
     a superseded connection ends this loop.
     """
     while em_state.devices.get(device.device_id) is device:
-        if device.workflow.switching or (device.workflow.active and device.workflow.awake):
+        if not device.mic_capable:
+            await _no_mic(device)
+        elif device.workflow.switching or (device.workflow.active and device.workflow.awake):
             await device.workflow.poll()
         elif device.private_listening:
             # Nothing here scores a private Echo, so its cached models (three
@@ -3426,6 +3455,13 @@ async def wake_word_listener(device: Device):
             await _private_listen(device)
         else:
             await _stream_listen(device)
+
+
+async def _no_mic(device: Device) -> None:
+    """No microphone it can read: no mic_start, no scorer, until superseded."""
+    log.info(f"[{device.device_id}] no microphone — not listening; speaker only")
+    while em_state.devices.get(device.device_id) is device and not device.mic_capable:
+        await asyncio.sleep(1.0)
 
 
 async def _private_listen(device: Device) -> None:
@@ -3467,7 +3503,10 @@ async def _private_listen(device: Device) -> None:
                 or (device.private_turn_task is not None
                     and not device.private_turn_task.done()))
         if busy:
-            await _private_barge(device, ev)
+            try:
+                await _private_barge(device, ev)
+            finally:
+                device.barge_decided.set()
             continue
         if device.speaking and not device.timer_alarm_ringing:
             # An announcement is playing and no turn owns it — the stream path
@@ -3651,6 +3690,23 @@ async def _private_wake_turn(device: Device, ev: dict) -> None:
         await device.beam_unlock()
 
 
+async def _await_barge_decision(device: Device) -> None:
+    """Wait for a barge's claim to resolve before the turn loop acts on it.
+
+    A barge sets barge_detected, flushes, then holds its claim. A reply the
+    flush ends inside the hold ends the turn early, and the loop started the
+    interrupting turn before the claim's cancel_event landed on it, or before
+    barge_ceded said another Echo had won (VVV 2026-10-23: reply cut, barge
+    turn gone in 199ms). Bounded so a lost decision cannot hang the loop.
+    """
+    if device.barge_detected and not device.barge_decided.is_set():
+        try:
+            await asyncio.wait_for(device.barge_decided.wait(), BARGE_DECISION_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            log.warning(f"[{device.device_id}] barge decision not made in "
+                        f"{BARGE_DECISION_TIMEOUT_S}s — acting on it as it stands")
+
+
 async def _private_barge(device: Device, ev: dict) -> None:
     """
     A wake from a privately listening Echo while a turn is running.
@@ -3677,6 +3733,13 @@ async def _private_barge(device: Device, ev: dict) -> None:
     em_dbwriter.submit(db.log_device, device.device_id, "info", "device",
                   f"Barge-in during {phase} (score={score:.3f})")
     device.barge_detected = True
+    device.barge_decided.clear()
+    if in_playback:
+        # Before the claim, whose hold would put reply audio in the session.
+        # Marked first: the reply can end inside the hold and the turn record
+        # `ok` before abort_ha_run runs.
+        esphome.note_barged(device.device_id)
+        await device.send_control({"type": "speaker_flush"})
     serves = esphome.can_serve_turn(device.device_id)
     won_by = device.device_id
     if serves and device.wake_arb_ms > 0 and len(em_state.devices) > 1:
@@ -3721,8 +3784,8 @@ async def _private_barge(device: Device, ev: dict) -> None:
         device.barge_no_ha = (verdict.trigger_label, device.last_wake)
         device.last_wake = None
     device.cancel_event.set()
+    device.barge_decided.set()
     if in_playback:
-        await device.send_control({"type": "speaker_flush"})
         esphome.abort_ha_run(device.device_id)
     else:
         esphome.cancel_voice_turn(device.device_id, abort_ha=True, reason="barged")
@@ -3759,6 +3822,7 @@ async def _stream_listen(device: Device):
     nm_max     = 0.0  # highest buffered near-miss score
     dead_streak = 0   # consecutive 10s mic_queue timeouts (resets on any frame)
     stray_stopped_at = 0.0  # last mic_stop sent for a stream up with the wake word off
+    backlog_log = em_listen.BacklogLog()
     try:
         while True:
             if device.workflow.switching or (device.workflow.active and device.workflow.awake):
@@ -3929,6 +3993,18 @@ async def _stream_listen(device: Device):
             if device.workflow.switching or (device.workflow.active and device.workflow.awake):
                 device.frames_seen_this_connection = True
                 buf.clear()
+                continue
+
+            # Behind by more than a second: skip to the last half-second
+            # (#946). Spliced, not reset: reset() seeds the model with noise.
+            payload, skipped = em_listen.skip_backlog(
+                device.mic_queue, payload, loop.time())
+            if skipped:
+                buf.clear()
+                device.wake_levels.clear()
+                if note := backlog_log.add(skipped, loop.time()):
+                    log.warning(f"[{device.device_id}] OWW: {note}")
+            if payload is None:
                 continue
 
             # VAD sentinel (string; None accepted defensively — the pre-B5
@@ -4431,6 +4507,7 @@ async def handle_button_event(device: Device, event: dict):
             tap_event=(
                 device.button_single_tap_event and device.button_hold_capable
             ),
+            has_mic=device.mic_capable,
         )
 
         if action == em_button.HOLD:
@@ -4450,6 +4527,12 @@ async def handle_button_event(device: Device, event: dict):
                 f"[{device.device_id}] Dot button tap "
                 f"{device.tap_burst.count} in burst (window {window_ms}ms)"
             )
+            return
+
+        if action == em_button.NO_MIC:
+            log.info(f"[{device.device_id}] Dot button tap — no microphone, no turn")
+            if device.led_anim_capable and (anim := device.led_scene.get("error_anim")):
+                await device.send_led_anim(anim)
             return
 
         if action == em_button.BLOCKED:
@@ -5426,6 +5509,9 @@ async def handle_control(ws: WebSocketServerProtocol, secure: bool = False):
         # device reflashed between FireOS and emOS is the case it has to track.
         if device._base_os:
             em_dbwriter.submit(db.set_device_base_os, device_id, device._base_os)
+        # Which board, for the model HA shows; before the satellite exists.
+        if boards := em_boards.record(em_state.boards, device_id, msg.get("board")):
+            em_dbwriter.submit(db.set_config, em_boards.CONFIG_KEY, boards)
         # The running kernel, so emOS on FireOS 5's 64-bit kernel and FireOS
         # 6's 32-bit one can be told apart (schema v23). Absent on older
         # firmware; stored only when reported so a known value is not erased.
@@ -6395,12 +6481,33 @@ async def event_loop_lag_monitor(interval: float = 1.0,
             )
 
 
+async def _until_stopped() -> None:
+    """Return on SIGTERM or SIGINT, so main()'s teardown runs. In a container
+    we are PID 1 (em_start execs us), and the kernel drops a signal PID 1 has
+    no handler for: `docker stop` used to SIGKILL us after its grace period."""
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, stop.set)
+    await stop.wait()
+    log.info("Shutting down")
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.remove_signal_handler(sig)
+
+
+def _close_db() -> None:
+    em_dbwriter.drain()
+    db.close()
+
+
 async def main():
     log.info(f"EchoMuse Controller {CONTROLLER_VERSION}")
     db.init(DB_PATH)
     await em_schedule_share.load(DB_PATH)
     await em_groups.load(DB_PATH)
     em_groups.start()
+    em_state.boards.update(em_boards.decode(await asyncio.get_running_loop()
+                           .run_in_executor(None, db.get_config, em_boards.CONFIG_KEY)))
     auth.maybe_generate_bootstrap_token()
     em_player.init(
         get_device=em_state.devices.get,
@@ -6487,7 +6594,7 @@ async def main():
             await em_ble_proxy.start_ble_proxy_servers(SERVER_HOST)
 
             log.info("EchoMuse Controller ready — waiting for devices")
-            await asyncio.Future()
+            await _until_stopped()
 
     finally:
         await em_ble_proxy.stop_ble_proxy_servers()
@@ -6499,6 +6606,7 @@ async def main():
         await azc.async_unregister_service(info)
         await azc.async_close()
         await runner.cleanup()
+        await asyncio.get_running_loop().run_in_executor(None, _close_db)
         log.info("EchoMuse Controller stopped")
 
 

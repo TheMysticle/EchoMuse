@@ -2,6 +2,7 @@ package outchain
 
 import (
 	"bytes"
+	"github.com/wilbowes/EchoMuse/pkg/board"
 	"testing"
 )
 
@@ -82,15 +83,15 @@ func TestActivationResetsState(t *testing.T) {
 func TestRadarChainOverridesLimiterRegardlessOfParams(t *testing.T) {
 	rt := radarTuningForTest(t)
 	radarLimiterThresholdDb, radarLimiterReleaseMs := rt.MBCL.FullBand.LimThresh, rt.MBCL.FullBand.LimRelease
-	c := NewForBoard(48000, "radar", rt)
+	c := NewWithTuning(48000, DefaultGuardBand, board.BiscuitVoicing(), rt)
 	c.SetActive(true)
 	p := DefaultParams()
 	p.LimiterThresholdDb = radarLimiterThresholdDb + 2 // deliberately NOT Radar's
 	p.LimiterReleaseMs = radarLimiterReleaseMs + 130   // deliberately NOT Radar's
 	c.SetParams(p)
-	c.Process(loud(2048)) // takePending -> apply runs here
+	c.ProcessWide(make([]float64, 4096), make([]byte, 8192)) // takePending -> apply runs here
 
-	lim := c.lim.(*stockLimiter)
+	lim := c.stock.lim
 	if lim.thresholdDb != radarLimiterThresholdDb {
 		t.Errorf("lim.thresholdDb = %g, want %g (Params asked for %g)",
 			lim.thresholdDb, radarLimiterThresholdDb, p.LimiterThresholdDb)
@@ -104,7 +105,7 @@ func TestRadarChainOverridesLimiterRegardlessOfParams(t *testing.T) {
 // And biscuit must be entirely unaffected — Params wins there, same as
 // before this override existed.
 func TestBiscuitChainUsesParamsLimiterUnmodified(t *testing.T) {
-	c := NewForBoard(48000, "biscuit", nil)
+	c := New(48000)
 	c.SetActive(true)
 	p := DefaultParams()
 	p.LimiterThresholdDb = -1.0
@@ -112,7 +113,7 @@ func TestBiscuitChainUsesParamsLimiterUnmodified(t *testing.T) {
 	c.SetParams(p)
 	c.Process(loud(2048))
 
-	lim := c.lim.(*limiter)
+	lim := c.lim
 	if lim.thresholdDb != -1.0 {
 		t.Errorf("lim.thresholdDb = %g, want -1.0 (biscuit must not be overridden)", lim.thresholdDb)
 	}

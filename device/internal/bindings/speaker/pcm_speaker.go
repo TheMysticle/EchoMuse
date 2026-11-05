@@ -4,6 +4,7 @@ package speaker
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"log"
 	"math"
@@ -81,15 +82,13 @@ const primePeriods = 24
 var silencePeriod = make([]byte, periodBytes)
 
 type PcmSpeaker struct {
-	radar bool
-	// radarSpeakerBiquad and radarJackBiquad are Radar's two codec filter
-	// profiles, read from the device in Init; nil off Radar, or when the jack
-	// profile could not be read (see radarJackRouting).
-	radarSpeakerBiquad []string
-	radarJackBiquad    []string
 	// pcm is the playback device, found by name (pkg/board) in Init, and
 	// statusFile its substream's status in procfs.
-	pcm        board.PCMAddr
+	pcm board.PCMAddr
+	// out is the board's own playback needs, and problems what of them
+	// could not be met, reported to the controller.
+	out        output
+	problems   []string
 	statusFile string
 	session    *tinyalsa.AudioSession
 	stopCh     chan struct{}
@@ -173,6 +172,18 @@ type PcmSpeaker struct {
 	// level whatever the volume.
 	vol softVolume
 	cue cueState
+	// volLevel is the last level SetVolume was given, and stock says which
+	// law turns it into vol's gain: the stock-sound profile's (applied BEFORE
+	// the chain, exceeding unity from level 107) while it is in force, else the
+	// 0.5dB-per-level one. See refreshStock.
+	volLevel  atomic.Int64
+	stock     atomic.Bool
+	stockWide []float64
+	// voicing is the board's (nil for none); the chain never puts the
+	// stock-sound law in force without one.
+	voicing *board.Voicing
+	// voiceFilter: the stock-sound profile's voice plane (stockPeriod).
+	voiceFilter *outchain.VoiceFilter
 	// response is a relative gain on the voice plane before it is mixed with
 	// music. The device volume still runs on the completed mix below, so the
 	// buttons remain authoritative; response caps itself against vol so their
@@ -371,17 +382,30 @@ func (p *PcmSpeaker) OnStreamStats(cb func(StreamStats)) {
 }
 
 func NewPcmSpeaker(echoTap func([]byte), levelTap func(rms float64)) (*PcmSpeaker, error) {
-	boardID := board.IDOf(board.Current())
+	spk := board.CurrentLayout().Speaker
+	chain := outchain.NewWithTuning(48000, guardBand(spk.BassGuard), spk.Voicing, stockTuning(spk.StockTuning))
+	voicing := spk.Voicing
+	if chain.HasStockTuning() {
+		// The Echo's own tuning plays at stock's mixer law, 0dB at the top:
+		// stock's gain is in the tuning (MBCL's system gain, OutputTrim),
+		// and the voicing's ceiling would add to it.
+		v := *voicing
+		v.CeilingDb = 0
+		voicing = &v
+	}
 	s := &PcmSpeaker{
 		stopCh:        make(chan struct{}),
 		deadCh:        make(chan struct{}),
 		echoTap:       echoTap,
 		levelTap:      levelTap,
-		chain:         outchain.NewForBoard(48000, boardID, radarTuning(boardID)),
+		voicing:       voicing,
+		chain:         chain,
 		chainBuf:      make([]byte, periodBytes),
 		srcBuf:        make([]byte, periodBytes),
 		chainParams:   outchain.DefaultParams(),
 		responseMix:   make([]float64, periodSize*2),
+		stockWide:     make([]float64, periodSize*2),
+		voiceFilter:   outchain.NewVoiceFilter(48000, board.CurrentLayout().Speaker.Voicing),
 		responseGains: make([]float64, periodSize),
 	}
 	s.voicePrime.Store(primePeriods)
@@ -391,35 +415,28 @@ func NewPcmSpeaker(echoTap func([]byte), levelTap func(rms float64)) (*PcmSpeake
 	s.mixer.SetGainImmediate(unityGain)
 	s.response.setDB(0)
 	s.response.cur = 1
-	// Silent until told a volume, like s.vol — a chain that takes the
-	// volume must not play its first period at full scale.
-	s.chain.SetVolumeGain(0)
 	if err := s.Init(); err != nil {
 		return nil, err
 	}
 	return s, nil
 }
 
-func (p *PcmSpeaker) Init() (err error) {
-	p.radar = board.Current() == board.Radar
-	pb := board.CurrentLayout().Playback
+func (p *PcmSpeaker) Init() error {
+	layout := board.CurrentLayout()
+	pb := layout.Playback
 	if pb == nil {
 		return errors.New("speaker: playback PCM not found on this board")
 	}
 	p.pcm = *pb
 	p.statusFile = statusPath(pb.Card, pb.Device)
-	if p.radar {
-		defer func() {
-			if err != nil {
-				p.abortRadarStartup()
-			}
-		}()
-		// Mute before stopping a stock media service, but wait for ownership
-		// of the PCM before replacing its codec configuration below.
-		if err = mixer.Set(radarMute, "On"); err != nil {
-			return err
-		}
+	out, err := loadOutput(layout.Speaker, os.ReadFile)
+	if err != nil {
+		log.Printf("[speaker] %v", err)
+		p.problems = append(p.problems, err.Error())
 	}
+	p.out = out
+	// Silent in hardware before a stock service lets go of the codec.
+	p.out.holdMute()
 	// Startup order matters for the audible click (2026-07-10): the amp
 	// must come up onto a DAC that is already clocking silence, and the
 	// unmute must come last. The old order (amp on → unmute → open PCM)
@@ -435,18 +452,13 @@ func (p *PcmSpeaker) Init() (err error) {
 	// work to do and is only ever in the way.
 	exec.Command("stop", "media").Run()
 	waitForFreePcm(p.pcm.Card, p.pcm.Device, pcmFreeTimeout)
-	if p.radar {
-		if err = prepareRadarSpeaker(radarDeviceXML); err != nil {
-			return err
-		}
-		p.radarSpeakerBiquad, p.radarJackBiquad = loadRadarJackProfiles(radarDeviceXML)
-	}
 	// Connect the DAC to the output mixer before opening the stream: DAPM
 	// decides what to power at stream open, and an unrouted DAC is powered
 	// down, which presents as a clean "voice stream complete, underruns=0"
 	// into silence. See the codec package.
 	codec.EnsureRoutes()
-	mixer.Set(mixer.PlaybackVolume, "0") // mute before touching amp or stream
+	p.applyJackWrites(p.out.setup())
+	p.applyJackWrites([]mixerWrite{p.out.mute()}) // before touching amp or stream
 
 	device := tinyalsa.NewDevice(p.pcm.Card, p.pcm.Device, pcm.Config{
 		Channels:         2,
@@ -466,22 +478,47 @@ func (p *PcmSpeaker) Init() (err error) {
 	p.session = &session
 
 	go p.silenceLoop()
-	if p.radar {
-		if err = p.startRadarOutput(); err != nil {
-			return err
-		}
-		log.Println("PcmSpeaker initialised — Radar profile loaded, silence settled, hardware unmuted")
-		return nil
-	}
 
-	time.Sleep(100 * time.Millisecond)        // silence reaches the DAC (~2 periods)
-	mixer.Set(mixer.SpeakerAmp, "On")         // enable amp onto a clocked, silent DAC
-	time.Sleep(50 * time.Millisecond)         // let amp settle
-	mixer.Set(mixer.PlaybackVolume, dacUnity) // unmute: volume is applied in software
+	p.waitRunning(pcmRunTimeout)
+	time.Sleep(100 * time.Millisecond)             // silence reaches the DAC (~2 periods)
+	p.applyJackWrites(p.out.amp(true))             // enable amp onto a clocked, silent DAC
+	time.Sleep(50 * time.Millisecond)              // let amp settle
+	p.applyJackWrites([]mixerWrite{p.out.unity()}) // unmute: volume is applied in software
+	// Last, so the DAC's step happens behind it: the quietest order of the
+	// ones measured on radar's mics (2026-10-23).
+	if err := p.out.releaseMute(); err != nil {
+		p.problems = append(p.problems, err.Error())
+	}
 
 	log.Println("PcmSpeaker initialised — silence stream running")
 	return nil
 }
+
+// pcmRunTimeout bounds the wait for the stream to start. Radar's codec
+// driver ramps its own gain for ~1.3s before the stream runs (measured on
+// 035T, 2026-10-23); biscuit's starts at once.
+const pcmRunTimeout = 3 * time.Second
+
+// waitRunning blocks until the playback stream is running, or the timeout
+// expires, and logs which. Releasing a hardware mute before then is undone
+// by the driver as the stream starts.
+func (p *PcmSpeaker) waitRunning(timeout time.Duration) {
+	start := time.Now()
+	for time.Since(start) < timeout {
+		if b, err := os.ReadFile(p.statusFile); err == nil {
+			if _, ok := pcmDelay(string(b)); ok {
+				log.Printf("[speaker] stream running after %dms", time.Since(start).Milliseconds())
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	log.Printf("[speaker] stream not running after %s; carrying on", timeout)
+}
+
+// Problems is what the board's playback needs that could not be met, for
+// the controller.
+func (p *PcmSpeaker) Problems() []string { return p.problems }
 
 // pcmFreeTimeout bounds the wait for another process to release the speaker.
 //
@@ -548,23 +585,16 @@ func (p *PcmSpeaker) SetJackRouting(inserted bool) {
 	p.jackInserted = inserted
 	p.jackKnown = true
 	p.chain.SetParams(chainForJack(p.chainParams, inserted))
+	p.refreshStock()
 	guardBypassed := inserted && p.chainParams.GuardEnabled
 	p.jackMu.Unlock()
 
-	p.applyJackWrites(p.jackWrites(inserted))
+	p.applyJackWrites(p.out.jack(inserted))
 	log.Printf("[speaker] jack routing applied (%s)",
 		map[bool]string{true: "external", false: "internal"}[inserted])
 	if guardBypassed {
 		log.Printf("[speaker] output chain: bass guard bypassed while the jack is in use")
 	}
-}
-
-// jackWrites is the routing for a plug position on this board.
-func (p *PcmSpeaker) jackWrites(inserted bool) []mixerWrite {
-	if p.radar {
-		return radarJackRouting(inserted, p.radarSpeakerBiquad, p.radarJackBiquad)
-	}
-	return jackRouting(inserted)
 }
 
 func (p *PcmSpeaker) applyJackWrites(ws []mixerWrite) {
@@ -600,13 +630,14 @@ func (p *PcmSpeaker) ReconcileJackRouting() int {
 	}
 
 	current := map[string]string{}
-	for _, ctl := range []string{ctlSpeakerAmp, ctlHPDriverGain, ctlDacMux} {
+	jack := p.out.spec.Jack
+	for _, ctl := range jackControls(jack) {
 		if v, err := mixer.Get(ctl); err == nil {
 			current[ctl] = v
 		} // a failed read is not evidence of drift
 	}
 
-	drift := jackRoutingDrift(inserted, current)
+	drift := jackRoutingDrift(jack, inserted, current)
 	if len(drift) == 0 {
 		return 0
 	}
@@ -652,11 +683,9 @@ func (p *PcmSpeaker) WatchJackRouting(ctx context.Context) {
 // rather than hanging.
 func (p *PcmSpeaker) silenceLoop() {
 	defer close(p.deadCh)
-	defer func() {
-		if p.radar {
-			mixer.Set(radarMute, "On")
-		}
-	}()
+	// Whatever ends the loop, the amplifier is muted in hardware before the
+	// stream closes behind it.
+	defer p.out.holdMute()
 	var meter writeLoopMeter // bench builds only; empty otherwise
 	// The rest of a voice period being played in low-latency slices (see
 	// voiceSlice). A flush drops what is queued, not this: at most 37ms of a
@@ -746,22 +775,22 @@ func (p *PcmSpeaker) silenceLoop() {
 			level = periodRMS(voice)
 		}
 
-		var out []byte
 		// Music and alerts follow one voice-turn target for this entire period.
 		duckTarget := p.duckTarget.Load()
-		if wideResponse {
-			wide := p.mixer.MixResponse(p.responseMix, voice, music, duckTarget, responseGains)
+		var out []byte
+		if p.stock.Load() {
+			tgt := p.vol.targetGain()
+			if hasResponse {
+				tgt = response.volumeTarget
+			}
+			out = p.stockPeriod(voice, music, responseGains, tgt, duckTarget, sourceBytes)
+		} else if wideResponse {
+			wide := p.mixer.MixResponse(p.responseMix, voice, music, duckTarget, responseGains, nil)
 			if applied := p.chain.ProcessFloat(wide, responseGains); applied != nil {
 				log.Printf("[speaker] output chain: %s", p.chain.Describe(*applied))
 			}
 			out = voice
-			// A chain that takes the volume (Radar) has applied it already,
-			// ahead of its compressors.
-			if p.chain.TookVolume() {
-				p.vol.settleFloat(wide, out)
-			} else {
-				p.vol.applyFloat(wide, out, response.volumeTarget)
-			}
+			p.vol.applyFloat(wide, out, response.volumeTarget)
 		} else {
 			out = p.mixer.Mix(voice, music, duckTarget)
 			process := out != nil
@@ -777,16 +806,7 @@ func (p *PcmSpeaker) silenceLoop() {
 				if applied := p.chain.Process(out); applied != nil {
 					log.Printf("[speaker] output chain: %s", p.chain.Describe(*applied))
 				}
-				// On Radar the active chain applies the volume itself, AHEAD
-				// of its compressors (outchain.Chain.TakesVolume), so it must
-				// not be applied again here. softVolume still tracks the
-				// target, so the day the chain goes inactive it carries on
-				// from the right gain.
-				if p.chain.TookVolume() {
-					p.vol.settle()
-				} else {
-					p.vol.apply(out)
-				}
+				p.vol.apply(out)
 			} else {
 				p.vol.settle()
 			}
@@ -824,6 +844,53 @@ func (p *PcmSpeaker) silenceLoop() {
 			p.pullAt = time.Time{}
 		}
 	}
+}
+
+// stockPeriod builds one period under the stock-sound profile, in stock
+// FireOS's order: the mix in float, then the volume, then the chain at the
+// TRUE level (ProcessWide), which may be over full scale from level 107 for the
+// compressors and limiter to bring back. The voice takes its own filter on
+// the way into the mix (outchain.VoiceFilter), so any period with voice
+// mixes in float. Returns the S16 period to write.
+//
+// n is this period's length in bytes (sourceBytes): a low-latency Sendspin
+// pull is 256 frames, not a whole period, and the period built must be
+// exactly as long as the audio in it. Sizing it from stockWide instead wrote
+// every 256-frame pull as 2048 frames, the rest stale samples from the
+// period before, which broke the music up and threw away the shallow ring
+// (found at the 2026-11-05 upstream merge, before it reached a speaker).
+func (p *PcmSpeaker) stockPeriod(voice, music []byte, responseGains []float64, volumeTarget float64, duckTarget int32, n int) []byte {
+	wide := p.stockWide[:n/2]
+	if voice != nil {
+		wide = p.mixer.MixResponse(p.responseMix, voice, music, duckTarget, responseGains, p.voiceFilter)
+	} else {
+		p.voiceFilter.Reset()
+		mixed := p.mixer.Mix(voice, music, duckTarget)
+		if mixed == nil {
+			if p.chain.Idle() {
+				p.vol.settle()
+				return silencePeriod[:n]
+			}
+			clear(wide) // filter tails still ringing out of the last audio
+		} else {
+			wide = p.stockWide[:len(mixed)/2]
+			for i := range wide {
+				wide[i] = float64(int16(binary.LittleEndian.Uint16(mixed[i*2:])))
+			}
+		}
+	}
+	frames := len(wide) / 2
+	for i := 0; i < frames; i++ {
+		g := p.vol.gainAtFrame(i, frames, volumeTarget)
+		wide[i*2] *= g
+		wide[i*2+1] *= g
+	}
+	p.vol.cur = volumeTarget
+	out := p.chainBuf[:frames*4]
+	if applied := p.chain.ProcessWide(wide, out); applied != nil {
+		log.Printf("[speaker] output chain: %s", applied)
+	}
+	return out
 }
 
 // pump writes one mixed period to ALSA in hardware-period pieces, so the
@@ -925,6 +992,7 @@ func (p *PcmSpeaker) SetOutputChain(params outchain.Params) {
 	p.jackMu.Lock()
 	p.chainParams = params
 	p.chain.SetParams(chainForJack(params, p.jackKnown && p.jackInserted))
+	p.refreshStock()
 	p.jackMu.Unlock()
 }
 
@@ -942,6 +1010,9 @@ func (p *PcmSpeaker) SetOutputChainActive(on bool) {
 	}
 	log.Printf("[speaker] output chain now runs on %s", where)
 	p.chain.SetActive(on)
+	p.jackMu.Lock()
+	p.refreshStock()
+	p.jackMu.Unlock()
 }
 
 // VoiceAudible reports whether a VOICE stream is audible: arriving, queued,
@@ -964,6 +1035,22 @@ func (p *PcmSpeaker) SetOutputChainActive(on bool) {
 // the device's bar for as long as a song plays.
 func (p *PcmSpeaker) VoiceAudible(hold time.Duration) bool {
 	return p.voice.playedWithin(time.Now(), hold)
+}
+
+// voicePlayout is how long a voice period is heard for after it is taken:
+// the ALSA ring ahead of it, then the period itself.
+const voicePlayout = time.Duration(alsaBufferFrames+periodSize) * time.Second / 48000
+
+// VoiceSoundingUntil is when the last voice period taken finishes coming out
+// of the speaker; zero if none has played. After a Flush nothing more is
+// taken, so it says when the reply really stopped, which VoiceAudible (still
+// true while a flushed stream waits for its EOS) cannot.
+func (p *PcmSpeaker) VoiceSoundingUntil() time.Time {
+	last := p.voice.lastTakeNs.Load()
+	if last == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, last).Add(voicePlayout)
 }
 
 // VoiceArriving reports whether a voice reply is still arriving on the wire —
@@ -999,6 +1086,18 @@ func (p *PcmSpeaker) EndStream() { p.voice.endStream() }
 // EndMusicStream marks the in-flight music stream complete (0x05).
 func (p *PcmSpeaker) EndMusicStream() { p.music.endStream() }
 
+// AbandonStreams ends both planes' streams when the data link that carried
+// them closes, since their EOS frames cannot arrive on the next one. A plane
+// already fed after linkLost belongs to the replacement and is kept.
+func (p *PcmSpeaker) AbandonStreams(linkLost time.Time) {
+	if p.voice.abandonIdleSince(linkLost) {
+		log.Println("[speaker] voice stream abandoned: its EOS was lost with the link")
+	}
+	if p.music.abandonIdleSince(linkLost) {
+		log.Println("[speaker] music stream abandoned: its EOS was lost with the link")
+	}
+}
+
 // Flush cuts a playing VOICE stream immediately (barge-in). Two parts:
 //  1. Drain the buffer — kills up to ~5.5s already queued on-device.
 //  2. Arm discarding (if a stream is mid-flight) — subsequent periods of
@@ -1022,18 +1121,46 @@ func (p *PcmSpeaker) Flush() { p.voice.flush() }
 // non-seekable stream that audio cannot be recovered.
 func (p *PcmSpeaker) FlushMusic() { p.music.flush() }
 
-// dacUnity is the DAC digital volume's 0dB index. The DAC stays here while
-// audio is live and the user's volume is applied to the PCM (swvolume.go);
-// Init and Close still use the control to mute around amp and stream
-// changes.
-const dacUnity = "127"
-
 // SetVolume sets the playback volume as a device level (0..127, 0.5dB per
 // step, unity at 127). Takes effect from the next period, ramped across it.
 func (p *PcmSpeaker) SetVolume(level int) {
-	g := VolumeGain(level)
-	p.vol.set(g)
-	p.chain.SetVolumeGain(g)
+	p.volLevel.Store(int64(level))
+	p.chain.SetVolume(level)
+	p.applyVolumeLaw()
+}
+
+func (p *PcmSpeaker) applyVolumeLaw() {
+	level := int(p.volLevel.Load())
+	if p.stock.Load() {
+		p.vol.set(StockVolumeGain(level, p.voicing.CeilingDb))
+	} else {
+		p.vol.set(VolumeGain(level))
+	}
+}
+
+// CueGain is the volume tone's gain for a level under the law in force.
+func (p *PcmSpeaker) CueGain(level int) float64 {
+	if p.stock.Load() {
+		return CueVolumeGain(level, p.voicing)
+	}
+	return CueVolumeGain(level, nil)
+}
+
+// refreshStock decides whether the stock-sound law and order are in force:
+// the chain runs on this device, its params ask for the profile, and no plug
+// is in the jack (chainForJack). Behind a controller that processes the
+// audio itself the old law stays, or stock's loudness would arrive without
+// the correction and compressors that make it safe. Call with jackMu held.
+func (p *PcmSpeaker) refreshStock() {
+	on := stockLawOn(p.voicing, p.chain.Active(), p.chainParams, p.jackKnown && p.jackInserted)
+	if p.stock.Swap(on) != on {
+		state := "off"
+		if on {
+			state = "on"
+		}
+		log.Printf("[speaker] stock-sound volume law %s", state)
+		p.applyVolumeLaw()
+	}
 }
 
 // SetResponseGainDB sets the gain applied only to the voice plane, before it is
@@ -1049,14 +1176,16 @@ func (p *PcmSpeaker) SetResponseGainDB(db float64) { p.response.setDB(db) }
 // amp-off after every server exit as a belt-and-braces for paths where
 // this never runs (SIGKILL, panic).
 func (p *PcmSpeaker) Close() {
-	if p.radar {
-		mixer.Set(radarMute, "On")
-	}
-	mixer.Set(mixer.PlaybackVolume, "0") // mute
-	mixer.Set(mixer.SpeakerAmp, "Off")   // amp off
+	p.out.holdMute()
+	p.applyJackWrites([]mixerWrite{p.out.mute()})
+	p.applyJackWrites(p.out.amp(false))
 	close(p.stopCh)
-	if p.radar {
-		<-p.deadCh
+	// Do not close the native PCM while its writer is still in it: the
+	// loop checks stopCh every period, so this is at most one write.
+	select {
+	case <-p.deadCh:
+	case <-time.After(2 * time.Second):
+		log.Println("PcmSpeaker: write loop did not stop; closing anyway")
 	}
 	p.session.Close()
 	log.Println("PcmSpeaker closed — output muted, amp off")

@@ -170,7 +170,7 @@ func TestBeamPassesItsLookDirection(t *testing.T) {
 // Before anything stands out the output is the centre mic, delayed by the
 // beams' latency, sample for sample.
 func TestNeutralIsTheDelayedCentreMic(t *testing.T) {
-	b := New()
+	b := New(biscuit)
 	enableWakeBeam(b)
 	rng := rand.New(rand.NewSource(1))
 	x := make([][]float64, NumMics)
@@ -196,7 +196,7 @@ func TestNeutralIsTheDelayedCentreMic(t *testing.T) {
 // path must be on a group from the end of the warm-up, move to a good one for
 // the talker within half a second, and keep to groups that are good for him.
 func TestGroupFollowsTheTalker(t *testing.T) {
-	b := New()
+	b := New(biscuit)
 	enableWakeBeam(b)
 	rng := rand.New(rand.NewSource(2))
 	interf := tones(rng, 150, 3900, 131, 120)
@@ -273,7 +273,7 @@ func beamSNRs(t *testing.T, talker []tone, azT float64, interf []tone, azI float
 	var out [fbfBeams]float64
 	for beam := range out {
 		run := func(src []tone, az float64) []float64 {
-			b := New()
+			b := New(biscuit)
 			enableWakeBeam(b)
 			b.fbf.cur, b.fbf.holdLeft = beam, 1<<30
 			x := zeros(NumMics, n)
@@ -295,7 +295,7 @@ func TestBeamImprovesSNRAboveOneAndAHalfKilohertz(t *testing.T) {
 	interf := tones(rng, 1650, 3750, 200, 200)
 	const n = 16000
 	run := func(src []tone, az float64) (beam, centre []float64) {
-		b := New()
+		b := New(biscuit)
 		enableWakeBeam(b)
 		b.fbf.cur = nearestBeam(45) // the beam facing the talker; selection is tested above
 		x := make([][]float64, NumMics)
@@ -321,7 +321,7 @@ func TestBeamImprovesSNRAboveOneAndAHalfKilohertz(t *testing.T) {
 // A locked turn parks the path on the centre mic and leaves the statistics
 // alone, and the result is not to be used.
 func TestLockedTurnIsNotTheBeam(t *testing.T) {
-	b := New()
+	b := New(biscuit)
 	enableWakeBeam(b)
 	if !b.WakeBeamUsable() {
 		t.Fatal("unlocked with the path on must be usable")
@@ -341,7 +341,7 @@ func TestLockedTurnIsNotTheBeam(t *testing.T) {
 }
 
 func TestOffByDefaultAndRefusesBadInput(t *testing.T) {
-	b := New()
+	b := New(biscuit)
 	if b.WakeBeamOn() || b.WakeBeam(s16(zeros(NumMics, 512))) != nil {
 		t.Fatal("the path must be off by default")
 	}
@@ -387,14 +387,14 @@ func TestSwitchingBeamDoesNotClick(t *testing.T) {
 	}
 	from, to := nearestBeam(235), nearestBeam(110) // a beam turned away, and one at the source
 	steady := func(beam int) float64 {
-		b := New()
+		b := New(biscuit)
 		enableWakeBeam(b)
 		b.fbf.cur, b.fbf.holdLeft = beam, 1<<30
 		return maxStep(samples(b.WakeBeam(in)))
 	}
 	base := math.Max(steady(from), steady(to))
 
-	sw := New()
+	sw := New(biscuit)
 	enableWakeBeam(sw)
 	sw.fbf.cur, sw.fbf.holdLeft = from, 1<<30
 	first := samples(sw.WakeBeam(slice(0, fbfBlock*3)))
@@ -406,7 +406,7 @@ func TestSwitchingBeamDoesNotClick(t *testing.T) {
 }
 
 func TestClippingIsCounted(t *testing.T) {
-	b := New()
+	b := New(biscuit)
 	enableWakeBeam(b)
 	x := make([][]float64, NumMics)
 	for ch := range x {
@@ -451,7 +451,7 @@ func zeros(mics, n int) [][]float64 {
 
 // BenchmarkWakeBeamBatchARA is the same with the interference canceller on.
 func BenchmarkWakeBeamBatchARA(b *testing.B) {
-	bf := New()
+	bf := New(biscuit)
 	enableWakeBeam(bf)
 	bf.SetWakeBeamAra(true)
 	rng := rand.New(rand.NewSource(5))
@@ -468,7 +468,7 @@ func BenchmarkWakeBeamBatchARA(b *testing.B) {
 // through all eight beams and the selection. The mic goroutine's deadline is
 // the batch length, and the A53 is several times slower than a desktop core.
 func BenchmarkWakeBeamBatch(b *testing.B) {
-	bf := New()
+	bf := New(biscuit)
 	enableWakeBeam(bf)
 	rng := rand.New(rand.NewSource(5))
 	x := zeros(NumMics, 2560)
@@ -514,7 +514,7 @@ func TestARAImprovesTheWakePathAgainstASteadyInterferer(t *testing.T) {
 	}
 
 	runScene := func(scene [][][]byte, ara bool) (power float64) {
-		b := New()
+		b := New(biscuit)
 		enableWakeBeam(b)
 		b.SetWakeBeamAra(ara)
 		var sum float64
@@ -559,7 +559,7 @@ func TestARAImprovesTheWakePathAgainstASteadyInterferer(t *testing.T) {
 func TestARAToggleDoesNotClick(t *testing.T) {
 	rng := rand.New(rand.NewSource(9))
 	src := denseTones(rng, 200, 3500, 100)
-	b := New()
+	b := New(biscuit)
 	enableWakeBeam(b)
 	b.fbf.cur, b.fbf.holdLeft = 2, 1<<30
 	const period = 2560
@@ -598,7 +598,7 @@ func TestABeamAndTheCentreMicLineUp(t *testing.T) {
 	look := newWakeBeam().sd.Azimuths[target]
 	for _, ara := range []bool{false, true} {
 		runOne := func(cur int) []float64 {
-			b := New()
+			b := New(biscuit)
 			enableWakeBeam(b)
 			b.SetWakeBeamAra(ara)
 			var out []float64
@@ -640,7 +640,7 @@ func lockForTurn(b *Beamformer, az float64) {
 func TestTurnStartsOnTheWakeGroupAndThenFollowsTheTalker(t *testing.T) {
 	rng := rand.New(rand.NewSource(11))
 	src := denseTones(rng, 200, 3500, 100)
-	b := New()
+	b := New(biscuit)
 	enableWakeBeam(b)
 	b.SetWakeBeamTurns(true)
 	lockForTurn(b, 55) // beam 6 looks at 55 degrees
@@ -657,7 +657,7 @@ func TestTurnStartsOnTheWakeGroupAndThenFollowsTheTalker(t *testing.T) {
 
 	// The lock's azimuth wins over a group the listening-time merger had
 	// already wandered to (toward a TV, say): the turn starts from the talker.
-	b2 := New()
+	b2 := New(biscuit)
 	enableWakeBeam(b2)
 	b2.SetWakeBeamTurns(true)
 	b2.fbf.cur = 1
@@ -671,7 +671,7 @@ func TestTurnStartsOnTheWakeGroupAndThenFollowsTheTalker(t *testing.T) {
 	// 100 (45 degrees from the wake) are each given a group with a beam looking
 	// his way: the turn does not freeze the selection on the wake's group. One
 	// on the far side, at 235, is not followed.
-	b3 := New()
+	b3 := New(biscuit)
 	enableWakeBeam(b3)
 	b3.SetWakeBeamTurns(true)
 	lockForTurn(b3, 55)
@@ -767,7 +767,7 @@ func TestTurnAudioBeatsTheCentreMic(t *testing.T) {
 	beam := nearestBeam(55)
 	az := newWakeBeam().sd.Azimuths[beam]
 	run := func(src []tone, from float64) (turn, centre []float64) {
-		b := New()
+		b := New(biscuit)
 		enableWakeBeam(b)
 		b.SetWakeBeamTurns(true)
 		lockForTurn(b, az)
@@ -811,7 +811,7 @@ func TestTurnHighPassMatchesStocks(t *testing.T) {
 // what was measured and is left alone.
 func TestHighPassIsOnlyHeardInATurn(t *testing.T) {
 	low := func(turn bool) float64 {
-		b := New()
+		b := New(biscuit)
 		enableWakeBeam(b)
 		if turn {
 			b.SetWakeBeamTurns(true)
@@ -879,7 +879,7 @@ func TestTheLowCutRemovesRumbleAndKeepsTheVoice(t *testing.T) {
 	level := func(hz float64) float64 {
 		// A path of its own per tone: after the 3s warm-up the selection would
 		// leave the centre mic.
-		b := New()
+		b := New(biscuit)
 		enableWakeBeam(b)
 		b.fbf.shapeOn = true
 		b.fbf.cur = fbfNeutral // the centre mic alone, so only the shaping acts
@@ -915,7 +915,7 @@ func TestWakeBeamDirectionFollowsTheTalker(t *testing.T) {
 		rng := rand.New(rand.NewSource(21))
 		interf := tones(rng, 150, 3900, 131, 120)
 		talker := tones(rng, 250, 3700, 83, 220)
-		b := New()
+		b := New(biscuit)
 		enableWakeBeam(b)
 		b.SetWakeBeamStock(stock)
 		burst := func(t int) float64 {
@@ -969,7 +969,7 @@ func TestWakeBeamDirectionFollowsTheTalker(t *testing.T) {
 
 // With the path off nothing is tracked, so the ring keeps the per-mic angle.
 func TestWakeBeamDirectionIsAbsentWhenOff(t *testing.T) {
-	b := New()
+	b := New(biscuit)
 	if b.WakeBeamTracking() {
 		t.Error("tracking with the wake beam off")
 	}

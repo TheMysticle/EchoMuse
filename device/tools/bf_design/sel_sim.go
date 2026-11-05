@@ -18,6 +18,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"github.com/wilbowes/EchoMuse/pkg/board"
 	"math"
 	"math/rand"
 	"sort"
@@ -57,7 +58,7 @@ type selRun struct {
 }
 
 func runWakePath(sig [][]float64, ara bool, pins []int) ([]float64, []int) {
-	b := beamformer.New()
+	b := beamformer.New(board.BiscuitMics())
 	b.SetWakeBeam(true)
 	b.SetWakeBeamAra(ara)
 	// -grp.mode / -ara.gate choose stock's rules for the whole run.
@@ -75,7 +76,7 @@ func runWakePath(sig [][]float64, ara bool, pins []int) ([]float64, []int) {
 	var out []float64
 	var idx []int
 	for s := 0; s+batch <= n; s += batch {
-		mics := make([][]byte, beamformer.NumMics)
+		mics := make([][]byte, board.BiscuitMics().NumMics())
 		for m := range mics {
 			mics[m] = s16(sig[m][s : s+batch])
 		}

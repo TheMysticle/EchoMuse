@@ -19,7 +19,7 @@ def test_music_and_animated_speech_lifecycle(fresh_db, monkeypatch, finish):
     async def main():
         d = device()
         import em_controller as C
-        d.capabilities = ['audio_mix', 'led_anim', 'output_chain', 'local_schedule']
+        d.capabilities = ['mic', 'audio_mix', 'led_anim', 'output_chain', 'local_schedule']
         d._set_speaking = MethodType(C.Device._set_speaking, d)
         d.workflow.config = {'mode': W.PIPECAT}
         d.workflow.status = 'connected'
@@ -80,7 +80,7 @@ def test_interruption_cancels_response_without_releasing_conversation_music(fres
     async def main():
         d = device()
         import em_controller as C
-        d.capabilities = ['audio_mix','output_chain']
+        d.capabilities = ['mic', 'audio_mix', 'output_chain']
         d.workflow.config={'mode':W.PIPECAT}
         d.workflow.status='connected'
         monkeypatch.setattr(em_player,'_sessions',{})

@@ -110,12 +110,12 @@ func TestPcmStateOfReadsTheStateAndNothingElse(t *testing.T) {
 	// indistinguishable from a stream that had not started. A click with
 	// nothing in the log is what that looks like from a listening seat.
 	cases := map[string]string{
-		"state: RUNNING\ndelay: 2048\n":  "RUNNING",
-		"state: XRUN\ndelay: 0\n":        "XRUN",
-		"state: SETUP\n":                 "SETUP",
-		"owner_pid: 123\ndelay: 10\n":    "",
-		"":                               "",
-		"state:XRUN":                     "XRUN",
+		"state: RUNNING\ndelay: 2048\n": "RUNNING",
+		"state: XRUN\ndelay: 0\n":       "XRUN",
+		"state: SETUP\n":                "SETUP",
+		"owner_pid: 123\ndelay: 10\n":   "",
+		"":                              "",
+		"state:XRUN":                    "XRUN",
 	}
 	for status, want := range cases {
 		if got := pcmStateOf(status); got != want {

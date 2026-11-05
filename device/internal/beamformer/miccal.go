@@ -45,7 +45,7 @@ var micCalDir = "/proc/idme"
 
 // loadMicCal returns one linear gain per channel, 1 where nothing usable was
 // found, and a one-line account of what it did.
-func loadMicCal(dir string) (gains [NumMics]float64, note string) {
+func loadMicCal(dir string) (gains [fbfMics]float64, note string) {
 	for i := range gains {
 		gains[i] = 1
 	}
@@ -53,14 +53,14 @@ func loadMicCal(dir string) (gains [NumMics]float64, note string) {
 	if mode == "off" {
 		return gains, "ignored (EM_MIC_CAL=off)"
 	}
-	var raw [NumMics]float64
+	var raw [fbfMics]float64
 	var missing []string
 	// firstProblem is why the first unusable value was unusable, so a set that
 	// is all "missing" says what was wrong with it: an unreadable file and an
 	// unparseable one look identical otherwise, and the second cost a
 	// calibration that read as "not available" on a unit that has it.
 	var firstProblem string
-	for ch := 0; ch < NumMics; ch++ {
+	for ch := 0; ch < fbfMics; ch++ {
 		b, err := os.ReadFile(filepath.Join(dir, fmt.Sprintf("miccal.%d", ch)))
 		if err != nil {
 			missing = append(missing, strconv.Itoa(ch))
@@ -83,10 +83,10 @@ func loadMicCal(dir string) (gains [NumMics]float64, note string) {
 		}
 		raw[ch] = float64(v)
 	}
-	if len(missing) == NumMics {
+	if len(missing) == fbfMics {
 		return gains, "not available, mics left uncalibrated (" + firstProblem + ")"
 	}
-	var g [NumMics]float64
+	var g [fbfMics]float64
 	for ch := range g {
 		if raw[ch] == 0 {
 			g[ch] = 1
@@ -125,7 +125,7 @@ func formatDB(g []float64) string {
 // the right correction is the one that flattens the levels; it is logged, not
 // acted on, because a TV on one side flattens nothing and must not choose.
 type micCheck struct {
-	sum  [NumMics]float64
+	sum  [fbfMics]float64
 	n    int
 	done bool
 }
@@ -139,7 +139,7 @@ func (c *micCheck) block(samples int) {
 	}
 }
 
-func (c *micCheck) report(chans []int, gains [NumMics]float64) {
+func (c *micCheck) report(chans []int, gains [fbfMics]float64) {
 	spread := func(f func(ch int) float64) float64 {
 		lo, hi := math.Inf(1), math.Inf(-1)
 		for _, ch := range chans {

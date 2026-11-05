@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/wilbowes/EchoMuse/internal/bindings/speaker"
+	"github.com/wilbowes/EchoMuse/internal/bluetooth"
 	"github.com/wilbowes/EchoMuse/internal/client"
 	"github.com/wilbowes/EchoMuse/internal/config"
 	"github.com/wilbowes/EchoMuse/internal/firewall"
@@ -27,9 +28,10 @@ import (
 const sendspinStore = "/data/local/etc/echomuse/sendspin.json"
 
 var ss struct {
-	mu   sync.Mutex
-	c    *sendspin.Client
-	name string
+	mu    sync.Mutex
+	c     *sendspin.Client
+	name  string
+	proxy bool // the BLE proxy is on, so the player asks for headroom
 }
 
 func sendspinPlayer() *sendspin.Client {
@@ -57,11 +59,12 @@ type deviceVolume interface {
 
 const volumeMax = 127
 
-// On Radar the server's 0-100 is stock's own volume value, read through
-// stock's mixer table (outchain.StockVolumeLevel), exactly as the
-// controller reads HA's slider there. A straight proportion played Music
-// Assistant's 30 at -44.5dB where stock's 30 is -35dB.
-func stockVolumeLaw() bool { return board.IDOf(board.Current()) == "radar" }
+// On a board that plays its stock tuning (Radar) the server's 0-100 is
+// stock's own volume value, read through stock's mixer table
+// (outchain.StockVolumeLevel), exactly as the controller reads HA's slider
+// there. A straight proportion played Music Assistant's 30 at -44.5dB where
+// stock's 30 is -35dB.
+func stockVolumeLaw() bool { return board.CurrentLayout().Speaker.StockTuning != "" }
 
 func levelToPct(level int) int {
 	if stockVolumeLaw() {
@@ -94,6 +97,24 @@ func sendspinVolumeChanged(level int) {
 // not a change to pass round a group, where a stale one would start the Echoes
 // correcting each other. Only this Echo's own engine writes it.
 var volumeFromSpotify atomic.Bool
+
+// sendspinProxy follows the BLE proxy switch: while it is on, the player
+// declares the buffer a full scan burst needs (bluetooth.MusicHeadroom).
+func sendspinProxy(on bool) {
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	ss.proxy = on
+	if ss.c != nil {
+		ss.c.SetMinBuffer(sendspinBuffer(on))
+	}
+}
+
+func sendspinBuffer(proxy bool) time.Duration {
+	if proxy {
+		return bluetooth.MusicHeadroom
+	}
+	return 0
+}
 
 // sendspinLinkDown stops the player when the controller link goes: EchoMuse
 // is one system, and an Echo whose ring says it is disconnected should not
@@ -174,6 +195,7 @@ func applySendspinConfig(spk *speaker.PcmSpeaker, cc *client.ControlClient, vol 
 				vol.SetVolumeFrom(level, "sendspin", level != 0 && level != vol.VolumeLevel())
 			})
 			c.SetVolume(levelToPct(vol.VolumeLevel()))
+			c.SetMinBuffer(sendspinBuffer(ss.proxy))
 			// Open before Start advertises: Music Assistant dials when the
 			// record appears and may not retry a timeout. Logged, not
 			// fatal: FireOS has no filter to open.

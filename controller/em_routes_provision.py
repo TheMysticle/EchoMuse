@@ -21,6 +21,7 @@ from pathlib import Path
 from aiohttp import web
 
 import em_auth as auth
+import em_chunked
 import em_db as db
 import em_emos_build
 import em_emos_ota
@@ -45,6 +46,7 @@ def register(app: web.Application) -> None:
     app.router.add_post("/api/provision/diagnostics",     _post_provision_diagnostics)
     app.router.add_get("/api/provision/emos_init",     _get_provision_emos_init)
     app.router.add_post("/api/provision/emos_image",   _post_provision_emos_image)
+    app.router.add_post("/api/provision/upload_chunk", _post_provision_upload_chunk)
 
 
 def _read_payload(name: str) -> str:
@@ -342,9 +344,77 @@ async def _get_provision_emos_init(request: web.Request) -> web.Response:
 # tests/test_emos_image_fields.py compares this against what dashboard.jsx
 # appends to the same POST, so the next field to be added has to be read here
 # or fail CI.
-EMOS_IMAGE_FIELDS = ("reference", "init", "payload", "board",
-                     "reference_md5", "version", "use_latest_init",
-                     "system_part")
+EMOS_IMAGE_FIELDS = ("reference", "init", "reference_md5", "version",
+                     "use_latest_init", "system_part", "board",
+                     "reference_upload", "init_upload")
+
+# Uploads sent in pieces by the wizard, claimed by the build that names them.
+_chunks = em_chunked.ChunkStore()
+
+
+@auth.require_admin
+async def _post_provision_upload_chunk(request: web.Request) -> web.Response:
+    """
+    POST /api/provision/upload_chunk?id=&offset=&total= (raw body)
+
+    One piece of an upload too large to cross a proxy in one request (#800).
+    """
+    q = request.query
+    try:
+        offset, total = int(q.get("offset", "")), int(q.get("total", ""))
+    except ValueError:
+        return em_http.error("bad_chunk", "offset and total must be integers", 400)
+    if (request.content_length or 0) > em_chunked.CHUNK_MAX:
+        return em_http.error("bad_chunk", f"a chunk may be at most "
+                             f"{em_chunked.CHUNK_MAX} bytes", 413)
+    data = await request.read()
+    try:
+        held = _chunks.put(q.get("id", ""), offset, total, data)
+    except em_chunked.ChunkError as e:
+        return em_http.error("bad_chunk", str(e), 400)
+    return web.json_response({"received": held})
+
+
+async def _read_emos_image_parts(request: web.Request) -> dict:
+    """The build POST's multipart fields, with named uploads claimed."""
+    reader = await request.multipart()
+    parts = {}
+    while True:
+        field = await reader.next()
+        if field is None:
+            break
+        if field.name not in EMOS_IMAGE_FIELDS:
+            # Loud, because the silent version of this cost every v2
+            # device its /system stamp.
+            log.warning(f"[api] emOS image: ignoring multipart field "
+                        f"{field.name!r}, which this endpoint does not read")
+            continue
+        if field.name in ("reference", "init"):
+            parts[field.name] = await field.read()
+        elif field.name in ("reference_upload", "init_upload"):
+            upload_id = (await field.read()).decode(errors="replace")[:64].strip()
+            # Absent or incomplete reads as not sent, which the checks below
+            # refuse by name.
+            data = _chunks.take(upload_id)
+            if data is not None:
+                parts[field.name.removesuffix("_upload")] = data
+        elif field.name == "system_part":
+            parts["system_part"] = (await field.read()).decode(
+                errors="replace")[:8]
+        elif field.name == "board":
+            # The device's own identity (_echoBoard); radar's kernel is patched
+            # to keep the ramdisk. Absent from a wizard older than radar.
+            parts["board"] = (await field.read()).decode(
+                errors="replace")[:32].strip()
+        elif field.name == "reference_md5":
+            parts["reference_md5"] = (await field.read()).decode(
+                errors="replace")[:64].strip().lower()
+        elif field.name == "version":
+            parts["version"] = (await field.read()).decode(errors="replace")[:64]
+        elif field.name == "use_latest_init":
+            parts["use_latest_init"] = (await field.read()).decode(
+                errors="replace")[:8].strip() not in ("", "0", "false")
+    return parts
 
 
 @auth.require_admin
@@ -374,62 +444,19 @@ async def _post_provision_emos_image(request: web.Request) -> web.Response:
     An explicit `init` part still wins, for a hand-built binary.
     """
     try:
-        reader = await request.multipart()
-        parts = {}
-        while True:
-            field = await reader.next()
-            if field is None:
-                break
-            if field.name not in EMOS_IMAGE_FIELDS:
-                # Loud, because the silent version of this cost every v2
-                # device its /system stamp.
-                log.warning(f"[api] emOS image: ignoring multipart field "
-                            f"{field.name!r}, which this endpoint does not "
-                            f"read")
-                continue
-            if field.name in ("reference", "init", "payload"):
-                parts[field.name] = await field.read()
-            elif field.name == "board":
-                parts["board"] = (await field.read()).decode(
-                    errors="replace")[:32].strip()
-            elif field.name == "system_part":
-                parts["system_part"] = (await field.read()).decode(
-                    errors="replace")[:8]
-            elif field.name == "reference_md5":
-                parts["reference_md5"] = (await field.read()).decode(
-                    errors="replace")[:64].strip().lower()
-            elif field.name == "version":
-                parts["version"] = (await field.read()).decode(errors="replace")[:64]
-            elif field.name == "use_latest_init":
-                parts["use_latest_init"] = (await field.read()).decode(
-                    errors="replace")[:8].strip() not in ("", "0", "false")
-
+        parts = await _read_emos_image_parts(request)
         reference = parts.get("reference")
         init_bin = parts.get("init")
-        payload = parts.get("payload")
-        board_id = parts.get("board") or None
         if not reference:
             return em_http.error("invalid_upload",
                           "Expected multipart field 'reference' — the boot "
-                          "image read off the device", 400)
-        if not init_bin and not payload and not parts.get("use_latest_init"):
+                          "image read off the device — or a complete "
+                          "'reference_upload'", 400)
+        if not init_bin and not parts.get("use_latest_init"):
             return em_http.error("invalid_upload",
                           "Expected multipart field 'init' — the emOS init "
-                          "binary — or 'payload' — an emos-payload.zip — or "
-                          "'use_latest_init' to resolve it here",
+                          "binary — or 'use_latest_init' to resolve it here",
                           400)
-
-        # An uploaded payload bundle (init + /sbin tools in one zip) wins over
-        # `use_latest_init` so a developer testing a dev build against a
-        # specific bundle is not silently overridden by the latest release.
-        # Handled before md5 because the bundle's files are not the reference
-        # and not what md5 checks.
-        # The board the wizard identified the device as. Defaults to "biscuit"
-        # when absent so an older wizard keeps working — the packer falls back
-        # the same way (BOARD_DEFAULT) and only diverges from there on an
-        # explicit stamp. An explicit value WINS over both, because the wizard
-        # asks the device and the device is the only authority.
-        board = board_id or "biscuit"
 
         # The escrow arrived intact, checked before anything reads it.
         #
@@ -455,45 +482,9 @@ async def _post_provision_emos_image(request: web.Request) -> web.Response:
                     f"{want_md5} off the device and {got_md5} arrived. "
                     f"Nothing has been built. Re-run the escrow step.", 400)
 
-        arch = em_emos_build.reference_kernel_arch(reference)
-        try:
-            em_emos_build.init_asset_name(arch, board)
-        except em_emos_build.BuildError as exc:
-            return em_http.error("unsupported_board", str(exc), 400)
-        detected = em_emos_build.reference_board_id(reference)
-        # Radar's stock DTB reports only the SoC (mt8163), so its stock
-        # identity must come from the wizard, not a guessed DTB board name.
-        if detected in ("biscuit", "radar") and detected != board:
-            return em_http.error(
-                "board_mismatch",
-                "Stock boot image and selected board disagree", 400)
-
         version = parts.get("version") or "0.1"
         # A hand-picked init carries no WiFi tools, matching emos/build.sh.
         sbin = {}
-
-        if payload:
-            try:
-                bundle = await asyncio.get_event_loop().run_in_executor(
-                    None, em_emos_build.read_payload_bundle, payload)
-            except em_emos_build.BuildError as e:
-                return em_http.error(
-                    "invalid_payload", f"The uploaded payload is not "
-                    f"usable: {e}", 400)
-            if not arch:
-                return em_http.error(
-                    "unknown_reference_arch",
-                    "Could not read the kernel architecture out of that boot "
-                    "image, so there is no way to tell which init it needs. "
-                    "Check the escrow is the whole boot image, or build an init "
-                    "from emos/ with build.sh and select it by hand.", 400)
-            init_bin, sbin, bundle_version, err = em_emos_ota.select_payload(
-                bundle["files"], arch, bundle.get("version") or "0.1", board)
-            if err is not None:
-                return err
-            version = parts.get("version") or bundle_version
-            log.info(f"[api] emOS image: reference kernel is {arch}, using "
-                     f"uploaded bundle for {', '.join(sorted(sbin)) or 'no /sbin'}")
 
         # Which FireOS userspace this reference was read beside, stamped onto
         # the image so emOS mounts that one rather than assuming. The WIZARD
@@ -517,7 +508,8 @@ async def _post_provision_emos_image(request: web.Request) -> web.Response:
 
         # Also keeps ~3.5MB out of a request that has already hit HA ingress's
         # 413 once (2026-09-06).
-        if parts.get("use_latest_init") and not payload:
+        if parts.get("use_latest_init"):
+            arch = em_emos_build.reference_kernel_arch(reference)
             if not arch:
                 # Refused, not defaulted: an init chosen by guess flashes fine
                 # and then produces no output at all.
@@ -527,12 +519,12 @@ async def _post_provision_emos_image(request: web.Request) -> web.Response:
                     "image, so there is no way to tell which init it needs. "
                     "Check the escrow is the whole boot image, or build an init "
                     "from emos/ with build.sh and select it by hand.", 400)
-            init_bin, sbin, init_version, err = await em_emos_ota.fetch_payload(arch, board)
+            init_bin, sbin, init_version, err = await em_emos_ota.fetch_payload(arch, parts.get("board"))
             if err is not None:
                 return err
             version = parts.get("version") or init_version
             log.info(f"[api] emOS image: reference kernel is {arch}, using "
-                     f"{em_emos_build.init_asset_name(arch, board)} from {init_version}"
+                     f"{em_emos_ota.INIT_ASSETS[arch]} from {init_version}"
                      + (f" plus {', '.join(sorted(sbin))}" if sbin else ""))
 
         loop = asyncio.get_event_loop()
@@ -541,7 +533,7 @@ async def _post_provision_emos_image(request: web.Request) -> web.Response:
         # through this process while somebody provisions a new one.
         info = await loop.run_in_executor(
             None, em_emos_build.build_emos_image, reference, init_bin, version,
-            "", sbin, system_part, board)
+            "", sbin, system_part, parts.get("board") or None)
 
         log.info(f"[api] emOS image built"
                  # Not "(older wizard)", which is one of three ways to get

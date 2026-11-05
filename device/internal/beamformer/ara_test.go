@@ -381,7 +381,7 @@ func TestResetForgetsWhatWasLearnt(t *testing.T) {
 // With wakeBeamStock on, the speaker starting or stopping resets the canceller;
 // with it off the state is only recorded.
 func TestPlaybackChangesResetTheCancellerOnlyInStockMode(t *testing.T) {
-	b := New()
+	b := New(biscuit)
 	enableWakeBeam(b)
 	b.fbf.ara.trained[0] = 5
 	b.SetPlaying(true)

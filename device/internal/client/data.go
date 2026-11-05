@@ -18,6 +18,7 @@ import (
 	"github.com/wilbowes/EchoMuse/internal/processor"
 	"github.com/wilbowes/EchoMuse/internal/wakeword/ort"
 	"github.com/wilbowes/EchoMuse/internal/wakeword/shadow"
+	"github.com/wilbowes/EchoMuse/pkg/board"
 	"github.com/wilbowes/EchoMuse/pkg/mic"
 	"github.com/wilbowes/EchoMuse/pkg/speaker"
 )
@@ -281,6 +282,10 @@ type DataClient struct {
 	// that wires ch8 differently, and cancelling the near-end against
 	// another mic is far worse than not cancelling at all. A board that
 	// fails either test simply keeps the software tap.
+	// makeupClipped counts samples clamped giving aecHeadroom back after
+	// the canceller; reported with the extraction's own clipping.
+	makeupClipped uint64
+
 	hwRefSeenSilent bool
 	hwRefSeenAudio  bool
 	hwRefOn         bool
@@ -323,7 +328,7 @@ func NewDataClient(deviceID string, microphone mic.Subscribable, spk speaker.Spe
 		mic:        microphone,
 		spk:        spk,
 		readyCh:    make(chan string, 1),
-		beam:       beamformer.New(),
+		beam:       beamformer.New(board.CurrentLayout().Mics),
 		proc:       processor.New(),
 		aec:        canceller,
 		listenGate: listen.New(0, 0, 0),
@@ -372,6 +377,27 @@ func (d *DataClient) SetAecRefSource(v string) {
 		return
 	}
 	log.Printf("[aec] far-end reference source: %s", v)
+}
+
+// aecHeadroom is the gain (6dB) the mics are extracted without while the
+// canceller is armed, and applyMakeup gives back after it.
+const aecHeadroom = 2.0
+
+// applyMakeup scales S16LE mono in place by g, clamping, and returns how
+// many samples it clamped.
+func applyMakeup(b []byte, g float64) (clipped uint64) {
+	for i := 0; i+1 < len(b); i += 2 {
+		v := math.Round(float64(int16(binary.LittleEndian.Uint16(b[i:]))) * g)
+		if v > 32767 {
+			v = 32767
+			clipped++
+		} else if v < -32768 {
+			v = -32768
+			clipped++
+		}
+		binary.LittleEndian.PutUint16(b[i:], uint16(int16(v)))
+	}
+	return clipped
 }
 
 // noteEchoRef feeds one period of the candidate reference channel to the
@@ -881,6 +907,12 @@ func (d *DataClient) connect(ctx context.Context, baseURL string) error {
 		if owned {
 			d.CloseAnyListen(listen.ReasonLink)
 		}
+		// The same holds for playback: a stream's EOS cannot arrive on the
+		// next connection, and one left open holds the wake bar down and
+		// makes a later stop swallow the next stream (2026-10-23).
+		if d.spk != nil {
+			d.spk.AbandonStreams(time.Now())
+		}
 
 		d.connMu.Lock()
 		if d.conn == conn {
@@ -1285,8 +1317,20 @@ func (d *DataClient) streamMic(conn *websocket.Conn, stopCh <-chan struct{}, loc
 			d.beam.SetWakeBeamStock(beamOn)
 			d.beam.SetPlaying(d.playing != nil && d.playing())
 			epOn := snap.WakeEndpoint != nil && *snap.WakeEndpoint
-			mono, angle := d.beam.Process(raw, beamAngle, gainLin)
-			clipped := d.beam.ClippedSamples()
+			// With the canceller armed the mics are extracted with
+			// aecHeadroom in hand and it is given back after cancellation:
+			// at 24dB the echo of loud playback clipped the S16 extraction
+			// (943 samples in a minute on VVV, 2026-10-18), clipping is
+			// distortion no canceller removes, and barge-in fell from 4/5 to
+			// 3/5. After cancellation the echo is 15-25dB down, so the
+			// make-up cannot clip it; the overall gain is micGainDb either
+			// way, so nothing downstream sees a change.
+			aecArmed := d.aec.Enabled()
+			extractGain := gainLin
+			if aecArmed {
+				extractGain = gainLin / aecHeadroom
+			}
+			mono, angle := d.beam.Process(raw, beamAngle, extractGain)
 
 			// AEC — subtract the speaker's own output before anything
 			// measures or gates the signal. No-op while aecEnabled=false.
@@ -1317,7 +1361,7 @@ func (d *DataClient) streamMic(conn *websocket.Conn, stopCh <-chan struct{}, loc
 				// the echo path differs per microphone and a turn locks to
 				// a different one each time (#814).
 				sel := d.beam.OutputChannel(beamAngle)
-				mics := d.beam.MicChannels(raw, gainLin, sel, mono)
+				mics := d.beam.MicChannels(raw, extractGain, sel, mono)
 				var all [][]byte
 				if wakeBeam {
 					all = d.aec.CancelMicsWithRef(mics, sel, echoRef)
@@ -1337,12 +1381,16 @@ func (d *DataClient) streamMic(conn *websocket.Conn, stopCh <-chan struct{}, loc
 				}
 			} else {
 				if wakeBeam {
-					if out := d.beam.WakeBeam(d.beam.MicChannels(raw, gainLin, -1, nil)); out != nil && d.beam.WakeBeamUsable() {
+					if out := d.beam.WakeBeam(d.beam.MicChannels(raw, extractGain, -1, nil)); out != nil && d.beam.WakeBeamUsable() {
 						mono = out
 					}
 				}
 				mono = d.aec.Process(mono)
 			}
+			if aecArmed {
+				d.makeupClipped += applyMakeup(mono, aecHeadroom)
+			}
+			clipped := d.beam.ClippedSamples() + d.makeupClipped
 
 			// Keep what the wake path did with this batch, so a wake
 			// crossing can say what it heard through (WakeBeamAt).

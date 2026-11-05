@@ -33,7 +33,7 @@ def test_private_wake_gates_real_data_and_preserves_chosen_detector(fresh_db,mon
     async def main():
         import em_controller as C
         d=device()
-        d.capabilities=['oww_local_only']
+        d.capabilities=['mic', 'oww_local_only']
         d.oww_on_device='on'
         d.listen_reported='local'
         d.data_ws=None

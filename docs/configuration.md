@@ -83,18 +83,17 @@ the fleet defaults will not affect it. The save succeeds either way, so the
 symptom is a control that appears to do nothing at all.
 
 ### Equalizer (8 faders + presets)
-Shapes the tone of the voice responses, like the EQ on a stereo. The Dot's
-little speaker is boomy and dull by default.
+Shapes the tone of everything the speaker plays. On firmware with the new
+sound, the Echo already corrects its own speaker, so **Flat** is the
+recommended setting and the presets lean it one way:
 
-- **Flat** — no shaping.
-- **Clarity** — boosts the upper-mid frequencies where speech intelligibility
-  lives. Good default for voice.
-- **Warmth** — gentle low-mid lift, softer top. Nicer for music-ish content.
+- **Flat**: the Echo's own voicing, no extra shaping.
+- **Warm**: more body, softer top.
+- **Clear**: leaner low end, more presence.
 - Drag any fader for a custom curve.
 
-### Speech boost
-An extra presence bump for spoken responses. Try it if responses sound
-muffled from across the room.
+Upgrading resets the old **Speech** and **Music** presets to Flat, because
+on the new sound they would boost the bass twice. A custom curve is kept.
 
 ### Response level
 Sets spoken responses relative to the device's normal volume: **Low** keeps
@@ -913,10 +912,11 @@ These are set once, on the server, and need a controller restart to change:
 | `DB_PATH` | Where the database is kept. The device certificates and recordings are stored beside it. The published image defaults to `/app/data/echomuse.db`, the folder the compose files mount, so it survives an update with or without a `.env`. Bare-metal installs should set it. |
 | `OWW_MODEL` / `OWW_THRESHOLD` | Startup defaults for wake word/sensitivity — the dashboard values override these. |
 | `DEVICE_APPROVAL` | `strict` (you approve every new device — recommended) or `auto`. |
-| `SERVER_TLS_PORT` | Encrypted device link (wss) port — default 8770, `0` disables. Don't set `0` once Echoes are paired: an Echo holding credentials will not fall back to the plain link. Devices switch to it automatically once they hold credentials: from the wizard, from approving a new device, or from pairing (hold the Echo's action button 5 s, then **Approve pairing**). |
+| `SERVER_TLS_PORT` | Encrypted device link (wss) port — default 8770, `0` disables. Don't set `0` once Echoes are paired: an Echo holding credentials will not fall back to the plain link. Devices switch to it automatically once they hold credentials: from the wizard, from approving a new device, or from pairing (hold the Echo's action button 7 s, or 5 s on firmware before v2.19.0, then **Approve pairing**). |
 | `REQUIRE_DEVICE_TLS` | Set to `1` **only after every device shows "wss (TLS)"** on its Status tab — from then on the controller rejects unencrypted or tokenless device connections. |
 | `EM_EXTRA_CA_CERT` | Path to a PEM CA certificate to trust — needed if Home Assistant, or a media server you stream from, is served over HTTPS with your own internal certificate authority. See below. |
 | `EM_TTS_WAIT_TIMEOUT` | Seconds to wait for Home Assistant's reply to begin before giving up on the turn — default 30, at most 120. Raise it if your conversation agent uses tools and needs longer. The add-on has the same setting as **Reply wait (seconds)**. |
+| `EM_OWW_RUNTIME_DIR` | Run from source only: the folder holding the ARM ONNX Runtime and models the controller installs on each Echo for on-device wake word. The image keeps them in `/app/models/oww_runtime`, which a source install does not have. Not used by the image or the add-on. |
 
 See `.env.example` for the complete list with comments.
 

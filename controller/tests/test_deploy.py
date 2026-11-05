@@ -1292,6 +1292,96 @@ def test_addon_options_are_wired_end_to_end():
         f"{sorted(mapped - options)}")
 
 
+# The .env.example variables that deliberately have no add-on option, each
+# carrying its reason. A bare list of names would rot the same way the option
+# table did — a variable nobody can account for looks exactly like one nobody
+# wanted, and the audit runs once.
+FIXED_IN_THE_ADDON = {
+    # config.yaml's `environment:` block pins this to /data/…, the add-on's own
+    # persistent storage. A user option could point the database anywhere,
+    # including somewhere that does not survive a restart.
+    "DB_PATH": "pinned to /data in config.yaml's environment: block",
+    # Must equal config.yaml's ingress_port (8768): Supervisor proxies the
+    # dashboard to that port, so any other value leaves ingress with nothing
+    # to forward to.
+    "API_PORT": "must equal config.yaml's ingress_port or ingress breaks",
+}
+
+
+def _env_example_vars() -> set[str]:
+    """
+    Every variable .env.example actually DEFINES. The file carries commented
+    examples too (`EM_EXTRA_CA_CERT=/certs/internal-ca.crt` in a block
+    describing docker-compose), and a commented line is not a variable the
+    controller offers.
+    """
+    defined = set()
+    for line in (CONTROLLER / ".env.example").read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        name, sep, _value = line.partition("=")
+        if sep and re.fullmatch(r"[A-Z][A-Z0-9_]*", name):
+            defined.add(name)
+    return defined
+
+
+def test_every_env_var_reaches_the_addon_or_states_why_not():
+    """
+    The other half of test_addon_options_are_wired_end_to_end, which starts
+    from config.yaml and so cannot see a variable that never became an option.
+    This starts from .env.example — the list of settings a container user can
+    change — and demands each one be reachable under the add-on or carry a
+    stated reason it is fixed there.
+
+    The audit this replaces was a reading of CLAUDE.md, and it is exactly the
+    kind of check that rots: a missing option is invisible, because a setting
+    nobody wanted and a setting nobody added look the same from the outside.
+    SERVER_TLS_PORT sat that way for the life of the add-on: 8770 is the wss
+    port, it is advertised to devices, and no add-on user could move it or see
+    it was taken (#163).
+    """
+    start = (CONTROLLER / "em_start.py").read_text()
+    block = re.search(r"OPTION_ENV_VARS\s*=\s*\{(.*?)\}", start, re.S)
+    assert block, "em_start.py no longer defines OPTION_ENV_VARS"
+    pairs = dict(re.findall(r'"(\w+)"\s*:\s*"(\w+)"', block.group(1)))
+
+    # The inversion, and the reason this is not a one-liner: .env.example
+    # names the ENV VAR while OPTION_ENV_VARS maps OPTION -> ENV VAR, so it is
+    # the VALUES that answer "can an add-on user set this". Reading the keys
+    # instead would see `server_tls_port`, report SERVER_TLS_PORT as
+    # unreachable, and be silenced by listing it as fixed — the vacuous pass.
+    reachable = set(pairs.values())
+    defined = _env_example_vars()
+
+    unreachable = defined - reachable - set(FIXED_IN_THE_ADDON)
+    assert not unreachable, (
+        f".env.example variables with no add-on option: "
+        f"{sorted(unreachable)} — settable on the standalone container and "
+        f"unreachable under the add-on, which is the divergence #163 was "
+        f"about. Add an option (options + schema + translations/en.yaml + "
+        f"em_start.py's OPTION_ENV_VARS) or a reason in FIXED_IN_THE_ADDON.")
+
+    # The other direction, and the one OPTION_ENV_VARS' own keys cannot catch:
+    # an option mapped to an env var em_controller never reads is accepted,
+    # stored and displayed, and does nothing. That is the same quiet failure
+    # as a missing option, from the far end of the table.
+    unreadable = reachable - defined
+    assert not unreadable, (
+        f"OPTION_ENV_VARS values that .env.example does not define: "
+        f"{sorted(unreadable)} — em_controller.py reads no such env var, so "
+        f"the option would be stored and ignored")
+
+    for name, reason in FIXED_IN_THE_ADDON.items():
+        assert len(reason.split()) >= 4, (
+            f"FIXED_IN_THE_ADDON[{name!r}] needs a reason a reader can act "
+            f"on, not a placeholder")
+        assert name in defined, (
+            f"FIXED_IN_THE_ADDON lists {name}, which .env.example no longer "
+            f"defines — either the exclusion is stale or the file changed and "
+            f"this one needs re-deciding")
+
+
 def test_debug_env_var_is_not_truthy_for_zero():
     """
     em_start.py renders a false bool option as the STRING "0", and every
@@ -2236,7 +2326,7 @@ def test_the_reconcile_runs_the_three_payloads_sequentially():
     All three talk to one device over one shell plane. Gathering them contends
     for a single session for no gain — nothing is on a critical path here.
     """
-    fn = _strip_prose(_sources.def_source("em_reconcile.on_connect"))
+    fn = _strip_prose(_sources.def_source("em_reconcile._reconcile_payloads"))
 
     for step in ("em_oww_sync.reconcile", "em_payloads.sync_start_script", "em_payloads.sync_debloat"):
         assert step in fn, f"{step} must run on connect"
@@ -2251,7 +2341,7 @@ def test_one_failing_payload_does_not_skip_the_others():
     wake word models, so each step is caught individually rather than the loop
     being wrapped in one try.
     """
-    fn = _strip_prose(_sources.def_source("em_reconcile.on_connect"))
+    fn = _strip_prose(_sources.def_source("em_reconcile._reconcile_payloads"))
     body = fn[fn.index("for name"):]
     assert "try:" in body and "except Exception" in body, (
         "each step must be caught inside the loop, not around it"
@@ -2721,7 +2811,10 @@ def test_the_emos_and_firmware_release_namespaces_cannot_select_each_other():
         "the firmware poll must select on a v* tag AND a server asset"
 
     emos = _strip_prose(_sources.def_source("fetch_emos"))
-    assert 'startswith("emos-v")' in emos and '"init"' in emos, \
+    assert "choose_release(" in emos, \
+        "the emOS poll must select through em_emos_update.choose_release"
+    chooser = _strip_prose(_sources.def_source("choose_release"))
+    assert 'startswith("emos-v")' in chooser and '"init"' in chooser, \
         "the emOS poll must select on an emos-v* tag AND an init asset"
 
     workflow = (CONTROLLER.parent / ".github" / "workflows" / "emos-release.yml").read_text()
@@ -2813,10 +2906,10 @@ def test_the_emos_release_workflow_asserts_what_it_publishes():
     assert "32-bit LSB executable, ARM" in wf, \
         "the release must assert init32 is a 32-bit ARM binary"
     assert "statically linked" in wf, "the release must assert the inits are static"
-    # All four off-target checks run against the source being published. Each
-    # one drives a parser or an invariant whose failure is silent on hardware.
+    # The off-target checks run against the source being published. Each one
+    # drives a parser or an invariant whose failure is silent on hardware.
     for check in ("ringsim --check", "pwcheck", "tmoutcheck", "wpacheck",
-                  "cmdlinecheck"):
+                  "cmdlinecheck", "dnscheck"):
         assert check in wf, f"the release must run {check}"
     # The bundle is what carries everything but the compat init, so a release
     # that skipped building it would publish an empty-handed payload.
@@ -3148,7 +3241,7 @@ def test_asset_installs_queue_behind_the_ota_lock():
 
 
 def test_spotify_engine_reconciles_on_connect_for_emos_only():
-    rec = _sources.def_source("em_reconcile.on_connect")
+    rec = _sources.def_source("em_reconcile._reconcile_payloads")
     branch = rec[rec.index("if live.android_userspace:\n        steps.append"):]
     assert "sync_engine" in branch.split("else:")[1], (
         "the Spotify engine is emOS-only: it must sit in the else of the "

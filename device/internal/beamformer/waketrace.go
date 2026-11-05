@@ -105,7 +105,7 @@ func (i WakeBeamInfo) String() string {
 	if i.To < 0 {
 		// The centre mic is the whole output: the superdirective weighting is
 		// not in the path at all.
-		return fmt.Sprintf("beam=%s in=ch%d sd=out cal=%s ara=%s", state, centreCh, cal, ara)
+		return fmt.Sprintf("beam=%s in=ch%d sd=out cal=%s ara=%s", state, fbfCentreCh, cal, ara)
 	}
 	chans := make([]string, len(i.Chans))
 	for k, ch := range i.Chans {

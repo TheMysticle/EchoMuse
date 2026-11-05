@@ -117,6 +117,13 @@ def resolve(configured: str, capabilities, reported: str | None,
     not sent one on this connection.
     """
     caps = set(capabilities or ())
+    if caps and "mic" not in caps:
+        # Every firmware has announced "mic"; one that does not has no
+        # microphone it can read (a board whose capture is not supported
+        # yet). It neither streams nor listens in any mode, and saying it
+        # streams because the mode is "off" would be untrue.
+        return ListenView(STATE_DEGRADED, False,
+                          reported_reason or "no microphone it can read — speaker only")
     if configured == "off":
         return ListenView(STATE_CONTROLLER, True)
     if configured == "shadow":
@@ -183,8 +190,8 @@ def tail_discard(is_wakeword: bool, on_session: bool, frames: int) -> int:
     """Frames to drop from the start of a turn as the wake word's tail.
 
     A stream the controller scored still holds the end of the word. A session
-    does not: the Echo starts it after the frame that crossed, so dropping
-    more removed the first word of a command run on from the wake word.
+    is trimmed on the Echo (listen.WakeLead), so dropping more removed the
+    first word of a command run on from the wake word.
     """
     return frames if is_wakeword and not on_session else 0
 
@@ -381,6 +388,59 @@ class CaptureClock:
             self._mins.popleft()
         captured = self._mins[0][1] + self._n * self.FRAME_S
         return max(arrived - MAX_ARB_SLACK_S, min(arrived, captured))
+
+
+# The wake scorer skips audio that has waited this long in mic_queue, keeping
+# only what arrived in the last SCORING_KEEP_S (#946). The queue holds 64
+# frames (5.12s) and drops the OLDEST when full, so once one hiccup filled it
+# a scorer running only just faster than real time never caught up, and every
+# wake was scored ~5s late until a turn drained the queue. Scoring it late
+# buys nothing: a turn drains the backlog before it listens, so the command
+# that followed a late wake was gone anyway, and a late claim loses
+# arbitration to an Echo that was not behind.
+SCORING_MAX_LAG_S = 1.0
+SCORING_KEEP_S = 0.5
+
+
+def skip_backlog(q, item, now: float):
+    """
+    Skip stale audio in the wake scorer's queue: `(next item, frames dropped)`.
+
+    `item` was just taken from `q`. If it is stamped audio that waited more
+    than SCORING_MAX_LAG_S, it and the queued frames that arrived before
+    `now - SCORING_KEEP_S` are dropped, and the first item that is fresh, or
+    is not stamped audio (a stream boundary the loop must still read), is
+    returned in its place; None if that emptied the queue. Otherwise `item`
+    comes back with 0 dropped.
+    """
+    if now - getattr(item, "arrived", now) <= SCORING_MAX_LAG_S:
+        return item, 0
+    dropped = 1
+    while not q.empty():
+        item = q.get_nowait()
+        if now - getattr(item, "arrived", now) <= SCORING_KEEP_S:
+            return item, dropped
+        dropped += 1
+    return None, dropped
+
+
+class BacklogLog:
+    """What the scorer skipped, reported at most once per `every_s`: a scorer
+    that cannot keep up skips about once a second."""
+
+    def __init__(self, every_s: float = 30.0) -> None:
+        self.every_s = every_s
+        self._frames = 0
+        self._at = -1e9
+
+    def add(self, frames: int, now: float) -> str | None:
+        self._frames += frames
+        if now - self._at < self.every_s:
+            return None
+        msg = (f"wake scoring fell behind — skipped {self._frames} stale "
+               f"frames ({self._frames * CaptureClock.FRAME_S:.1f}s of audio)")
+        self._at, self._frames = now, 0
+        return msg
 
 
 def arrival(payload, default: float) -> float:

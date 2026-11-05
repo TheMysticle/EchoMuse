@@ -1,6 +1,8 @@
 package outchain
 
 import (
+	"github.com/wilbowes/EchoMuse/pkg/board"
+	"math"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -48,15 +50,13 @@ func TestLoadRadarTuningReadsWhatAFEListsAndNothingElse(t *testing.T) {
 
 	// The chain takes all of it: the MBCL in place of the guard and the
 	// limiter, the curve available to StockCurve.
-	c := NewForBoard(48000, "radar", rt)
-	if _, ok := c.guard.(*radarMultiband); !ok {
-		t.Errorf("guard = %T", c.guard)
+	c := NewWithTuning(48000, DefaultGuardBand, board.BiscuitVoicing(), rt)
+	st := c.stock
+	if st == nil || st.mbcl == nil || st.lim == nil || st.lim.thresholdDb != -2 {
+		t.Fatalf("stock = %#v", st)
 	}
-	if lim, ok := c.lim.(*stockLimiter); !ok || lim.thresholdDb != -2 {
-		t.Errorf("limiter = %#v", c.lim)
-	}
-	if len(c.firBands) != 2 || len(c.peq) != 2 || c.trimGain != dbToGain(1.5) {
-		t.Errorf("stock curve: %d bands, %d biquads, trim %g", len(c.firBands), len(c.peq), c.trimGain)
+	if len(st.firBands) != 2 || len(st.peq) != 2 || st.trimGain != dbToGain(1.5) {
+		t.Errorf("stock curve: %d bands, %d biquads, trim %g", len(st.firBands), len(st.peq), st.trimGain)
 	}
 }
 
@@ -92,15 +92,12 @@ func TestLoadRadarTuningFailsOnAMissingFile(t *testing.T) {
 	}
 }
 
-// Without a tuning a Radar chain still takes the volume, and has no stock
-// curve, multiband or stock limiter to run.
-func TestRadarChainWithoutTuning(t *testing.T) {
-	c := NewForBoard(48000, "radar", nil)
-	if !c.TakesVolume() || c.firBands != nil {
-		t.Error("radar chain without a tuning")
-	}
-	if _, ok := c.guard.(*bassGuard); !ok {
-		t.Errorf("guard = %T, want the single-band guard", c.guard)
+// Without a tuning a chain runs the board's voicing, with no stock curve,
+// multiband or stock limiter.
+func TestChainWithoutTuning(t *testing.T) {
+	c := NewWithTuning(48000, DefaultGuardBand, board.BiscuitVoicing(), nil)
+	if c.stock != nil || !c.voiced() {
+		t.Error("chain without a tuning")
 	}
 }
 
@@ -115,33 +112,37 @@ func copyFile(t *testing.T, from, to string) {
 	}
 }
 
-// With a plug in (Params.Jack) a Radar chain leaves out the stock curve and
-// the multiband, which are tuned for its speaker, and takes them back when
+// With a plug in, chainForJack turns the stock profile off: a Radar chain
+// leaves out its tuning, which is for its speaker, and takes it back when
 // the plug comes out.
 func TestRadarJackLeavesOutTheSpeakerStages(t *testing.T) {
 	rt, err := LoadRadarTuning(filepath.Join("testdata", "radar_tuning"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := NewForBoard(48000, "radar", rt)
+	c := NewWithTuning(48000, DefaultGuardBand, board.BiscuitVoicing(), rt)
 	c.SetActive(true)
-	c.SetVolumeGain(1)
-	p := DefaultParams()
-	p.Jack = true
-	c.SetParams(p)
-	c.Process(loud(2048))
-	if c.fir != nil || !c.skipGuard {
-		t.Fatalf("jack: fir %v, guard skipped %v", c.fir != nil, c.skipGuard)
+	wide := make([]float64, 4096)
+	for i := range wide {
+		wide[i] = 30000 * math.Sin(float64(i/2)*2*math.Pi*60/48000)
 	}
-	if r := c.guard.takeMaxReductionDb(); r != 0 {
+	out := make([]byte, 8192)
+	p := DefaultParams()
+	p.StockSound = false
+	c.SetParams(p)
+	c.ProcessWide(wide, out)
+	if c.tuned() || c.stock.fir != nil {
+		t.Fatal("jack: the tuning ran")
+	}
+	if r := c.stock.mbcl.takeMaxReductionDb(); r != 0 {
 		t.Errorf("jack: the multiband ran (%gdB)", r)
 	}
 
-	p.Jack = false
+	p.StockSound = true
 	c.SetParams(p)
-	c.Process(loud(2048))
-	if c.fir == nil || c.skipGuard {
-		t.Fatalf("speaker: fir %v, guard skipped %v", c.fir != nil, c.skipGuard)
+	c.ProcessWide(wide, out)
+	if !c.tuned() || c.stock.fir == nil {
+		t.Fatal("speaker: the tuning did not come back")
 	}
 }
 
@@ -152,14 +153,19 @@ func TestDescribeNamesWhatRadarRuns(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	c := NewWithTuning(48000, DefaultGuardBand, board.BiscuitVoicing(), rt)
 	p := DefaultParams()
-	if got, want := NewForBoard(48000, "radar", rt).Describe(p),
-		"eq=flat speech_boost=off guard=-30dB limiter=-2dB/30ms stock_curve=on"; got != want {
+	if got, want := c.Describe(p),
+		"eq=flat speech_boost=off guard=-30dB limiter=-2dB/30ms stock_sound=on stock_tuning=on stock_curve=on"; got != want {
 		t.Errorf("speaker: got %q, want %q", got, want)
 	}
-	p.GuardEnabled, p.Jack = false, true
-	if got, want := NewForBoard(48000, "radar", rt).Describe(p),
-		"eq=flat speech_boost=off guard=off limiter=-2dB/30ms stock_curve=off jack"; got != want {
+	p.StockCurve = false
+	if got, want := c.Describe(p),
+		"eq=flat speech_boost=off guard=-30dB limiter=-2dB/30ms stock_sound=on stock_tuning=on stock_curve=off"; got != want {
+		t.Errorf("curve off: got %q, want %q", got, want)
+	}
+	p.StockSound = false
+	if got, want := c.Describe(p), p.String(); got != want {
 		t.Errorf("jack: got %q, want %q", got, want)
 	}
 	if got, want := New(48000).Describe(DefaultParams()), DefaultParams().String(); got != want {

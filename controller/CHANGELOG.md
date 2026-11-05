@@ -1,5 +1,29 @@
 # Changelog
 
+## 2.26.4
+
+One fix on top of 2.26.3. Pair with firmware v2.18.1, which this controller offers. No database changes.
+
+### Fixed
+
+- **The wizard's Build emOS step said no emOS release existed.** The controller read only the 10 newest GitHub releases, and newer Early Access releases had pushed the latest emOS release off that list. It now reads 100 (#1090). Thanks @alexwoolfson and @merlinschumacher.
+
+## 2.26.3
+
+One fix on top of 2.26.2, released from 2.26.2's own code. Pair with firmware v2.18.1, which this controller offers. No database changes.
+
+### Fixed
+
+- **The wizard's emOS step failed with HTTP 413 behind a reverse proxy.** The boot image went to the controller in one 9 MB request, which nginx and similar proxies refuse by default. It now goes in 512 KB pieces, so the proxy's upload limit no longer matters (#1010, #800). Thanks @Maximo1970 (#769), @itm1960 and @jfiger (#1001).
+
+## 2.26.2
+
+One fix on top of 2.26.1, released from 2.26.1's own code. Pair with firmware v2.18.1, which this controller offers. No database changes.
+
+### Fixed
+
+- **Firmware and emOS updates failed to download.** GitHub's download link now sends a header longer than the controller would accept, so "Update" did nothing and the log showed `Got more than 8190 bytes`. Release checks were unaffected, which is why the update was still offered (#1021).
+
 ## 2.26.1
 
 Fixes on top of 2.26.0. Pair with firmware v2.18.1, which this controller offers. No database changes.

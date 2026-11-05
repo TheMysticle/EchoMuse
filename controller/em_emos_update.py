@@ -76,10 +76,15 @@ _MD5 = re.compile(r"\b([0-9a-f]{32})\b")
 # ── Versions ─────────────────────────────────────────────────────────────────
 
 def version_key(text):
-    """("emos-v0.9", "0.9", "emos-v0.9-3-gabc1234") -> (0, 9, 0, commits).
+    """An ordering key for an emOS version, or None when it is not one.
 
-    None when it is not a version: the wizard stamps "0.1" for a hand-picked
-    init and build.sh stamps `git describe`, so both forms are in the field.
+      emos-v0.11-ea.1  <  emos-v0.11-ea.2  <  emos-v0.11  <  emos-v0.11-3-gabc
+
+    ("emos-v0.9", "0.9", "emos-v0.9-3-gabc1234") all parse; the wizard stamps
+    "0.1" for a hand-picked init and build.sh stamps `git describe`, so both
+    forms are in the field. Early Access is -ea.N, as firmware's is
+    (version.firmware_key), and orders before the GA of its number; the last
+    form is a build past a tag, ahead of it.
     """
     t = (text or "").strip()
     t = t.removeprefix("emos-").lstrip("v")
@@ -88,8 +93,42 @@ def version_key(text):
     if not 2 <= len(nums) <= 3 or not all(n.isdigit() for n in nums):
         return None
     nums = [int(n) for n in nums] + [0] * (3 - len(nums))
-    commits = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
-    return (*nums, commits)
+    rest = parts[1:]
+    stage, ea = 1, 0
+    if rest and rest[0].startswith("ea."):
+        if not rest[0][3:].isdigit():
+            return None
+        stage, ea = 0, int(rest[0][3:])
+        rest = rest[1:]
+    commits = int(rest[0]) if rest and rest[0].isdigit() else 0
+    return (*nums, stage, ea, commits)
+
+
+def is_ea(version) -> bool:
+    k = version_key(version)
+    return k is not None and k[3] == 0
+
+
+def choose_release(releases, include_ea: bool):
+    """The newest emOS release this controller may install, from GitHub's
+    release list: published, an emos-v* tag, carrying `init` (the asset every
+    release has had; init32 is in the bundle). A GA controller skips
+    prereleases AND anything named -ea.N, so neither a missing flag nor a
+    mislabelled release reaches the GA fleet; EA and dev controllers take
+    both. By version, not list order."""
+    best, best_key = None, None
+    for r in releases or []:
+        tag = r.get("tag_name", "")
+        if r.get("draft") or not tag.startswith("emos-v"):
+            continue
+        if not include_ea and (r.get("prerelease") or is_ea(tag)):
+            continue
+        if not any(a.get("name") == "init" for a in r.get("assets", [])):
+            continue
+        k = version_key(tag)
+        if k is not None and (best_key is None or k > best_key):
+            best, best_key = r, k
+    return best
 
 
 def can_target(version) -> bool:
@@ -217,24 +256,11 @@ def ramdisk_os_release(image: bytes) -> dict:
 
 
 def is_ours(image: bytes) -> bool:
-    """Whether the image was built by this packer.
-
-    Two signals, either is enough:
-      - the emos.system= cmdline stamp (every release since 0.5), or
-      - the ramoops block this packer always writes (pre-0.5 too) AND
-        a kernel this packer can identify — Amazon's stock image also
-        has the ramoops block in its cmdline, so a positive on ramoops
-        alone admits stock images. The actual gate is the kernel
-        content: a recognisable ARM zImage (or aarch64 Image) is
-        something we only ever see on a device whose kernel we built.
-    """
+    """The wizard's two markers: the stamp, and the ramoops block every image
+    this packer has built carries (pre-0.5 images have no stamp)."""
     cmdline = image[64:576]
-    if build.SYSTEM_CMDLINE_KEY.encode() in cmdline:
-        return True
-    if (b"ramoops.mem_address=0x44400000" in cmdline
-            and build.reference_kernel_arch(image)):
-        return True
-    return False
+    return (build.SYSTEM_CMDLINE_KEY.encode() in cmdline
+            or b"ramoops.mem_address=0x44400000" in cmdline)
 
 
 def reference_problems(image: bytes, device_osr: dict) -> list:
@@ -702,25 +728,7 @@ async def run_update(io) -> str:
 
     # 4. Build.
     arch = build.reference_kernel_arch(reference)
-    cmdline = build.split_reference(reference)["cmdline"].decode(
-        errors="replace").split()
-    stamped_board = next((arg[len(build.BOARD_CMDLINE_KEY):]
-                          for arg in cmdline
-                          if arg.startswith(build.BOARD_CMDLINE_KEY)), None)
-    live_board = getattr(io, "board_id", None)
-    if stamped_board and live_board and stamped_board != live_board:
-        raise Refused(f"the installed emOS board ({stamped_board}) does not "
-                      f"match the connected device ({live_board})" + UNCHANGED)
-    board_id = (stamped_board or live_board
-                or build.reference_board_id(reference)
-                or build.BOARD_DEFAULT)
-    # Radar init defaults to Biscuit unless the boot command line says
-    # otherwise. Don't install a Radar ramdisk into an ambiguous old image.
-    if board_id == "radar" and stamped_board != "radar":
-        raise Refused("the installed image does not identify itself as Radar "
-                      "(missing emos.board=radar)" + UNCHANGED)
-    io.board_id = board_id
-    init_bin, sbin, version = await io.payload(arch, board_id)
+    init_bin, sbin, version = await io.payload(arch)
     if not _VERSION_SAFE.fullmatch(version or ""):
         raise Refused(f"{version!r} is not a usable version string" + UNCHANGED)
     if not init_supports_trial(init_bin):
@@ -730,7 +738,8 @@ async def run_update(io) -> str:
     await io.step(f"Building emOS {version} for this device's {arch} kernel")
     try:
         info = await io.offload(build.build_emos_image, reference, init_bin,
-                                version, "", sbin, None, board_id, True)
+                                version, "", sbin, None,
+                                getattr(io, "board", None))
     except build.BuildError as e:
         raise Refused(f"{e}" + UNCHANGED)
     image = info["image"]

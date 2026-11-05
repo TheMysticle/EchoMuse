@@ -42,7 +42,7 @@ func (c *Canceller) SetStatePath(path string) {
 // loadStateLocked loads the saved echo path into a freshly built
 // hardware-path filter. One small file read, once per boot.
 func (c *Canceller) loadStateLocked() {
-	if c.statePath == "" || !c.hwRef.Load() || c.st == nil {
+	if c.statePath == "" || !c.hwRef || c.st == nil {
 		return
 	}
 	c.loadMicsLocked()
@@ -71,7 +71,7 @@ func (c *Canceller) micsPath() string { return c.statePath + ".mics" }
 
 func (c *Canceller) exportMicsLocked() ([]byte, error) {
 	out := append([]byte(micsMagic), 0, 0)
-	binary.LittleEndian.PutUint16(out[len(micsMagic):], NumMics)
+	binary.LittleEndian.PutUint16(out[len(micsMagic):], uint16(len(c.micStates)))
 	for _, st := range c.micStates {
 		b, err := c.exportStateLocked(st)
 		if err != nil {
@@ -87,11 +87,11 @@ func (c *Canceller) importMicsLocked(b []byte) error {
 	if len(b) < len(micsMagic)+2 || string(b[:len(micsMagic)]) != micsMagic {
 		return errors.New("aec: not a set of saved echo paths")
 	}
-	if n := binary.LittleEndian.Uint16(b[len(micsMagic):]); n != NumMics {
+	if n := binary.LittleEndian.Uint16(b[len(micsMagic):]); int(n) != len(c.micStates) {
 		return errors.New("aec: saved for a different number of microphones")
 	}
 	b = b[len(micsMagic)+2:]
-	var parts [NumMics][]byte
+	parts := make([][]byte, len(c.micStates))
 	for i := range parts {
 		if len(b) < 4 {
 			return errors.New("aec: saved echo paths are truncated")
@@ -131,14 +131,14 @@ func (c *Canceller) loadMicsLocked() {
 		log.Printf("[aec] saved per-microphone echo paths refused, starting cold: %v", err)
 		return
 	}
-	log.Printf("[aec] loaded the saved echo paths for %d microphones (%d bytes)", NumMics, len(b))
+	log.Printf("[aec] loaded the saved echo paths for %d microphones (%d bytes)", len(c.micStates), len(b))
 }
 
 // maybeSaveMicsLocked is maybeSaveLocked for the per-microphone paths, on
 // the same terms: the window is the active microphone's, and all seven are
 // written because all seven adapted on the same playback.
 func (c *Canceller) maybeSaveMicsLocked(attDb float64, playing bool) {
-	if c.statePath == "" || !c.hwRef.Load() || !playing || attDb < saveMinDb {
+	if c.statePath == "" || !c.hwRef || !playing || attDb < saveMinDb {
 		return
 	}
 	if !c.lastMicsSaveTry.IsZero() && time.Since(c.lastMicsSaveTry) < saveEvery {
@@ -156,7 +156,7 @@ func (c *Canceller) maybeSaveMicsLocked(attDb float64, playing bool) {
 // 16KB copy under the lock; the file write runs on its own goroutine so the
 // mic goroutine never waits on flash.
 func (c *Canceller) maybeSaveLocked(attDb float64, playing bool) {
-	if c.statePath == "" || !c.hwRef.Load() || !playing || attDb < saveMinDb {
+	if c.statePath == "" || !c.hwRef || !playing || attDb < saveMinDb {
 		return
 	}
 	if !c.lastSaveTry.IsZero() && time.Since(c.lastSaveTry) < saveEvery {
@@ -188,8 +188,29 @@ func writeState(path string, b []byte, attDb float64) {
 }
 
 // DefaultStatePath is where the device keeps the saved echo path, beside
-// the other files that outlive a process and an OTA.
-const DefaultStatePath = "/data/local/etc/echomuse/aec_echo_path.bin"
+// the other files that outlive a process and an OTA. It is versioned: a
+// path saved before 2026-10-18 was learnt against the aliased ch8
+// (dealias.go) and with the mics 6dB hotter (no headroom before the
+// canceller), so loaded it starts worse than cold, and it is rewritten at
+// most once a day.
+const DefaultStatePath = "/data/local/etc/echomuse/aec_echo_path.v2.bin"
+
+// legacyStatePaths are earlier saved paths, never loaded and removed at start.
+var legacyStatePaths = []string{
+	"/data/local/etc/echomuse/aec_echo_path.bin",
+	"/data/local/etc/echomuse/aec_echo_path.bin.mics",
+}
+
+// RemoveLegacyState deletes saved paths an earlier firmware wrote.
+func RemoveLegacyState() { removeStates(legacyStatePaths) }
+
+func removeStates(paths []string) {
+	for _, p := range paths {
+		if err := os.Remove(p); err == nil {
+			log.Printf("[aec] removed %s (saved before the reference was de-aliased)", p)
+		}
+	}
+}
 
 // exportMicsForTest and importMicsForTest take the lock the Locked forms
 // expect; nothing in the firmware needs them outside a test.

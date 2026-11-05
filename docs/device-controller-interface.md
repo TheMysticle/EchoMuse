@@ -80,8 +80,9 @@ message (`device/internal/client/control.go`):
 ```
 
 `base_os`, `board` and the two `kernel_*` fields describe the boot and are
-informational: the controller stores and displays them, and gates Android-only
-payloads on `base_os`. The kernel pair is omitted if `uname` fails. A device
+informational: the controller stores and displays them, gates Android-only
+payloads on `base_os`, and names the Echo's model in Home Assistant from
+`board` (`em_boards`; absent or `unknown` shows the Dot 2's). The kernel pair is omitted if `uname` fails. A device
 for a new board should send all of them.
 
 `boot_id`, `boot_reason` and `emmc` are boot-time health, each omitted when it
@@ -127,10 +128,11 @@ below (`capabilities()` in `control.go`):
 | `output_mute` | always | Keeps the speaker's output mute itself: silent with the volume level kept, persisted across a reboot, an indigo ring while muted, and carried over Sendspin (`muted` in the player state, the `mute` command) and from a group's leader to its members. Reports it as `output_mute_state`. The controller then sends HA's mute as `volume_set` with `muted` instead of level 0, and follows the reports |
 | `response_level` | always | Can boost the voice plane relative to device volume with `responseLevel` (`low` / `medium` / `high` = 0 / +6 / +12dB). The boost is applied before voice/music mixing and capped so it plus device volume never exceeds unity |
 | `voice_prebuffer` | always | Can change how much voice audio is queued before playback starts, with `voicePrebufferMs` (128–1024 ms, default 1024). Music keeps its own buffer. Firmware without it keeps the fixed 1,024 ms gate, so the controller assumes that unless the capability is announced |
+| `stock_sound` | always | Voices its own speaker while it runs the output chain with no plug in the jack: its own volume law, driver correction and compressor bands, with no key to turn them off. Keeps the bass guard on while it does, whatever `bassGuardEnabled` says; the controller hides that switch for such a device |
 | `ambient_light` | only if the sensor is actually readable (`als.Present()`) | Reports light readings |
 | `sendspin` | always | Can be a Sendspin player (#89) for synchronised multi-room audio from Music Assistant, run when `sendspinEnabled` is on. Music Assistant connects to the device directly (port 8928, advertised as `_sendspin._tcp`); nothing of the session crosses the controller. Whether it is running, connected or paired is the `sendspin` status |
 | `wake_word_off` | always | Honours `wakeWordEnabled: false` (Home Assistant's "No wake word"): a wake crossing is reported as a shadow cross and opens no session and no turn. The button still works. Without it the controller declines "No wake word" for an Echo in `listen_state` `local` |
-| `pairing` | always | Asks to pair itself when its owner holds the action button 5 s: a `pair_request` every 5 s on a live link, or otherwise registers with `"pairing": true` on every dial for the 2-minute window, falling back to plain (without its token) when wss cannot connect. The window closes early once new credentials land, so the redial they cause does not ask again. Without it the controller offers the admin a **Pair** action instead, since the device cannot ask |
+| `pairing` | always | Asks to pair itself when its owner holds the action button 7 s while it has no controller link or one over plain (5 s, on any link, before v2.19.0; an Echo on wss is already paired, and its hold reaches HA as a long press): a `pair_request` every 5 s on a live link, or otherwise registers with `"pairing": true` on every dial for the 2-minute window, falling back to plain (without its token) when wss cannot connect. The window closes early once new credentials land, so the redial they cause does not ask again. Without it the controller offers the admin a **Pair** action instead, since the device cannot ask |
 | `ble_connect` | always | Can hold Bluetooth LE connections for the controller and speak GATT over them (#656): up to three links, requests and results as `0x08` frames on `/data`. Acts only while `bleProxyEnabled` and `bleProxyConnections` are both on, and only against a controller announcing `ble_connect` back |
 | `group_member` | always | Can be a member of a speaker group (docs/speaker-groups.md): with `groupRole` `member` its Sendspin player runs without advertising itself, and it accepts `group_trust`. Needs `sendspin` too |
 | `group_leader` | emOS only | Can lead a speaker group: runs a Sendspin server inside the firmware that sends the Echo's own Spotify audio, stamped for a moment ahead, to the members. Acts only when told `groupRole` `leader` and `groupLead`, and accepts `group_key` |

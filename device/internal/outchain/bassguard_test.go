@@ -1,63 +1,67 @@
 package outchain
 
-import "testing"
+import (
+	"math"
+	"testing"
+)
 
-// Pins the measured values against silent drift — same reason
-// controller/tests/test_mbc.py pins em_mbc.CROSSOVER_HZ etc. Change these
-// only with a measurement to back it up.
-func TestTuningForSelectsByBoard(t *testing.T) {
-	cases := []struct {
-		boardID             string
-		wantCrossoverHz     float64
-		wantBassThresholdDb float64
-	}{
-		{"biscuit", crossoverHz, bassThresholdDb},
-		{"radar", radarCrossoverHz, radarBassThresholdDb},
-		{"", crossoverHz, bassThresholdDb},     // no board identified
-		{"dot3", crossoverHz, bassThresholdDb}, // unrecognised -> biscuit
+// guardReduction plays a sine through a guard-only chain on band, with no
+// voicing, and returns the deepest bass reduction it applied.
+func guardReduction(band GuardBand, hz, dbfs float64) float64 {
+	c := NewFor(48000, band, nil)
+	p := DefaultParams()
+	p.LimiterEnabled = false
+	c.SetParams(p)
+	c.SetActive(true)
+	a := fullScale * math.Pow(10, dbfs/20)
+	m := make([]int16, 2048)
+	for k := 0; k < 24; k++ { // ~1s, past the release
+		for i := range m {
+			n := k*len(m) + i
+			m[i] = int16(a * math.Sin(2*math.Pi*hz*float64(n)/48000))
+		}
+		c.Process(stereo(m))
 	}
-	for _, c := range cases {
-		got := tuningFor(c.boardID)
-		if got.crossoverHz != c.wantCrossoverHz || got.bassThresholdDb != c.wantBassThresholdDb {
-			t.Errorf("tuningFor(%q) = %+v, want {%g %g}",
-				c.boardID, got, c.wantCrossoverHz, c.wantBassThresholdDb)
+	return c.TakeStats().GuardReductionDb
+}
+
+// Radar's woofer plays the bass biscuit's driver cannot, and stock's own
+// band for it says so: at a normal listening level biscuit's band takes the
+// floor off 60Hz and 100Hz, radar's leaves 100Hz alone and only the deep
+// band at full level is reduced.
+func TestEachBoardsBandProtectsItsOwnDriver(t *testing.T) {
+	radar := GuardBand{CrossoverHz: 70, ThresholdDb: -25}
+	for _, c := range []struct {
+		band        GuardBand
+		hz, dbfs    float64
+		atLeast, le float64
+	}{
+		{DefaultGuardBand, 60, -30, 15, 30},
+		{DefaultGuardBand, 100, -30, 10, 30},
+		{radar, 100, -20, 0, 0.5},
+		{radar, 60, -30, 0, 0.5},
+		{radar, 40, -6, 10, 30},
+	} {
+		got := guardReduction(c.band, c.hz, c.dbfs)
+		if got < c.atLeast || got > c.le {
+			t.Errorf("%+v: %gHz at %gdBFS reduced %.1fdB, want %g..%g", c.band, c.hz, c.dbfs, got, c.atLeast, c.le)
 		}
 	}
 }
 
-// Radar's own numbers, measured off its MBCL.cfg ("Radar Tuning V4.5") —
-// not a copy of biscuit's. See controller/em_mbc.py's equivalent pin.
-func TestRadarTuningMatchesItsOwnMeasuredConfiguration(t *testing.T) {
-	if radarCrossoverHz != 70.0 {
-		t.Errorf("radarCrossoverHz = %g, want 70.0", radarCrossoverHz)
+// A board with no voicing plays the plain chain whatever the params ask, and
+// says so: the speaker's volume law is chosen from the params in force.
+func TestStockSoundNeedsTheBoardsVoicing(t *testing.T) {
+	c := NewFor(48000, GuardBand{CrossoverHz: 70, ThresholdDb: -25}, nil)
+	p := DefaultParams()
+	p.StockSound = true
+	c.SetParams(p)
+	c.SetActive(true)
+	c.Process(stereo(make([]int16, 512)))
+	if c.params.StockSound {
+		t.Fatal("StockSound in force on a board with no voicing")
 	}
-	if radarBassThresholdDb != -25.0 {
-		t.Errorf("radarBassThresholdDb = %g, want -25.0", radarBassThresholdDb)
-	}
-}
-
-// NewForBoard must actually reach the filter design, not just the lookup
-// table above — this is what pcm_speaker.go calls in production. Radar
-// gets a *radarMultiband now, not a *bassGuard (see newRadarMultiband) —
-// its band 1 compressor's threshold must still agree with
-// radarBassThresholdDb, the same measured value read twice.
-func TestNewForBoardAppliesTheBoardsTuning(t *testing.T) {
-	biscuit := NewForBoard(48000, "biscuit", nil)
-	bg, ok := biscuit.guard.(*bassGuard)
-	if !ok {
-		t.Fatalf("biscuit's guard = %T, want *bassGuard", biscuit.guard)
-	}
-	if bg.thresholdDb != bassThresholdDb {
-		t.Errorf("guard.thresholdDb = %g, want %g", bg.thresholdDb, bassThresholdDb)
-	}
-
-	rt := radarTuningForTest(t)
-	radar := NewForBoard(48000, "radar", rt)
-	mb, ok := radar.guard.(*radarMultiband)
-	if !ok {
-		t.Fatalf("radar's guard = %T, want *radarMultiband", radar.guard)
-	}
-	if want := rt.MBCL.Bands[0].CompThresh; mb.comp[0].thresholdDb != want {
-		t.Errorf("guard.comp[0].thresholdDb = %g, want %g", mb.comp[0].thresholdDb, want)
+	if c.guard.upper != nil || len(c.corr.s) != 0 {
+		t.Fatal("upper bands or correction built with no voicing")
 	}
 }

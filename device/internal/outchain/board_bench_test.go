@@ -2,7 +2,10 @@ package outchain
 
 import (
 	"math"
+	"path/filepath"
 	"testing"
+
+	"github.com/wilbowes/EchoMuse/pkg/board"
 )
 
 // Radar's chain cost has never been measured, on hardware or here, and it is
@@ -28,39 +31,33 @@ import (
 // inference (~38%). A chain several times biscuit's turns a comfortable
 // budget into a tight one, and a late write is an underrun — which is heard
 // as a click.
-func benchBoard(b *testing.B, boardID string, p Params) {
-	c := NewForBoard(48000, boardID, nil)
+func benchBoard(b *testing.B, rt *RadarTuning, p Params) {
+	c := NewWithTuning(48000, DefaultGuardBand, board.BiscuitVoicing(), rt)
 	c.SetActive(true)
 	c.SetParams(p)
-	if c.TakesVolume() {
-		// Radar applies the volume itself, and the level selects the stock
-		// curve. Mid-scale rather than unity so a curve is genuinely loaded.
-		c.SetVolumeGain(0.5)
+	// Mid-scale rather than unity so a curve is genuinely loaded.
+	c.SetVolume(115)
+	wide := make([]float64, 2048*2)
+	for i := 0; i < 2048; i++ {
+		x := 20000 * math.Sin(2*math.Pi*80*float64(i)/48000)
+		wide[i*2], wide[i*2+1] = x, x
 	}
-	mono := make([]int16, 2048)
-	for i := range mono {
-		mono[i] = int16(20000 * math.Sin(2*math.Pi*80*float64(i)/48000))
-	}
-	src := stereo(mono)
-	buf := make([]byte, len(src))
-	b.SetBytes(int64(len(src)))
+	out := make([]byte, 2048*4)
+	b.SetBytes(int64(len(out)))
 	for i := 0; i < b.N; i++ {
-		copy(buf, src)
-		c.Process(buf)
+		c.ProcessWide(wide, out)
 	}
 }
 
 func BenchmarkBoardBiscuitDefaults(b *testing.B) {
-	benchBoard(b, "biscuit", DefaultParams())
-}
-
-func BenchmarkBoardRadarDefaults(b *testing.B) {
-	benchBoard(b, "radar", DefaultParams())
+	benchBoard(b, nil, DefaultParams())
 }
 
 func BenchmarkBoardRadarStockCurve(b *testing.B) {
-	// How the fleet actually runs a Radar: stock's FIR curve on.
-	p := DefaultParams()
-	p.StockCurve = true
-	benchBoard(b, "radar", p)
+	// How the fleet actually runs a Radar: its own tuning, the FIR curve on.
+	rt, err := LoadRadarTuning(filepath.Join("testdata", "radar_tuning"))
+	if err != nil {
+		b.Fatal(err)
+	}
+	benchBoard(b, rt, DefaultParams())
 }

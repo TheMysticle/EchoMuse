@@ -12,6 +12,7 @@ package main
 
 import (
 	"fmt"
+	"github.com/wilbowes/EchoMuse/pkg/board"
 	"math"
 	"os"
 	"sort"
@@ -112,8 +113,8 @@ func rawReport(path string, from, to float64) {
 	}
 
 	// Every microphone, through the firmware's own extraction (gain applied).
-	bf := beamformer.New()
-	per := make([][]float64, beamformer.NumMics)
+	bf := beamformer.New(board.BiscuitMics())
+	per := make([][]float64, board.BiscuitMics().NumMics())
 	for _, raw := range bufs {
 		ch := bf.MicChannels(raw, 15.85, -1, nil)
 		for m := range per {
@@ -156,7 +157,7 @@ func rawReport(path string, from, to float64) {
 	fmt.Println("\nthe wake path against the centre mic (the whole window), dB by band, and the groups it used:")
 	header()
 	for _, md := range modes {
-		b := beamformer.New()
+		b := beamformer.New(board.BiscuitMics())
 		b.SetWakeBeam(true)
 		b.SetWakeBeamAra(md.ara)
 		b.SetWakeBeamStock(md.stock)

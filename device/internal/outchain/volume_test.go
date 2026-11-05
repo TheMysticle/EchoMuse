@@ -2,6 +2,7 @@ package outchain
 
 import (
 	"encoding/binary"
+	"github.com/wilbowes/EchoMuse/pkg/board"
 	"math"
 	"testing"
 )
@@ -26,38 +27,29 @@ func rmsOf(buf []byte) float64 {
 	return math.Sqrt(sum / float64(n))
 }
 
-// Only Radar takes the volume ahead of its chain; every other board leaves
-// it to the speaker, after the chain, as before.
-func TestOnlyRadarTakesVolume(t *testing.T) {
-	if !NewForBoard(48000, "radar", nil).TakesVolume() {
-		t.Error("radar chain does not take the volume")
-	}
-	for _, id := range []string{"biscuit", ""} {
-		if NewForBoard(48000, id, nil).TakesVolume() {
-			t.Errorf("%q chain takes the volume", id)
-		}
-	}
-}
-
-// The point of taking the volume first: a loud 100Hz tone that band 2's
-// 10:1 compressor holds down at full scale passes untouched once the volume
-// has brought it under the threshold — so turning the volume down by 20dB
-// lowers the bass by LESS than 20dB, the way stock's does. Applied after the
-// chain, as before, it would be exactly 20dB at every level.
+// The volume is ahead of the MBCL (the stock profile's order): its
+// compressors see the level the listener hears, so 20dB of volume moves the
+// compressed bass by much less than 20dB — and at a level nobody listens at,
+// they are not holding the bass down.
 func TestRadarVolumeAheadOfMBCL(t *testing.T) {
-	run := func(gain float64) float64 {
-		c := NewForBoard(48000, "radar", radarTuningForTest(t))
+	run := func(gain float64, level int) float64 {
+		c := NewWithTuning(48000, DefaultGuardBand, board.BiscuitVoicing(), radarTuningForTest(t))
 		c.SetActive(true)
-		c.SetVolumeGain(gain)
+		c.SetVolume(level)
 		var out float64
 		for k := 0; k < 12; k++ {
-			buf := tone(2048, 100, 20000)
-			c.Process(buf)
+			wide := make([]float64, 2048*2)
+			for i := 0; i < 2048; i++ {
+				x := gain * 20000 * math.Sin(2*math.Pi*100*float64(i)/48000)
+				wide[i*2], wide[i*2+1] = x, x
+			}
+			buf := make([]byte, 2048*4)
+			c.ProcessWide(wide, buf)
 			out = rmsOf(buf)
 		}
 		return out
 	}
-	full, quiet := run(1), run(0.1)
+	full, quiet := run(1, 127), run(0.1, 87)
 	drop := 20 * math.Log10(full/quiet)
 	if drop >= 19 {
 		t.Errorf("20dB of volume dropped the compressed bass by %.1fdB; want well under 20", drop)
@@ -65,52 +57,13 @@ func TestRadarVolumeAheadOfMBCL(t *testing.T) {
 	t.Logf("20dB of volume -> %.1fdB at the output", drop)
 }
 
-// Volume zero is silence through a chain that takes it, and a biscuit chain
-// ignores SetVolumeGain entirely.
-func TestVolumeGainEdges(t *testing.T) {
-	c := NewForBoard(48000, "radar", radarTuningForTest(t))
-	c.SetActive(true)
-	c.SetVolumeGain(0)
-	buf := tone(2048, 1000, 20000)
-	c.Process(buf) // ramps to 0 across the first period
-	buf = tone(2048, 1000, 20000)
-	c.Process(buf)
-	if r := rmsOf(buf); r > 1 {
-		t.Errorf("radar at volume 0: rms %.2f, want silence", r)
+// The FIR band follows the device level by stock's mixer law.
+func TestLevelGainIsStocksMixerLaw(t *testing.T) {
+	if levelGain(0) != 0 || levelGain(127) != 1 || levelGain(200) != 1 {
+		t.Error("edges")
 	}
-
-	b := NewForBoard(48000, "biscuit", nil)
-	b.SetActive(true)
-	b.SetParams(Params{}) // everything off: a passthrough
-	b.SetVolumeGain(0)
-	in := tone(2048, 1000, 20000)
-	for k := 0; k < 2; k++ { // the second, once the limiter's look-ahead has filled
-		buf = append([]byte(nil), in...)
-		b.Process(buf)
-	}
-	if rmsOf(buf) < rmsOf(in)*0.99 {
-		t.Error("biscuit chain applied a volume it does not take")
-	}
-}
-
-// TookVolume answers for what Process did: never while inactive, and never
-// on a board that does not take the volume.
-func TestTookVolume(t *testing.T) {
-	r := NewForBoard(48000, "radar", radarTuningForTest(t))
-	r.Process(tone(2048, 1000, 1000))
-	if r.TookVolume() {
-		t.Error("inactive radar chain reports it took the volume")
-	}
-	r.SetActive(true)
-	r.Process(tone(2048, 1000, 1000))
-	if !r.TookVolume() {
-		t.Error("active radar chain reports it did not take the volume")
-	}
-	b := NewForBoard(48000, "biscuit", nil)
-	b.SetActive(true)
-	b.Process(tone(2048, 1000, 1000))
-	if b.TookVolume() {
-		t.Error("biscuit chain reports it took the volume")
+	if g := levelGain(87); math.Abs(g-0.1) > 1e-12 {
+		t.Errorf("level 87 = %g, want 0.1 (-20dB)", g)
 	}
 }
 

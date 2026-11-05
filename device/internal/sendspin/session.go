@@ -460,7 +460,7 @@ func (s *session) report(volumeChanged bool) {
 			Muted:             set.Muted,
 			StaticDelayMs:     set.StaticDelayMs,
 			RequiredLeadMs:    requiredLeadMs,
-			MinBufferMs:       minBufferMs,
+			MinBufferMs:       s.c.minBufferMs(),
 			SupportedCommands: []string{"set_static_delay"},
 			VolumeChanged:     volumeChanged,
 		},
@@ -470,7 +470,8 @@ func (s *session) report(volumeChanged bool) {
 // requiredLeadMs and minBufferMs size the server's lead. Generous on purpose:
 // this fleet's links stall for seconds (#139/#140), and the music plane that
 // works on them runs 4s ahead. A group plays at its slowest member's lead,
-// so this is also the start latency of any group an Echo is in.
+// so this is also the start latency of any group an Echo is in. minBufferMs
+// is the floor: SetMinBuffer raises it while the BLE proxy needs room.
 const (
 	requiredLeadMs = 2000
 	minBufferMs    = 2000

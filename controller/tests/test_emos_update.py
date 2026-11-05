@@ -50,14 +50,16 @@ def osr_of(image):
 # ── Versions ─────────────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("text,key", [
-    ("emos-v0.9", (0, 9, 0, 0)),
-    ("0.9", (0, 9, 0, 0)),
-    ("v0.10", (0, 10, 0, 0)),
-    ("emos-v1.0.2", (1, 0, 2, 0)),
-    ("emos-v0.9-3-gabc1234", (0, 9, 0, 3)),
-    ("emos-v0.9-3-gabc1234-dirty", (0, 9, 0, 3)),
+    ("emos-v0.9", (0, 9, 0, 1, 0, 0)),
+    ("0.9", (0, 9, 0, 1, 0, 0)),
+    ("v0.10", (0, 10, 0, 1, 0, 0)),
+    ("emos-v1.0.2", (1, 0, 2, 1, 0, 0)),
+    ("emos-v0.9-3-gabc1234", (0, 9, 0, 1, 0, 3)),
+    ("emos-v0.9-3-gabc1234-dirty", (0, 9, 0, 1, 0, 3)),
+    ("emos-v0.11-ea.2", (0, 11, 0, 0, 2, 0)),
+    ("emos-v0.11-ea.2-4-gabc1234", (0, 11, 0, 0, 2, 4)),
     ("", None), (None, None), ("dev", None), ("emos-v", None),
-    ("1", None), ("0.9.1.2", None), ("0.x", None),
+    ("1", None), ("0.9.1.2", None), ("0.x", None), ("emos-v0.11-ea.x", None),
 ])
 def test_version_key(text, key):
     assert up.version_key(text) == key
@@ -303,35 +305,12 @@ def test_the_mark_names_the_image_by_the_id_init_reads():
 
 def test_init_and_the_controller_agree_on_the_paths():
     src = (REPO / "emos" / "init" / "init.c").read_text()
-    # BOOTDEV is a per-board alias (set in the board header to BOARD_BOOT_PART,
-    # which is the path the controller knows as up.BOOT_DEV), so the source
-    # carries the macro reference rather than the literal path. The board
-    # headers define BOARD_BOOT_PART to up.BOOT_DEV, checked below.
-    assert "#define BOOTDEV      BOARD_BOOT_PART" in src
+    assert f'#define BOOTDEV   "{up.BOOT_DEV}"' in src
     assert f'#define GOODIMG   "{up.GOOD_IMG}"' in src
     assert f'#define BOOTSTATE "{up.BOOT_STATE}"' in src
     assert f'#define TRIALMARK "{up.TRIAL_MARK}"' in src
     assert f"#define TRIAL_SECS {up.TRIAL_SECS}" in src
     assert f"#define MAX_TRIES {up.MAX_TRIES}" in src
-
-
-def test_every_board_header_agrees_with_the_controller():
-    """BOARD_BOOT_PART is the path BOOTDEV resolves to in init.c.
-
-    Every per-board header (radar.h, biscuit.h, ...) must set BOARD_BOOT_PART
-    to up.BOOT_DEV, or a build that uses the wrong board will not know which
-    slot to flash — silently, because the kernel still boots from the slot
-    the install script happened to point at. The shared `boards.h` and
-    `boards_stubs.h` are runtime interface headers, not per-board configs.
-    """
-    skip = {"boards.h", "boards_stubs.h"}
-    for header in (REPO / "emos" / "init" / "boards").glob("*.h"):
-        if header.name in skip:
-            continue
-        src = header.read_text()
-        assert f'BOARD_BOOT_PART   "{up.BOOT_DEV}"' in src, (
-            f"{header.name} sets BOARD_BOOT_PART to something other than "
-            f"{up.BOOT_DEV}; check the slot name matches the controller")
 
 
 def test_the_watch_outlasts_a_full_rollback():

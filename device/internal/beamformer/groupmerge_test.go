@@ -11,7 +11,7 @@ import (
 func TestGroupOutputIsTheMeanOfItsBeamsPlusStocksGain(t *testing.T) {
 	rng := rand.New(rand.NewSource(5))
 	src := denseTones(rng, 200, 3500, 100)
-	b := New()
+	b := New(biscuit)
 	enableWakeBeam(b)
 	b.fbf.outGain = float32(math.Pow(10, fbfOutGainDB/20))
 	g := 6 // beams 6, 7, 0 wrap the ring
@@ -108,7 +108,7 @@ func TestNoiseFloorIsAMinimumAfterTheInitialPeriod(t *testing.T) {
 // onset selector did. What matters is never staying on a bad one, which the
 // clack test below covers.
 func TestSelectionIsCalmInSteadyNoise(t *testing.T) {
-	b := New()
+	b := New(biscuit)
 	enableWakeBeam(b)
 	rng := rand.New(rand.NewSource(9))
 	const period = 2560
@@ -143,7 +143,7 @@ func TestAClackJustBeforeTheWordDoesNotHoldThePath(t *testing.T) {
 		best = math.Max(best, v)
 	}
 
-	b := New()
+	b := New(biscuit)
 	enableWakeBeam(b)
 	var idxs []int
 	for t0 := 0; t0 < 12*16000; t0 += period {

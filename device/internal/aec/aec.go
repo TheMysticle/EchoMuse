@@ -69,10 +69,6 @@ const (
 	// cover the delay error between the speaker write and the mic batches.
 	hwTailMs = 64
 
-	// NumMics is how many microphones the hardware-reference path cancels:
-	// every channel a turn can be given (see micStates).
-	NumMics = 7
-
 	// quietHold is how many silent reference frames pass before the unused
 	// microphones rest. The filter sees two frames of far-end history at
 	// the 64ms tail, so by then every state's history is the silence the
@@ -103,7 +99,7 @@ type Canceller struct {
 	// another. All seven adapt on every period, so whichever one a turn
 	// picks has already learnt its own path. Costs 6.04ms per 32ms period on
 	// the device, 19% of a core (JOURNAL 2026-10-03).
-	micStates       [NumMics]*C.SpeexEchoState
+	micStates       []*C.SpeexEchoState // one per microphone, by channel
 	lastMicsSaveTry time.Time
 	// farQuiet counts consecutive bit-exact silent reference frames, and
 	// micFrames the per-microphone cancellations run. Past quietHold the
@@ -175,24 +171,13 @@ type Canceller struct {
 	// ProcessWithRef cannot disagree about which source is live: a period
 	// pushed into the ring while the hardware path is running would be
 	// consumed by nothing and sit there aging.
-	// ATOMIC, and that is the fix for a 38-53ms stall of the speaker's
-	// write loop (measured on a Radar).
-	//
-	// WriteFar is the speaker's echo tap: it runs once per playback period,
-	// from the ALSA write loop, and on the hardware path it has nothing to
-	// do. It used to take c.mu to discover that — and c.mu is held by
-	// ProcessMicsWithRef for a WHOLE mic block, which is 5 frames across
-	// every microphone. So the write loop blocked on a mutex held for tens
-	// of milliseconds, against a period budget of 42.7ms, and the DAC ran
-	// dry: `mtk_pcm_I2S0dl1_pointer underflow` in dmesg, then a PCM
-	// prepare/start 12-25ms later, which is the audible dropout.
-	//
-	// An atomic lets WriteFar answer "not my path" without the lock at all.
-	// It must not be a plain bool read outside the lock: SetHardwareRef
-	// writes it at runtime when the detector promotes ch8, so that would be
-	// a data race — the kind the race detector only finds if a test happens
-	// to run both sides at once.
-	hwRef atomic.Bool
+	hwRef bool
+	// hwRefLive mirrors hwRef for WriteFar, which runs on the speaker's ALSA
+	// write loop. On the hardware path WriteFar has nothing to do, but taking
+	// mu to find that out made the speaker wait for ProcessMicsWithRef,
+	// which holds mu through a whole mic block of cancellation: 37-53ms on a
+	// Radar under music, most of a 42.7ms period (#866).
+	hwRefLive atomic.Bool
 	// Periods cancelled against a hardware reference, and periods where one
 	// was expected and did not arrive (nil, or a length mismatch with the
 	// near end). A rising hwMissing with cancellation on is an extraction
@@ -207,6 +192,9 @@ type Canceller struct {
 	// once-a-second attenuation line.
 	hwFrames  uint64
 	hwMissing uint64
+
+	// dealias rebuilds ch8 from the output without its aliases (dealias.go).
+	dealias *dealias
 }
 
 // SetHardwareRef selects the far-end source. True takes it from ch8 of the
@@ -219,10 +207,11 @@ type Canceller struct {
 func (c *Canceller) SetHardwareRef(on bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.hwRef.Load() == on {
+	if c.hwRef == on {
 		return
 	}
-	c.hwRef.Store(on)
+	c.hwRef = on
+	c.hwRefLive.Store(on)
 	c.head, c.tail, c.count = 0, 0, 0
 	c.dsum, c.dcnt = 0, 0
 	log.Printf("[aec] far-end reference: %s",
@@ -242,7 +231,7 @@ func (c *Canceller) SetHardwareRef(on bool) {
 
 // effectiveTailLocked is the filter length for the reference in use.
 func (c *Canceller) effectiveTailLocked() int {
-	if c.hwRef.Load() {
+	if c.hwRef {
 		return hwTailMs
 	}
 	return c.tailMs
@@ -262,10 +251,11 @@ func (c *Canceller) Enabled() bool {
 	return c.enabled
 }
 
-// HardwareRef reports the current far-end source. Lock-free: the value is
-// atomic so the hot path can read it without the AEC lock.
+// HardwareRef reports the current far-end source.
 func (c *Canceller) HardwareRef() bool {
-	return c.hwRef.Load()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.hwRef
 }
 
 // RefSource names the far-end reference in use, for the stats report:
@@ -281,7 +271,7 @@ func (c *Canceller) RefSource() string {
 	switch {
 	case !c.enabled:
 		return "off"
-	case c.hwRef.Load():
+	case c.hwRef:
 		return "hw"
 	default:
 		return "sw"
@@ -289,8 +279,11 @@ func (c *Canceller) RefSource() string {
 }
 
 // New returns a disabled Canceller. Call SetParams (config push) to arm it.
-func New() *Canceller {
-	return &Canceller{}
+//
+// nMics is how many microphones the hardware-reference path cancels: every
+// channel a turn can be given (see micStates), the board's MicArray.NumMics.
+func New(nMics int) *Canceller {
+	return &Canceller{dealias: newDealias(), micStates: make([]*C.SpeexEchoState, nMics)}
 }
 
 // SetParams applies config. On the software tap, any change to delay or tail
@@ -326,7 +319,7 @@ func (c *Canceller) SetParams(enabled bool, delayMs, tailMs int) {
 	//
 	// Stored anyway, so a later fall back to the software tap uses the
 	// operator's current settings rather than stale ones.
-	if c.hwRef.Load() && c.st != nil && enabled == c.enabled {
+	if c.hwRef && c.st != nil && enabled == c.enabled {
 		c.delayMs, c.tailMs = delayMs, tailMs
 		return
 	}
@@ -356,7 +349,7 @@ func (c *Canceller) buildLocked() {
 	c.micBuf = (*C.spx_int16_t)(C.malloc(FrameSize * 2))
 	c.refBuf = (*C.spx_int16_t)(C.malloc(FrameSize * 2))
 	c.outBuf = (*C.spx_int16_t)(C.malloc(FrameSize * 2))
-	if c.hwRef.Load() {
+	if c.hwRef {
 		for i := range c.micStates {
 			c.micStates[i] = C.speex_echo_state_init(C.int(FrameSize), tailSamples)
 			C.speex_echo_ctl(c.micStates[i], C.SPEEX_ECHO_SET_SAMPLING_RATE, unsafe.Pointer(&rate))
@@ -410,18 +403,23 @@ func (c *Canceller) pushLocked(s int16) {
 // crude, but the echo content is voice-band and the canceller adapts to
 // the filter's response like any other part of the echo path).
 func (c *Canceller) WriteFar(period []byte) {
-	// BEFORE the lock, deliberately. This is the speaker's write loop, once
-	// per period, and on the hardware path there is nothing to do — so
-	// taking c.mu here only waits for whatever mic block is holding it.
-	// Nothing drains the ring on that path anyway, so filling it would peg
-	// it at ringCap and leave the far-end telemetry describing a buffer no
-	// cancellation ever reads. See the hwRef field for the measurement.
-	if c.hwRef.Load() {
+	// Every period, on either path: the hardware reference is placed in it.
+	c.dealias.feed(period)
+	// Before the lock: see hwRefLive. A period that races a switch to the
+	// software tap is dropped, which the switch's ring reset would have done
+	// anyway.
+	if c.hwRefLive.Load() {
 		return
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if !c.enabled {
+		return
+	}
+	if c.hwRef {
+		// Nothing drains the ring on the hardware path, so filling it would
+		// peg it at ringCap and leave the far-end telemetry describing a
+		// buffer no cancellation ever reads.
 		return
 	}
 	n := len(period) / 4 // frames (2ch × 2 bytes)
@@ -488,6 +486,9 @@ func (c *Canceller) Process(mono []byte) []byte {
 // passes through uncancelled rather than being cancelled against silence —
 // which would be indistinguishable from a working AEC with nothing playing.
 func (c *Canceller) ProcessWithRef(mono, ref []byte) []byte {
+	if ref != nil {
+		ref = c.dealias.clean(ref)
+	}
 	return c.process(mono, ref)
 }
 
@@ -503,8 +504,8 @@ func (c *Canceller) processLocked(mono, hwref []byte) []byte {
 	}
 	// The hardware path is only taken when both sides agree it is live and
 	// the caller actually supplied a matching period.
-	useHW := c.hwRef.Load() && hwref != nil && len(hwref) == len(mono)
-	if c.hwRef.Load() && !useHW {
+	useHW := c.hwRef && hwref != nil && len(hwref) == len(mono)
+	if c.hwRef && !useHW {
 		// Counted, not logged per period: at 31 periods/s a log line here
 		// would bury the very telemetry used to diagnose it.
 		c.hwMissing++
@@ -654,8 +655,8 @@ func (c *Canceller) noteAttLocked(micRMS, outRMS, refRMS float64, useHW bool, mi
 }
 
 // ProcessMicsWithRef cancels EVERY microphone against the hardware reference
-// and returns the cancelled audio of the one in use (#814). mics holds
-// NumMics buffers of the same period, indexed by channel; active is the
+// and returns the cancelled audio of the one in use (#814). mics holds one
+// buffer per microphone of the same period, indexed by channel; active is the
 // channel the pipeline is reading. See micStates for why one filter is not
 // enough.
 //
@@ -687,10 +688,13 @@ func (c *Canceller) processMics(mics [][]byte, active int, ref []byte, wantAll b
 	if active < 0 || active >= len(mics) {
 		return nil, nil
 	}
+	if ref != nil {
+		ref = c.dealias.clean(ref)
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	mono := mics[active]
-	ok := c.enabled && c.hwRef.Load() && c.micStates[0] != nil && len(mics) == NumMics &&
+	ok := c.enabled && c.hwRef && c.micStates[0] != nil && len(mics) == len(c.micStates) &&
 		len(mono) > 0 && len(mono)%(FrameSize*2) == 0 && len(ref) == len(mono)
 	for _, m := range mics {
 		ok = ok && len(m) == len(mono)
@@ -705,7 +709,7 @@ func (c *Canceller) processMics(mics [][]byte, active int, ref []byte, wantAll b
 	out := make([]byte, len(mono))
 	var all [][]byte
 	if wantAll {
-		all = make([][]byte, NumMics)
+		all = make([][]byte, len(mics))
 		for m := range all {
 			all[m] = append([]byte(nil), mics[m]...)
 		}
@@ -727,8 +731,8 @@ func (c *Canceller) processMics(mics [][]byte, active int, ref []byte, wantAll b
 		c.hwFrames++
 		// The active microphone last, so mic and res still hold its frame
 		// for the telemetry below.
-		for k := 1; k <= NumMics; k++ {
-			m := (active + k) % NumMics
+		for k := 1; k <= len(mics); k++ {
+			m := (active + k) % len(mics)
 			if m != active && c.farQuiet > quietHold {
 				continue
 			}

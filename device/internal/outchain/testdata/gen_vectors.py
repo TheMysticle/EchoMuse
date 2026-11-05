@@ -42,6 +42,7 @@ DEFAULTS = {
     "guardEnabled": True, "guardDb": -30.0,
     "limiterEnabled": True, "limiterThreshold": -1.0, "limiterRelease": 150.0,
     "stockCurve": False,
+    "stockSound": False,
 }
 
 
@@ -100,6 +101,16 @@ CASES = [
          [3, {"limiterEnabled": False}],
          [4, {"limiterEnabled": True, "limiterThreshold": 0.0}],
      ]},
+    # The stock-sound profile (#229): driver correction and the three bands
+    # above the guard. Set from the first chunk only: the Python fixes its
+    # extra crossovers at construction (em_mbc.BassGuard upper_bands).
+    {"name": "stock_speech", "signal": "speechlike", "chunks": 8, "seed": 9,
+     "schedule": [[0, {"stockSound": True}]]},
+    {"name": "stock_bursts_silence", "signal": "bursts", "chunks": 8, "seed": 10,
+     "schedule": [[0, {"stockSound": True}]]},
+    {"name": "stock_bypassed", "signal": "sweep", "chunks": 6, "seed": 11,
+     "schedule": [[0, {"stockSound": True, "guardEnabled": False,
+                       "limiterEnabled": False}]]},
     # Every kind of mid-stream change, each on its own chunk boundary.
     {"name": "live_changes", "signal": "speechlike", "chunks": 20, "seed": 7,
      "schedule": [
@@ -163,26 +174,38 @@ def render(case):
     board = case.get("board", "biscuit")
     is_radar = board == "radar"
 
-    # Mirrors em_player.py's _limiter_params: Radar overrides the config
-    # value regardless of what the schedule carries, same reason the real
-    # call site does — board identity can't change mid-stream, so this is
-    # safe to decide once per case rather than per chunk here too.
+    # Radar runs the Echo's own stock tuning (the Go chain's NewWithTuning,
+    # in the stock profile), which overrides the limiter's config whatever
+    # the schedule carries, as em_player's _limiter_params does. Every other
+    # board runs the generic stages, with the voicing under stockSound.
     def lim_params(p):
-        return em_limiter.params_for(board, p["limiterThreshold"], p["limiterRelease"])
+        if is_radar:
+            return em_limiter.params_for(board, p["limiterThreshold"], p["limiterRelease"])
+        return p["limiterThreshold"], p["limiterRelease"]
 
     lim_threshold_db, lim_release_ms = lim_params(p0)
-    lim = em_limiter.build_limiter(FS, board, threshold_db=lim_threshold_db,
-                                   release_ms=lim_release_ms,
-                                   enabled=p0["limiterEnabled"])
-    guard = em_mbc.build_guard(FS, board, bass_guard_db=p0["guardDb"],
-                               enabled=p0["guardEnabled"])
-    # Radar's chain takes the volume; the device starts it at unity, which
-    # is what every Radar case that never names a volume runs at.
-    chain = em_eq.StreamingEQ(FS, p0["bands"], p0["loudness"],
-                              limiter=lim, guard=guard,
-                              stock_curve=p0.get("stockCurve", False),
-                              volume_gain=(p0.get("volumeGain", 1.0)
-                                           if is_radar else None))
+    if is_radar:
+        lim = em_limiter.build_limiter(FS, board, threshold_db=lim_threshold_db,
+                                       release_ms=lim_release_ms,
+                                       enabled=p0["limiterEnabled"])
+        guard = em_mbc.build_guard(FS, board, bass_guard_db=p0["guardDb"],
+                                   enabled=p0["guardEnabled"])
+        # The chain takes the volume; the device starts it at unity, which
+        # is what every Radar case that never names a volume runs at.
+        chain = em_eq.StreamingEQ(FS, p0["bands"], p0["loudness"],
+                                  limiter=lim, guard=guard,
+                                  stock_curve=p0.get("stockCurve", False),
+                                  volume_gain=p0.get("volumeGain", 1.0))
+    else:
+        lim = em_limiter.Limiter(FS, threshold_db=p0["limiterThreshold"],
+                                 release_ms=p0["limiterRelease"],
+                                 enabled=p0["limiterEnabled"])
+        guard = em_mbc.BassGuard(FS, bass_guard_db=p0["guardDb"],
+                                 enabled=p0["guardEnabled"],
+                                 upper_bands=p0["stockSound"])
+        chain = em_eq.StreamingEQ(FS, p0["bands"], p0["loudness"],
+                                  limiter=lim, guard=guard,
+                                  driver_correction=p0["stockSound"])
     out = []
     for c in range(case["chunks"]):
         p = _params_at(case["schedule"], c)
@@ -232,6 +255,20 @@ def main():
     with open(os.path.join(HERE, "vectors.json"), "w") as f:
         json.dump(manifest, f, indent=1)
         f.write("\n")
+    voice_filter()
+
+
+def voice_filter():
+    """The voice plane's filter (em_eq.voice_sos) on speech-like input, in
+    float: it runs before the mix, so it has no S16 output of its own."""
+    from scipy.signal import sosfilt
+    x = _signal("speechlike", 4, 12)
+    y = sosfilt(em_eq.voice_sos(FS), x.astype(np.float64))
+    for name, data in (("voice_filter.in.s16.gz", x.astype("<i2")),
+                       ("voice_filter.out.f64.gz", y.astype("<f8"))):
+        with open(os.path.join(HERE, name), "wb") as f, gzip.GzipFile(fileobj=f, mode="wb",
+                                                                    mtime=0) as gz:
+            gz.write(data.tobytes())
 
 
 if __name__ == "__main__":

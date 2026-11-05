@@ -33,11 +33,35 @@ package beamformer
 
 import (
 	"fmt"
+	"github.com/wilbowes/EchoMuse/pkg/board"
 	"log"
 	"math"
 	"sync"
 	"time"
 )
+
+// fbfMics is the array the wake beam is designed for: the seven microphones
+// (centre plus six round the edge) that biscuit and radar share. Its beams,
+// the stock tables it is compared with and the mic calibration are all that
+// layout's, so a board with another array has no wake beam (FbfCapable).
+const fbfMics = 7
+
+// FbfCapable reports whether a board's microphone array is the one the wake
+// beam is designed for.
+func FbfCapable(numMics int) bool { return numMics == fbfMics }
+
+// fbfArray is that layout, and fbfMicAngles and fbfCentreCh are read from it
+// so the geometry exists once (pkg/board).
+var fbfArray = board.BiscuitMics()
+
+var fbfCentreCh = fbfArray.Centre
+
+var fbfMicAngles = func() (a [fbfMics]float64) {
+	for _, m := range fbfArray.Perimeter {
+		a[m.Ch] = m.Angle
+	}
+	return a
+}()
 
 // OutputShaping turns the shelf and low-cut on for new paths. A variable so
 // tools/bf_design can replay a capture as the firmware was before they existed.
@@ -168,10 +192,10 @@ const (
 // y towards 12 o'clock, centre mic at the origin. Derived from micAngles, so
 // the geometry exists once.
 func MicPosition(ch int) [2]float64 {
-	if ch == centreCh {
+	if ch == fbfCentreCh {
 		return [2]float64{}
 	}
-	a := micAngles[ch] * math.Pi / 180
+	a := fbfMicAngles[ch] * math.Pi / 180
 	return [2]float64{perimeterRadiusM * math.Sin(a), perimeterRadiusM * math.Cos(a)}
 }
 
@@ -318,7 +342,7 @@ type wakeBeam struct {
 	// neutral output if it is not one of them.
 	chans []int
 	// gain is each channel's calibration, applied as the samples are read.
-	gain    [NumMics]float32
+	gain    [fbfMics]float32
 	calNote string
 	check   micCheck
 	// off is the delay of the neutral (centre mic) output.
@@ -326,8 +350,8 @@ type wakeBeam struct {
 	// hist holds each mic's last maxDelay samples (only the centre mic's are
 	// used, for the neutral output); ext is the scratch the current period is
 	// appended to.
-	hist     [NumMics][]float32
-	ext      [NumMics][]float32
+	hist     [fbfMics][]float32
+	ext      [fbfMics][]float32
 	maxDelay int
 	// out[k] is output k's signal for the period after the canceller: beams 0-7
 	// and the neutral. The selection and the output both read out, so beams are
@@ -433,10 +457,10 @@ func newWakeBeam() *wakeBeam {
 	w.chans = append([]int(nil), fbfChannels...)
 	hasCentre := false
 	for _, ch := range w.chans {
-		hasCentre = hasCentre || ch == centreCh
+		hasCentre = hasCentre || ch == fbfCentreCh
 	}
 	if !hasCentre {
-		w.chans = append(w.chans, centreCh)
+		w.chans = append(w.chans, fbfCentreCh)
 	}
 	// The channels a beam actually sums: those with a nonzero weight anywhere.
 	for b := 0; b < fbfBeams; b++ {
@@ -510,7 +534,7 @@ func (w *wakeBeam) enterOrLeaveTurn(mode int) {
 	}
 }
 
-// process runs one period of NumMics S16 buffers through every beam, picks the
+// process runs one period of fbfMics S16 buffers through every beam, picks the
 // output per block and returns it as S16. During a locked turn the group is
 // frozen on the wake-azimuth choice so a continuous interferer cannot steal
 // the beam; modeBypass parks on the centre mic when the single-mic path is
@@ -540,7 +564,7 @@ func (w *wakeBeam) process(mics [][]byte, gain float64, mode int) (out []byte, c
 	if !w.check.done && !locked {
 		w.check.block(n)
 		if w.check.done {
-			var gains [NumMics]float64
+			var gains [fbfMics]float64
 			for ch := range gains {
 				gains[ch] = float64(w.gain[ch])
 			}
@@ -555,13 +579,13 @@ func (w *wakeBeam) process(mics [][]byte, gain float64, mode int) (out []byte, c
 	}
 	// The beams are formed from the mics' spectra inside the canceller. Each
 	// beam mic's period of samples is the tail of its scratch.
-	var micIn [NumMics][]float32
+	var micIn [fbfMics][]float32
 	for i, ch := range fbfChannels {
 		micIn[i] = w.ext[ch][w.maxDelay:]
 	}
 	w.ara.SetEnabled(w.araOn)
 	w.ara.ProcessMics(micIn[:len(fbfChannels)], w.sd, w.out[:fbfBeams])
-	copy(w.out[fbfNeutral], w.ext[centreCh][w.maxDelay-w.off:])
+	copy(w.out[fbfNeutral], w.ext[fbfCentreCh][w.maxDelay-w.off:])
 
 	out = make([]byte, n*2)
 	g := float32(gain) * w.outGain
@@ -965,7 +989,7 @@ func (w *wakeBeam) pick(k int, score float64) {
 
 func (w *wakeBeam) name(k int) string {
 	if k == fbfNeutral {
-		return fmt.Sprintf("centre (ch%d)", centreCh)
+		return fmt.Sprintf("centre (ch%d)", fbfCentreCh)
 	}
 	b := groupBeams(k)
 	return fmt.Sprintf("group %d (beams %d-%d-%d, %.0f-%.0f deg)", k, b[0], b[1], b[2],
@@ -1102,9 +1126,9 @@ func (b *Beamformer) WakeBeamOn() bool { return b.fbfWant }
 // continuous; use the result only while unlocked.
 //
 // Returns nil if the path is off, still being designed, or the buffers are not
-// NumMics equal ones.
+// fbfMics equal ones.
 func (b *Beamformer) WakeBeam(mics [][]byte) []byte {
-	if !b.fbfWant || !b.fbfReady() || len(mics) != NumMics || len(mics[0]) == 0 {
+	if !b.fbfWant || !b.fbfReady() || len(mics) != fbfMics || len(mics[0]) == 0 {
 		return nil
 	}
 	for _, m := range mics {

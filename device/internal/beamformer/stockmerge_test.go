@@ -12,7 +12,7 @@ import (
 // second when the group had already won some by chance; the first rule moves in
 // about a tenth.
 func TestStockMergerNeedsASecondOfVotesToMove(t *testing.T) {
-	b := New()
+	b := New(biscuit)
 	enableWakeBeam(b)
 	b.SetWakeBeamStock(true)
 	rng := rand.New(rand.NewSource(8))
@@ -57,7 +57,7 @@ func TestStockMergerNeedsASecondOfVotesToMove(t *testing.T) {
 // Inside the group the beams are weighted by their share of the score, and the
 // weights always sum to one so the level does not depend on the scores.
 func TestStockMergerWeightsAreSharesThatSumToOne(t *testing.T) {
-	b := New()
+	b := New(biscuit)
 	enableWakeBeam(b)
 	b.SetWakeBeamStock(true)
 	rng := rand.New(rand.NewSource(9))
@@ -101,7 +101,7 @@ func TestStockMergerWeightsAreSharesThatSumToOne(t *testing.T) {
 
 // The mode is a per-path setting, and switching it back restores the first rule.
 func TestWakeBeamStockSwitchesBothRules(t *testing.T) {
-	b := New()
+	b := New(biscuit)
 	enableWakeBeam(b)
 	x := s16(zeros(NumMics, 2560))
 	b.WakeBeam(x)
@@ -124,7 +124,7 @@ func TestWakeBeamStockSwitchesBothRules(t *testing.T) {
 // beamformed from the first block: no warm-up on the centre mic, and a turn on
 // the single mic does not park it there either.
 func TestStockMergerNeverUsesTheCentreMic(t *testing.T) {
-	b := New()
+	b := New(biscuit)
 	enableWakeBeam(b)
 	b.SetWakeBeamStock(true)
 	rng := rand.New(rand.NewSource(10))

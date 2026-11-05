@@ -75,13 +75,31 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
       id-token: write       # provenance attestation (Sigstore OIDC)
       attestations: write
 
     steps:
+      # The tag reaches a shell below, and git allows $ ( ) ; in a tag name.
+      # Every emOS tag ever cut matches this; anything else is refused before
+      # it can be interpolated anywhere. Same rule as release.yml.
+      - name: Refuse a malformed tag
+        run: |
+          echo "$GITHUB_REF_NAME" | grep -Eq '^emos-v[0-9]+\.[0-9]+(\.[0-9]+)?(-ea\.[0-9]+)?$' || {
+            echo "::error::$GITHUB_REF_NAME is not emos-vX.Y or emos-vX.Y-ea.N"; exit 1; }
+      # Early Access emOS is emos-vX.Y-ea.N, published as a prerelease, which
+      # GA controllers skip (em_emos_update.choose_release); EA and dev
+      # controllers offer it to the wizard and as an update.
+      - name: Channel
+        id: channel
+        run: |
+          case "$GITHUB_REF_NAME" in
+            *-ea.*) echo "prerelease=true"  >> "$GITHUB_OUTPUT" ;;
+            *)      echo "prerelease=false" >> "$GITHUB_OUTPUT" ;;
+          esac
+
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -114,21 +132,14 @@ jobs:
           docker run --rm -v "${{ github.workspace }}/emos":/emos -w /emos \
             echomuse-compiler bash -lc \
             "/opt/android/ndk/21.4.7075529/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang \
-               -static -O2 -Wall -DEMOS_BOARD=biscuit -o build/init init/init.c init/boards/boards_biscuit.c"
+               -static -O2 -Wall -o build/init init/init.c"
 
       - name: Compile init32 (armv7a, for FireOS 6)
         run: |
           docker run --rm -v "${{ github.workspace }}/emos":/emos -w /emos \
             echomuse-compiler bash -lc \
             "/opt/android/ndk/21.4.7075529/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi21-clang \
-               -static -O2 -Wall -DEMOS_BOARD=biscuit -o build/init32 init/init.c init/boards/boards_biscuit.c"
-
-      - name: Compile init32-radar (armv7a, Radar FireOS 6)
-        run: |
-          docker run --rm -v "${{ github.workspace }}/emos":/emos -w /emos \
-            echomuse-compiler bash -lc \
-            "/opt/android/ndk/21.4.7075529/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi21-clang \
-               -static -O2 -Wall -DEMOS_BOARD=radar -o build/init32-radar init/init.c init/boards/boards_radar.c"
+               -static -O2 -Wall -o build/init32 init/init.c"
 
       - name: Verify both are static, and are the architecture each claims
         # Each is silent when wrong and fatal on the device, and CI only checks
@@ -142,15 +153,10 @@ jobs:
             echo "::error::init is not an aarch64 binary"; exit 1; }
           file emos/build/init32 | grep -q "32-bit LSB executable, ARM" || {
             echo "::error::init32 is not a 32-bit ARM binary"; exit 1; }
-          for f in init init32 init32-radar; do
+          for f in init init32; do
             file "emos/build/$f" | grep -q "statically linked" || {
               echo "::error::$f is not statically linked"; exit 1; }
           done
-          file emos/build/init32-radar | grep -q "32-bit LSB executable, ARM" || {
-            echo "::error::init32-radar is not a 32-bit ARM binary"; exit 1; }
-          if cmp -s emos/build/init32 emos/build/init32-radar; then
-            echo "::error::Biscuit and Radar init binaries are identical"; exit 1
-          fi
           if cmp -s emos/build/init emos/build/init32; then
             echo "::error::init and init32 are identical — one triple built both"
             exit 1
@@ -265,12 +271,12 @@ jobs:
         run: |
           python3 emos/tools/make-payload-bundle.py "$GITHUB_REF_NAME" \
             emos/build/emos-payload.zip \
-            emos/build/init emos/build/init32 emos/build/init32-radar \
+            emos/build/init emos/build/init32 \
             emos/build/wpa/wpa_supplicant emos/build/wpa/wpa_cli \
             emos/build/wpa/em-wifi emos/build/bb/busybox
 
       # The off-target checks, against the exact source being published. All
-      # four of them: each drives a parser or an invariant whose failure is
+      # of them: each drives a parser or an invariant whose failure is
       # silent on hardware, which is the criterion in CLAUDE.md for having one.
       - name: Off-target checks
         run: |
@@ -288,6 +294,10 @@ jobs:
           /tmp/serialcheck
           cc -O2 -o /tmp/trialcheck emos/init/trialcheck.c
           /tmp/trialcheck
+          cc -O2 -o /tmp/dnscheck emos/init/dnscheck.c
+          /tmp/dnscheck
+          cc -O2 -o /tmp/devcheck emos/init/devcheck.c
+          /tmp/devcheck
           sh emos/device/em-wifi-check.sh
 
       # Same rule as the firmware release: the notes come from the ANNOTATED
@@ -320,6 +330,7 @@ jobs:
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           name: emOS ${{ github.ref_name }}
+          prerelease: ${{ steps.channel.outputs.prerelease }}
           # The bundle, plus the loose `init` — and that one is NOT redundant.
           # `_fetch_latest_emos_release` selects a release by matching that exact
           # asset name, so a controller already in the field looks for it;

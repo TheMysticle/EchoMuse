@@ -32,7 +32,7 @@ def device():
     d = C.Device("satellite", "127.0.0.1", [], SimpleNamespace(send=AsyncMock(), close=AsyncMock()))
     d.data_ws = SimpleNamespace(send=AsyncMock(), close=AsyncMock())
     d.data_ready.set()
-    d.capabilities = ['output_chain']
+    d.capabilities = ['mic', 'output_chain']
     async def playback_report(raw):
         if raw == b'\x03':
             d.signal_playback_done()

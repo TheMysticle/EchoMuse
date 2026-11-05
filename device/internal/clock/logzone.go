@@ -4,11 +4,12 @@ import (
 	"io"
 	"log"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"time"
 	_ "time/tzdata" // an Echo has no zoneinfo of its own, so the zone database travels in the binary
+
+	"github.com/wilbowes/EchoMuse/internal/atomicfile"
 )
 
 // The log's timestamps are in the zone the controller names, not the device's.
@@ -117,14 +118,7 @@ func ApplyControllerZone(name string) error {
 	if kept, err := os.ReadFile(zonePath); err == nil && strings.TrimSpace(string(kept)) == name {
 		return nil
 	}
-	// Write beside, then rename: a power cut leaves the old zone or the new
-	// one, never half of a name.
-	tmp := zonePath + ".tmp"
-	if err := os.MkdirAll(filepath.Dir(zonePath), 0o755); err != nil {
-		return err
-	}
-	if err := os.WriteFile(tmp, []byte(name+"\n"), 0o644); err != nil {
-		return err
-	}
-	return os.Rename(tmp, zonePath)
+	// atomicfile: a power cut leaves the old zone or the new one, never half
+	// of a name (TestNoBareRenameInTheFirmware).
+	return atomicfile.Write(zonePath, []byte(name+"\n"), 0o644)
 }

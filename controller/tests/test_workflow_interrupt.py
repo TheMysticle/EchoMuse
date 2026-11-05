@@ -30,7 +30,7 @@ def _quiet(monkeypatch):
 
 def bridge(private=True, **config):
     d = device()
-    d.capabilities = ['output_chain', 'oww_local_only']
+    d.capabilities = ['mic', 'output_chain', 'oww_local_only']
     d.oww_on_device = 'on' if private else 'off'
     d.listen_reported = 'local' if private else None
     d.workflow.config = {'mode': W.PIPECAT, 'endpoint': 'ws://unused/api/assist/esphome', **config}

@@ -78,6 +78,8 @@ import numpy as np
 from zeroconf.asyncio import AsyncZeroconf
 from zeroconf import ServiceInfo
 
+import em_boards
+import em_state
 import em_db as db
 import em_events
 import em_hostip
@@ -230,40 +232,12 @@ MDNS_NAME    = os.environ.get("MDNS_NAME", "echomuse")
 # Defaults to the real controller version (version.py) so HA's device page
 # shows the same thing as the dashboard header; env var kept as an override.
 from version import VERSION as _CONTROLLER_VERSION
-# Hardware model reported to Home Assistant. The string carries the
-# board name in parentheses — HA shows it verbatim under "Device info"
-# alongside the manufacturer. One binary supports two boards, so the
-# value MUST be derived from the device's own register message rather
-# than baked in: HA would otherwise show "Echo Dot Gen 2" on every
-# Radar, with no signal that anything is wrong. biscuit is the original
-# target and stays the default for firmware that doesn't report `board`.
-# Add a new board here, not at the call site — see CLAUDE.md "Resolve
-# hardware by NAME".
-ESPHOME_BOARD_MODELS: dict[str | None, str] = {
-    None:    "Echo Dot Gen 2 (biscuit)",   # older firmware without `board`
-    "biscuit": "Echo Dot Gen 2 (biscuit)",
-    "radar":   "Echo 2 (radar)",
-}
-
-
-def esphome_device_model(board_id: str | None) -> str:
-    """
-    The ESPHome device model string for a given board.
-
-    Looked up rather than baked in so the project's two boards (biscuit /
-    radar) each show the right name in Home Assistant's device page.
-    Unknown boards — anything beyond the table — fall back to biscuit so a
-    newly-supported board does not silently mis-identify itself; the fix
-    is to add it to ESPHOME_BOARD_MODELS.
-    """
-    if board_id in ESPHOME_BOARD_MODELS:
-        return ESPHOME_BOARD_MODELS[board_id]
-    log.warning(
-        "esphome: unknown board_id %r, defaulting model to biscuit",
-        board_id,
-    )
-    return ESPHOME_BOARD_MODELS[None]
-
+# HA's ESPHome integration displays the segment after the dot in
+# project_name as the device Model (overriding DeviceInfo's model field),
+# so carry the hardware model there — not the device label. Per device, from
+# the board its firmware reported (em_boards).
+def device_model(device_id: str) -> str:
+    return em_boards.model(em_state.boards.get(device_id))
 
 ESPHOME_PROJECT_VERSION = os.environ.get(
     "ESPHOME_PROJECT_VERSION", _CONTROLLER_VERSION
@@ -481,6 +455,9 @@ class EchoMuseSatellite(SatelliteServerProtocol):
         self._run_finished      = False
         self._ha_ended_early    = False
         self._ha_never_started  = False
+        # TTS_START / ERROR seen this turn — see _ended_without_reply.
+        self._tts_started       = False
+        self._pipeline_error    = False
         # Barge-in run serialisation — the protocol has no run id, so the
         # satellite is what keeps two runs from overlapping on one connection.
         # See em_runbarrier for the whole reasoning; it is a separate module
@@ -637,29 +614,18 @@ class EchoMuseSatellite(SatelliteServerProtocol):
         """
         if isinstance(msg, api_pb2.DeviceInfoRequest):
             log.debug(f"[{self._log_name}] DeviceInfoRequest from {self.peer}")
-            # The model's hardware suffix follows the device's own board,
-            # so Home Assistant shows "Echo Dot Gen 2 (biscuit)" or "Echo 2
-            # (radar)" instead of one constant for everything. board_id is
-            # set on the owning server by device_connected() before the
-            # TCP listener comes up, so it is in place for HA's first
-            # request after a wizard setup. None (older firmware without
-            # `board` in the register message) defaults to biscuit — see
-            # ESPHOME_BOARD_MODELS.
-            _board_id = (self._owning_server.board_id
-                         if self._owning_server is not None else None)
-            _model = esphome_device_model(_board_id)
             yield api_pb2.DeviceInfoResponse(
                 uses_password=False,
                 name=self.server_name,
                 friendly_name=f"{self.label} Voice Assistant",
                 mac_address=self.mac_address,
                 manufacturer="EchoMuse",
-                model=_model,
+                model=device_model(self.device_id),
                 # CRITICAL: dot notation required — HA's manager.py does
                 # project_name.split(".") unconditionally. No dot → IndexError
                 # → device silently never appears in Devices & Services.
                 # (session handoff finding #1)
-                project_name=f"EchoMuse.{_model}",
+                project_name=f"EchoMuse.{device_model(self.device_id)}",
                 project_version=ESPHOME_PROJECT_VERSION,
                 voice_assistant_feature_flags=self._voice_assistant_flags(),
             )
@@ -1018,6 +984,16 @@ class EchoMuseSatellite(SatelliteServerProtocol):
 
     # ── Voice event stream ───────────────────────────────────────────────
 
+    def _ended_without_reply(self) -> bool:
+        """
+        HA finished the intent and ended the run without starting TTS or
+        reporting an error: it chose to say nothing. HA's pipeline skips TTS
+        when the reply is empty, which is what "never mind" (HassNevermind)
+        returns. A TTS_START with no URL after it is still a failure.
+        """
+        return (self._intent_ended and self._run_finished
+                and not self._tts_started and not self._pipeline_error)
+
     def _handle_voice_event(self, msg: api_pb2.VoiceAssistantEventResponse) -> None:
         """
         Dispatch incoming VoiceAssistantEventResponse messages during a
@@ -1110,6 +1086,7 @@ class EchoMuseSatellite(SatelliteServerProtocol):
 
         elif event_type == ET.VOICE_ASSISTANT_TTS_START:
             log.info(f"[{self._log_name}] TTS starting")
+            self._tts_started = True
 
         elif event_type == ET.VOICE_ASSISTANT_TTS_END:
             # TTS URL arrives here in some pipeline configurations.
@@ -1233,6 +1210,7 @@ class EchoMuseSatellite(SatelliteServerProtocol):
             code = data.get("code", "")
             message = data.get("message", "")
             log.warning(f"[{self._log_name}] Pipeline error: {code} — {message}")
+            self._pipeline_error = True
             # C1c fix: if the HA pipeline dies mid-STT, _stream_mic_audio may
             # still be running (waiting on the device's own VAD-end sentinel).
             # Unblock it too, not just the TTS waiter — otherwise the mic
@@ -1477,6 +1455,8 @@ class EchoMuseSatellite(SatelliteServerProtocol):
         self._run_finished          = False
         self._ha_ended_early        = False
         self._ha_never_started      = False
+        self._tts_started           = False
+        self._pipeline_error        = False
         # Takes ownership of an abort armed during the PREVIOUS turn (at the
         # barge). Deliberately not a plain reset: the arm has to survive this
         # block to reach the turn it protects.
@@ -1694,6 +1674,9 @@ class EchoMuseSatellite(SatelliteServerProtocol):
                 # which is not a turn that produced nothing.
                 log.info(f"[{self._log_name}] Turn superseded by Home Assistant")
                 if trace: trace.outcome = "superseded"
+            elif self._ended_without_reply():  # "never mind": not a failure
+                log.info(f"[{self._log_name}] HA ended the turn with no reply")
+                if trace: trace.outcome = "silent_reply"
             else:
                 log.info(f"[{self._log_name}] No TTS audio URL received — turn ended without response")
                 if trace: trace.outcome = "no_tts"
@@ -2242,9 +2225,17 @@ class EchoMuseSatellite(SatelliteServerProtocol):
         # keyed on _turn_cancelled, which this path deliberately never sets,
         # so it covered the thinking barge and missed the playback one it was
         # actually written for.
+        self.note_barged()
+        self.end_ha_run()
+
+    def note_barged(self) -> None:
+        """Record that this turn's reply was cut by a barge, first reason
+        winning. Separate from abort_ha_run because the flush goes out before
+        arbitration (#1007) and the device can report the end of playback in
+        that hold: the turn then finished `ok` before abort_ha_run ran (VVV
+        2026-10-23, twice)."""
         if self._turn_end_reason is None:
             self._turn_end_reason = "barged"
-        self.end_ha_run()
 
     def end_ha_run(self) -> None:
         """
@@ -3312,6 +3303,15 @@ def abort_ha_run(device_id: str) -> None:
     satellite.abort_ha_run()
 
 
+def note_barged(device_id: str) -> None:
+    """Mark the device's turn as cut off by a barge, at the flush. See
+    EchoMuseSatellite.note_barged."""
+    server = get_server(device_id)
+    satellite = server.get_satellite() if server is not None else None
+    if satellite is not None:
+        satellite.note_barged()
+
+
 async def push_media_state(device_id: str, state: str) -> None:
     """
     em_player → HA: proactive MediaPlayerStateResponse on session state
@@ -3761,13 +3761,7 @@ def _make_device_mdns_info(device_id: str, label: str, port: int,
                            mac: str, board_id: str | None = None) -> ServiceInfo:
     svc_name = _mdns_service_name(device_id)
     # The mDNS project_name has to agree with what DeviceInfoResponse.model
-    # says — HA keys discovery on mac_address, but the project_name in the
-    # TXT is what tells a re-running config flow "this is the device I have"
-    # (HA shows the part after the dot under Device info on re-imports).
-    # board_id may be None at startup (the Echo hasn't connected yet) and
-    # esphome_device_model() resolves that to the biscuit default; we
-    # re-publish once the device reports its real board.
-    _model = esphome_device_model(board_id)
+    # says (device_model, from the board stored per device by em_boards).
     return ServiceInfo(
         "_esphomelib._tcp.local.",
         f"{svc_name}._esphomelib._tcp.local.",
@@ -3786,7 +3780,7 @@ def _make_device_mdns_info(device_id: str, label: str, port: int,
             # required to agree, and nothing reports it if they stop.
             "mac": mac.replace(":", "").lower(),
             "network": "ethwifi",
-            "project_name": f"EchoMuse.{_model}",
+            "project_name": f"EchoMuse.{device_model(device_id)}",
             "project_version": ESPHOME_PROJECT_VERSION,
         },
         server=f"{svc_name}.local.",
