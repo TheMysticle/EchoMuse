@@ -1,5 +1,10 @@
 # Bundled sounds
 
+`response_timeout.pcm` is an offline synthesized message: “Sorry, the response
+timed out.” Generated with eSpeak NG (`espeakng-loader`), en-us voice at 155
+words per minute, then resampled to mono signed 16-bit little-endian PCM at
+48 kHz. No speech service or model is needed to play this recovery message.
+
 `timer_finished.flac` is taken unmodified from the Home Assistant Voice
 Preview Edition sound set, so a finished timer sounds like the one people
 already know from HA's own hardware rather than a tone this project invented.

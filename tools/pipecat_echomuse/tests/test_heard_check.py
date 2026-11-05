@@ -284,6 +284,13 @@ PLAY = MCP + "media_player__play_media"
     ("Czy trenował on jakieś szlachetne sztuki walki? Play twenty tens hits", "2010s hits"),
     ("Play Twenty Tens hits in the living room", "2010s hits"),
     ("Play Queen", "Queen"),
+    ("Play two one one five", "2115"),
+    ("Play White two one one five", "White 2115"),
+    ("Play White twenty one fifteen", "White 2115"),
+    ("Zagraj White dwa jeden jeden pięć", "White 2115"),
+    ("Put on two one one five", "2115"),
+    ("Play plu-ti-en-de-beat", "Beauty and the Beat"),
+    ("Play a song whose transcription is completely garbled", "An arbitrary title"),
     ("Zagraj Queen", "Queen"),
     ("Puść coś spokojnego", "calm music"),
     ("Put on Queen", "Queen"),
@@ -311,6 +318,21 @@ def test_music_nobody_asked_for_is_refused(said, title):
 
 def test_an_empty_title_is_refused():
     assert not hc.check(PLAY, {"media_content_type": "music"}, "Play Queen", NAMES)[0]
+
+
+@pytest.mark.parametrize("said,title", [
+    ("plu-ti-en-de-beat", "Beauty and the Beat"),
+    ("White two one one five", "White 2115"),
+    ("two one one five", "2115"),
+    ("White dwa jeden jeden pięć", "White 2115"),
+])
+def test_a_named_title_survives_missing_play_word(said, title):
+    assert hc.check(PLAY, {"media_content_id": title}, said, NAMES)[0]
+
+
+@pytest.mark.parametrize("said", ["później", "step", "shop", "plu-ti-en-de-beat", "two one one five"])
+def test_phonetic_titles_do_not_relax_stop(said):
+    assert not hc.check("EchoMuseStop", {}, said, NAMES)[0]
 
 
 @pytest.mark.parametrize("tool,args", [

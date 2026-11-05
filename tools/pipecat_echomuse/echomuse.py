@@ -530,6 +530,8 @@ def _reply_watch(service):
 
 def reply_user_turn(service):
     """A new user turn: forget the last turn's tool result and its nudge."""
+    cancel_response_watch(service)
+    service._em_turn_expired = False
     watch = _reply_watch(service)
     watch.pending = False
     watch.nudged = False
@@ -559,13 +561,74 @@ def reply_model_turn(service, message):
             watch = _reply_watch(service)
             watch.pending = False
             watch.heard = True
+            cancel_response_watch(service)
             return
 
 
 def reply_output_transcription(service):
+    cancel_response_watch(service)
     watch = _reply_watch(service)
     watch.pending = False
     watch.heard = True
+
+
+RESPONSE_START_SECONDS = 8.0
+
+
+def cancel_response_watch(service):
+    task = getattr(service, "_em_response_task", None)
+    service._em_response_task = None
+    if task is not None and task is not asyncio.current_task():
+        task.cancel()
+
+
+def watch_response(service):
+    """Bound silence from local VAD stop, not from partial transcripts/tools."""
+    if not getattr(service, "_em_response_watch_enabled", False):
+        return
+    # Duplicate stop frames must not postpone the same turn's deadline.
+    if getattr(service, "_em_response_task", None) is not None:
+        return
+    if _reply_watch(service).heard:
+        return
+
+    async def expired():
+        from pipecat.frames.frames import OutputTransportMessageUrgentFrame
+        await asyncio.sleep(RESPONSE_START_SECONDS)
+        service._em_turn_expired = True
+        # The controller plays a local message and rebuilds the whole pipeline.
+        # Stop Gemini now so late output/tool calls cannot leak into that reply.
+        await service.push_frame(OutputTransportMessageUrgentFrame(message={
+            "label": "rtvi-ai", "type": "echomuse-response-timeout"}))
+        await service._disconnect()
+
+    service._em_response_task = service.create_task(expired(), "echomuse_response_watch")
+
+
+async def interrupt_live_response(service):
+    """Pipecat's local interruption alone does not interrupt Gemini Live."""
+    if not getattr(service, "_em_response_watch_enabled", False):
+        return
+    cancel_response_watch(service)
+    service._em_drop_response = True
+    if (getattr(service, "_vad_disabled", False) and service._session
+            and getattr(service, "_ready_for_realtime_input", False)
+            and not getattr(service, "_user_is_speaking", False)
+            and not getattr(service, "_em_interrupt_activity", False)):
+        from google.genai.types import ActivityStart
+        await service._session.send_realtime_input(activity_start=ActivityStart())
+        # Leave the activity open: ending an empty activity can ask Gemini for
+        # another response. The next real speech start reuses this window.
+        service._em_interrupt_activity = True
+
+
+async def start_live_activity(service, frame, start):
+    if getattr(service, "_em_interrupt_activity", False):
+        service._em_interrupt_activity = False
+        service._user_is_speaking = True
+        await service._flush_user_audio_preroll()
+    else:
+        await start(frame)
 
 
 async def answer_silent_tool_turn(service):

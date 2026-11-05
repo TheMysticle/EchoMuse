@@ -107,6 +107,24 @@ add-on's `/data/`, or re-enter its provider/MCP settings and the same satellite
 shared secret. Run only one Pipecat add-on on port 7860. The endpoint URL stays
 `ws://<HA-host>:7860/api/assist/esphome` when hosted on the same machine.
 
+Gemini Live turns have an eight-second response-start deadline measured from
+the add-on's local speech-end event. If no answer starts, the controller plays
+the bundled “Sorry, the response timed out” message and reconnects. It does not
+retry the command: an action may already have completed. Install both add-ons
+for this recovery behavior and the negotiated user-turn markers that prevent
+an interrupted reply from closing the next wake.
+
+Echoes with the same nonempty workflow **area** cede voice wakes to the Echo
+already handling that room's session. The active Echo can still accept its own
+interrupting wake, and an explicit button press remains available. Unassigned
+Echoes are not treated as one room.
+
+The heard check accepts a clear play request without requiring the transcript
+to reproduce a song or artist's spelling. Named titles also support conservative
+phonetic matching and spoken digits such as “White two one one five” for
+“White 2115”. Media search still resolves the requested title against its
+catalogue; these checks do not change stop/pause intent matching.
+
 ### Cerebras Cloud
 
 In the Pipecat add-on, add a **Cerebras Cloud** integration, enter its API key,

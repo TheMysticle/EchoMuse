@@ -24,7 +24,7 @@ def adapt(text):
         text = text.replace(old, new)
     replace('from __future__ import annotations', 'from __future__ import annotations\n\nfrom app import brave_search\nfrom app import echomuse\nfrom app import fast_path\nfrom app import heard_check\nfrom app import mcp_bridge\nfrom app import transcription_languages\nfrom app import tool_scope')
     replace('    await websocket.send_text(_va_pipecat_protocol(config).hello())', '''    hello = json.loads(_va_pipecat_protocol(config).hello())
-    hello["echomuse"] = {"scheduler": bool(session_options.get("scheduler", {}).get("schedules")), "stop": bool(session_options.get("scheduler")), "barge_in": bool(session_options.get("barge_in")), "device_endpoint": _runtime_mode(flow) == "composed"}
+    hello["echomuse"] = {"scheduler": bool(session_options.get("scheduler", {}).get("schedules")), "stop": bool(session_options.get("scheduler")), "barge_in": bool(session_options.get("barge_in")), "device_endpoint": _runtime_mode(flow) == "composed", "turn_events": _runtime_mode(flow) != "composed"}
     await websocket.send_text(json.dumps(hello))''')
     replace('    model = integration.default_model or provider.default_model or DEFAULT_WEB_SEARCH_MODEL\n\n    if provider.kind in {"openai", "openai_cloud"}:', '''    if provider.kind == "brave_search":
         api_key = (provider.api_key or "").strip()
@@ -105,6 +105,8 @@ def adapt(text):
             await super()._handle_msg_input_transcription(message)
 
         async def _handle_msg_output_transcription(self, message):
+            if getattr(self, "_em_drop_response", False) or getattr(self, "_em_turn_expired", False):
+                return
             sc = getattr(message, "server_content", None)
             text = getattr(getattr(sc, "output_transcription", None), "text", None)
             if text:
@@ -113,6 +115,8 @@ def adapt(text):
             await super()._handle_msg_output_transcription(message)
 
         async def _handle_msg_model_turn(self, message):
+            if getattr(self, "_em_drop_response", False) or getattr(self, "_em_turn_expired", False):
+                return
             sc = getattr(message, "server_content", None)
             parts = getattr(getattr(sc, "model_turn", None), "parts", None) or []
             text = "".join(p.text for p in parts if getattr(p, "text", None) and not getattr(p, "thought", False))
@@ -122,11 +126,15 @@ def adapt(text):
             await super()._handle_msg_model_turn(message)
 
         async def _handle_msg_turn_complete(self, message):
+            if getattr(self, "_em_drop_response", False) or getattr(self, "_em_turn_expired", False):
+                return
             heard_check.state_of(self).bot_text_out("")
             await super()._handle_msg_turn_complete(message)
             await echomuse.answer_silent_tool_turn(self)
 
         async def _handle_msg_tool_call(self, message):
+            if getattr(self, "_em_drop_response", False) or getattr(self, "_em_turn_expired", False):
+                return
             echomuse.reply_tool_call(self)
             await super()._handle_msg_tool_call(message)
 
@@ -160,7 +168,31 @@ def adapt(text):
         '''            await super()._handle_user_started_speaking(frame)
 ''',
         '''            echomuse.reply_user_turn(self)
-            await super()._handle_user_started_speaking(frame)
+            await echomuse.start_live_activity(self, frame, super()._handle_user_started_speaking)
+''',
+    )
+    replace(
+        '            await super()._handle_user_stopped_speaking(frame)\n',
+        '''            await super()._handle_user_stopped_speaking(frame)
+            self._em_drop_response = False
+            echomuse.watch_response(self)
+
+        async def _handle_interruption(self):
+            await echomuse.interrupt_live_response(self)
+            await super()._handle_interruption()
+
+        async def _disconnect(self):
+            echomuse.cancel_response_watch(self)
+            self._em_interrupt_activity = False
+            await super()._disconnect()
+''',
+    )
+    replace(
+        '        if bridge and mcp_tools_schema:\n            await bridge.register_tools_schema(mcp_tools_schema, llm)\n',
+        '''        if provider_kind == "gemini":
+            llm._em_response_watch_enabled = bool(session_body.get("echomuse"))
+        if bridge and mcp_tools_schema:
+            await bridge.register_tools_schema(mcp_tools_schema, llm)
 ''',
     )
     replace('local_turn_detection=bool(_enabled_step(flow, "vad")),', 'local_turn_detection=bool(_enabled_step(flow, "vad") or session_body.get("echomuse", {}).get("barge_in")),')
@@ -1171,6 +1203,39 @@ def build_ui(out_dir: Path) -> None:
         shutil.rmtree(node_modules)
 
 
+def adapt_protocol(protocol):
+    old = 'phase_extra = {"terminal": True} if terminal else {"follow_up": True}'
+    assert protocol.count(old) == 1
+    protocol = protocol.replace('    tool_start_pending: bool = False', '    tool_start_pending: bool = False\n    continuation_requested: bool = False')
+    protocol = protocol.replace('            self.tool_start_pending = False\n            return "wake"', '            self.tool_start_pending = False\n            self.continuation_requested = False\n            return "wake"')
+    protocol = protocol.replace('            self.tool_start_pending = False\n            return "stop"', '            self.tool_start_pending = False\n            self.continuation_requested = False\n            return "stop"')
+    protocol = protocol.replace(old, 'phase_extra = {"terminal": True} if terminal else {"follow_up": True, "continuation_question": self.continuation_requested}')
+    protocol = protocol.replace('            self.active = not terminal\n            self.stop_requested = False', '            continuation_question = self.continuation_requested\n            self.continuation_requested = False\n            self.active = not terminal\n            self.stop_requested = False')
+    protocol = protocol.replace('phase_extra = {"terminal": True} if terminal else {"follow_up": True, "continuation_question": self.continuation_requested}', 'phase_extra = {"terminal": True} if terminal else {"follow_up": True, "continuation_question": continuation_question}')
+    protocol = protocol.replace('self.phase_message("listening", follow_up=True)', 'self.phase_message("listening", follow_up=True, continuation_question=continuation_question)')
+    anchor = '            return self.phase_message("listening")\n\n        if message_type in {"user-stopped-speaking", "vad-user-stopped-speaking"}:\n            return self.phase_message("thinking")'
+    if protocol.count(anchor) != 1:
+        raise ValueError("Upstream user-turn event anchor changed")
+    protocol = protocol.replace(anchor, '            return self.phase_message("listening", user_started=True)\n\n        if message_type in {"user-stopped-speaking", "vad-user-stopped-speaking"}:\n            return self.phase_message("thinking", user_stopped=True)')
+    anchor = '        if message_type in {"error", "error-response"}:'
+    if protocol.count(anchor) != 1:
+        raise ValueError("Upstream timeout event anchor changed")
+    protocol = protocol.replace(anchor, '''        if message_type == "echomuse-response-timeout":
+            return self.error_message("response_timeout", "The response timed out", recoverable=False)
+
+''' + anchor)
+    # RTVI's error message says whether the pipeline can go on (`fatal`); the
+    # protocol dropped it, so every error was reported to the controller as
+    # recoverable and, before the controller read that flag, as fatal.
+    error_old = '''                str(data.get("message") or data.get("error") or "Pipecat pipeline error"),
+            )'''
+    assert protocol.count(error_old) == 1
+    protocol = protocol.replace(error_old, '''                str(data.get("message") or data.get("error") or "Pipecat pipeline error"),
+                recoverable=not bool(data.get("fatal")),
+            )''')
+    return protocol
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--source', type=Path, required=True)
@@ -1189,24 +1254,7 @@ def main():
     path.write_text(adapt(path.read_text(encoding='utf-8')), encoding='utf-8')
     path = args.out/'app/va_pipecat_protocol.py'
     protocol = path.read_text(encoding='utf-8')
-    old = 'phase_extra = {"terminal": True} if terminal else {"follow_up": True}'
-    assert protocol.count(old) == 1
-    protocol = protocol.replace('    tool_start_pending: bool = False', '    tool_start_pending: bool = False\n    continuation_requested: bool = False')
-    protocol = protocol.replace('            self.tool_start_pending = False\n            return "wake"', '            self.tool_start_pending = False\n            self.continuation_requested = False\n            return "wake"')
-    protocol = protocol.replace('            self.tool_start_pending = False\n            return "stop"', '            self.tool_start_pending = False\n            self.continuation_requested = False\n            return "stop"')
-    protocol = protocol.replace(old, 'phase_extra = {"terminal": True} if terminal else {"follow_up": True, "continuation_question": self.continuation_requested}')
-    protocol = protocol.replace('            self.active = not terminal\n            self.stop_requested = False', '            continuation_question = self.continuation_requested\n            self.continuation_requested = False\n            self.active = not terminal\n            self.stop_requested = False')
-    protocol = protocol.replace('phase_extra = {"terminal": True} if terminal else {"follow_up": True, "continuation_question": self.continuation_requested}', 'phase_extra = {"terminal": True} if terminal else {"follow_up": True, "continuation_question": continuation_question}')
-    protocol = protocol.replace('self.phase_message("listening", follow_up=True)', 'self.phase_message("listening", follow_up=True, continuation_question=continuation_question)')
-    # RTVI's error message says whether the pipeline can go on (`fatal`); the
-    # protocol dropped it, so every error was reported to the controller as
-    # recoverable and, before the controller read that flag, as fatal.
-    error_old = '''                str(data.get("message") or data.get("error") or "Pipecat pipeline error"),
-            )'''
-    assert protocol.count(error_old) == 1
-    protocol = protocol.replace(error_old, '''                str(data.get("message") or data.get("error") or "Pipecat pipeline error"),
-                recoverable=not bool(data.get("fatal")),
-            )''')
+    protocol = adapt_protocol(protocol)
     path.write_text(protocol, encoding='utf-8')
     path = args.out/'app/mcp_bridge.py'
     bridge = path.read_text(encoding='utf-8')

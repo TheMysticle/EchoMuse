@@ -33,6 +33,7 @@ import base64
 import json
 import logging
 import os
+from pathlib import Path
 import time
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -128,6 +129,22 @@ def barge_profile(config):
 
 class ProtocolError(ValueError):
     """A safe, static diagnostic code (never a server response or credential)."""
+
+
+def active_room_session(device):
+    """An existing Pipecat turn owns its configured room until it finishes."""
+    import em_state
+    workflow = device.workflow
+    area = " ".join(workflow.config.get("area", "").replace("_", " ").casefold().split())
+    if not area:
+        return None
+    for peer in (device, *list(em_state.devices.values())):
+        bridge = peer.workflow
+        peer_area = " ".join(bridge.config.get("area", "").replace("_", " ").casefold().split())
+        if (bridge.active and peer_area == area
+                and (bridge.awake or bridge.draining or getattr(bridge, "opening", False))):
+            return peer.device_id
+    return None
 
 
 def _frame_class():
@@ -297,6 +314,7 @@ async def handshake(config, device_id):
                 raise ProtocolError("echomuse_pipecat_adapter_required")
             ws.echomuse_audio_format = (audio["output_sample_rate"], audio["channels"])
             ws.echomuse_device_endpoint = hello.get("echomuse", {}).get("device_endpoint") is True
+            ws.echomuse_turn_events = hello.get("echomuse", {}).get("turn_events") is True
     except BaseException:
         await ws.close()
         raise
@@ -318,6 +336,8 @@ class Bridge:
         self.switching = False
         self.lock = asyncio.Lock()
         self.awake = False
+        self.opening = False
+        self.awaiting_user_turn = False
         self.accept_audio = True
         self.session: int | None = None
         self.session_deadline = 0.0
@@ -391,7 +411,19 @@ class Bridge:
         if self.playback_tasks and not self.awake:
             await self.cancel_output(force=True)
         async with self.session_lock:
-            return await self._wake(session, age_ms=age_ms, button=button, wake_info=wake_info)
+            owner = active_room_session(self.device) if not button else None
+            if owner and owner != self.device.device_id:
+                log.info("[%s] Pipecat wake ceded to active room session on %s", self.device.device_id, owner)
+                if session is not None:
+                    await self.device.listen_close(session, "ceded")
+                return False
+            # Reserve before _wake first yields, including while it acquires
+            # speaker ownership. Two nearly simultaneous winners cannot open.
+            self.opening = True
+            try:
+                return await self._wake(session, age_ms=age_ms, button=button, wake_info=wake_info)
+            finally:
+                self.opening = False
 
     async def _wake(self, session=None, *, age_ms=0, button=False, wake_info=None):
         """Open only the numbered session announced by the device's wake."""
@@ -438,6 +470,7 @@ class Bridge:
         self.device.cancel_event.clear()
         self.session_epoch += 1
         self.awake = True
+        self.awaiting_user_turn = bool(getattr(self.ws, "echomuse_turn_events", False))
         self.accept_audio = True
         self.session = session
         self.endpointed = False
@@ -658,7 +691,9 @@ class Bridge:
         else:
             trigger = "wakeword"
         heard = turn["first_audio"] >= 0
-        if reason in ("conversation_ended", "response_finished", "ended") and heard:
+        if reason == "response_timeout":
+            outcome = "timeout"
+        elif reason in ("conversation_ended", "response_finished", "ended") and heard:
             outcome = "ok"
         elif not heard and turn["vad_end"] < 0:
             outcome = "no_speech"
@@ -1018,6 +1053,14 @@ class Bridge:
 
     async def on_event(self, event):
         """Apply one va-pipecat JSON message while a session is open."""
+        if self.awaiting_user_turn:
+            if event.get("user_stopped"):
+                self.awaiting_user_turn = False
+            elif not (event.get("user_started") or event.get("role") == "user"
+                      or event.get("type") == "interrupt"):
+                # Audio/terminal events already in flight belong to the
+                # interrupted reply, not the command following this wake.
+                return
         if event.get("type") == "transcript":
             self.note_transcript(event)
         elif event.get("phase") == "thinking":
@@ -1120,6 +1163,16 @@ class Bridge:
                 if not isinstance(event, dict):
                     raise ProtocolError("invalid_va_pipecat_event")
                 if event.get("type") == "error":
+                    if event.get("code") == "response_timeout":
+                        if self.awake:
+                            await self.cancel_output(force=True)
+                            # Bundled speech works even when the model or network
+                            # cannot answer. Never retry a possibly completed tool.
+                            pcm = await asyncio.to_thread(
+                                (Path(__file__).parent / "sounds" / "response_timeout.pcm").read_bytes)
+                            self.output_pcm(pcm)
+                            await self.end_session(reason="response_timeout", drain=True)
+                        raise ProtocolError("response_timeout")
                     now = loop.time()
                     self.error_times = [t for t in self.error_times if now - t < ERROR_BURST_S] + [now]
                     if event.get("recoverable") is not True or len(self.error_times) >= ERROR_BURST_COUNT:
@@ -1142,6 +1195,8 @@ class Bridge:
             if not self.awake:
                 if raw_pcm and isinstance(raw, bytes):
                     await self.unsolicited_audio(ws, loop.time())
+                continue
+            if self.awaiting_user_turn:
                 continue
             if raw_pcm:
                 rate, channels = ws.echomuse_audio_format

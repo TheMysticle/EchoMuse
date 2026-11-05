@@ -210,6 +210,55 @@ class Heard(set):
     def __init__(self, transcript: str):
         super().__init__(heard_words(transcript))
         self.joined = "".join(words(transcript))
+        self.tokens = words(transcript)
+
+
+def _sound_key(text: str) -> str:
+    """A conservative English/Polish consonant key for names, never intents."""
+    text = "".join(words(text))
+    for source, target in (("ph", "f"), ("th", "t"),
+                           ("cz", "ch"), ("sz", "sh"), ("rz", "zh"),
+                           ("qu", "k"), ("ck", "k"), ("c", "k"),
+                           ("v", "f"), ("w", "f"), ("d", "t"), ("p", "b")):
+        text = text.replace(source, target)
+    text = re.sub(r"[aeiouy]", "", text)
+    return re.sub(r"(.)\1+", r"\1", text)
+
+
+def name_sounds_heard(phrase: str, heard: Heard) -> bool:
+    """Match a whole name across transcript word/hyphen boundaries.
+
+    Require a substantial full phrase and similar lengths; short commands,
+    room fragments and arbitrary consonant subsequences are not evidence.
+    """
+    target = "".join(words(phrase))
+    key = _sound_key(phrase)
+    if len(target) < 8 or len(key) < 4:
+        return False
+    for start in range(len(heard.tokens)):
+        for end in range(start + 1, min(len(heard.tokens), start + 12) + 1):
+            candidate = "".join(heard.tokens[start:end])
+            if not .7 <= len(candidate) / len(target) <= 1.3:
+                continue
+            sound = _sound_key(candidate)
+            if sound == key or (len(key) >= 6 and _one_edit(sound, key)):
+                return True
+    return False
+
+
+def media_title_heard(title: str, transcript: str) -> bool:
+    # A digit-by-digit artist/title (White 2115) is often transcribed as words.
+    # Keep this normalization out of action/stop evidence and HA entity names.
+    digits = dict(zip("zero one two three four five six seven eight nine".split(), "0123456789"))
+    digits.update(zip("zero jeden dwa trzy cztery piec szesc siedem osiem dziewiec".split(), "0123456789"))
+
+    def normalize(text):
+        text = " ".join(digits.get(token, token) for token in words(text))
+        return re.sub(r"(?<=\d) +(?=\d)", "", text)
+
+    heard = Heard(normalize(transcript))
+    title = normalize(title)
+    return phrase_heard(title, heard) or name_sounds_heard(title, heard)
 
 
 def phrase_heard(phrase: str, heard: set[str]) -> bool:
@@ -347,6 +396,9 @@ def check(tool: str, args: dict, transcript: str, names: Names | None = None) ->
         cands = names.entity(name)
         if any(phrase_heard(n, heard) for n in cands):
             return True, f"'{name}' heard"
+        if (fam != "stop" and request_said(short, fam, transcript, heard)
+                and any(name_sounds_heard(n, heard) for n in cands)):
+            return True, f"'{name}' sounds like the heard name"
         # People say part of a name: "the fan" for Ceiling Fan, "rolety" for
         # Living Room Blinds, "kolor lampy" for Floor Lamp. Part of it is
         # enough once the request itself was said; which device of several
@@ -362,9 +414,10 @@ def check(tool: str, args: dict, transcript: str, names: Names | None = None) ->
         # Gemini's title need not match its transcript ("2010 hits" for "Twenty
         # Ten hits"), and working out what a title means is the Spotify
         # integration's search, so here only the request has to have been said.
-        if q and heard & PLAY_WORDS:
+        if q and (heard & PLAY_WORDS or re.search(r"\bput\s+on\b", fold(transcript))):
             return True, "play request heard"
-        return (True, "query heard") if phrase_heard(q, heard) else (False, f"'{q}' was not said")
+        return ((True, "query heard") if media_title_heard(q, transcript)
+                else (False, f"'{q}' was not said"))
     if fam:
         if heard & set(INTENT_WORDS[fam].split()) or (fam in NUMBER_FAMILIES and NUMBER.search(transcript)):
             return True, f"{fam} request heard"
@@ -562,6 +615,9 @@ def gated(service, handler):
             return await handler(params)
         state = state_of(service)
         transcript = await state.evidence()
+        if getattr(service, "_em_turn_expired", False):
+            await params.result_callback({"error": "response_timeout"})
+            return
         ok, why = check(tool, dict(params.arguments or {}), transcript, state.names)
         if ok:
             return await handler(params)
