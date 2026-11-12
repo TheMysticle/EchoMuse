@@ -402,8 +402,14 @@ def adapt(text):
         '                    user_turn_strategies=UserTurnStrategies(\n                        stop=[SpeechTimeoutUserTurnStopStrategy(user_speech_timeout=0.2)]',
         '''                    user_turn_strategies=UserTurnStrategies(
                         start=echomuse.composed_turn_start_strategies(session_body.get("echomuse", {})),
-                        stop=[SpeechTimeoutUserTurnStopStrategy(
+                        stop=[echomuse.wake_tail_stop_strategy(SpeechTimeoutUserTurnStopStrategy)(
                             user_speech_timeout=getattr(stt, "extra_turn_silence_secs", 0.2))]''',
+    )
+    # Gemini Live: the wake word's tail alone must not end the turn
+    # (echomuse.wake_tail_stop_strategy).
+    replace(
+        '                user_turn_strategies=UserTurnStrategies(\n                    stop=[SpeechTimeoutUserTurnStopStrategy(user_speech_timeout=0.2)]',
+        '                user_turn_strategies=UserTurnStrategies(\n                    stop=[echomuse.wake_tail_stop_strategy(SpeechTimeoutUserTurnStopStrategy)(user_speech_timeout=0.2)]',
     )
 
     # Service settings already supply the full system instructions. Keeping

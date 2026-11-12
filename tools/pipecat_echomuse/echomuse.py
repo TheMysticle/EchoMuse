@@ -219,6 +219,85 @@ def composed_turn_start_strategies(settings):
     )]
 
 
+# A session starts 260 ms before the wake word's crossing (docs/listening.md,
+# "The first audio of a session"), so its first speech is the end of the wake
+# word. Said with a pause before the command, that tail is a speech segment of
+# its own, and with stop_secs 0.3 and a 0.2 s turn timeout the turn ended
+# before the command was said: Gemini got "...xa" and answered a sentence it
+# invented ("I'm going to go to the store.", 2026-11-12 14:16:48 and 14:16:53,
+# both segments under 50 ms of wall time because the held pre-roll arrives as
+# one burst). Lengths are therefore counted in AUDIO received, never wall time.
+SESSION_GAP_S = 1.0      # no audio this long: the next audio is a new session
+WAKE_TAIL_WINDOW_S = 0.8  # a segment starting this early is the wake word's
+WAKE_TAIL_MAX_S = 0.5    # at most this much speech is a tail, not a command
+WAKE_PAUSE_S = 1.5       # how long to wait for the command after the tail
+
+
+def wake_tail_stop_strategy(base):
+    """A turn stop strategy that waits out the pause after the wake word.
+
+    Only the first speech segment of a session, starting in its first
+    WAKE_TAIL_WINDOW_S of audio and shorter than WAKE_TAIL_MAX_S, gets
+    WAKE_PAUSE_S instead of the usual timeout; speech resuming in that window
+    cancels it as any resumed speech does. A command run on from the wake word
+    is longer, so it ends exactly as before. If nothing follows, the turn ends
+    after WAKE_PAUSE_S, as it did before after 0.2 s.
+    """
+    import time
+
+    from pipecat.frames.frames import InputAudioRawFrame
+
+    class WakeTailStop(base):
+        _em_audio_s = 0.0
+        _em_last_audio = None
+        _em_first_segment = True
+        _em_segment_start = None
+
+        async def process_frame(self, frame):
+            if isinstance(frame, InputAudioRawFrame):
+                now = time.monotonic()
+                if self._em_last_audio is None or now - self._em_last_audio > SESSION_GAP_S:
+                    # The Echo streams nothing between sessions (private listening).
+                    self._em_audio_s = 0.0
+                    self._em_first_segment = True
+                    self._em_segment_start = None
+                self._em_last_audio = now
+                width = 2 * max(1, frame.num_channels)
+                self._em_audio_s += len(frame.audio) / width / frame.sample_rate
+            return await super().process_frame(frame)
+
+        async def _handle_vad_user_started_speaking(self, frame):
+            # The VAD reports a start once start_secs of speech is behind it.
+            self._em_segment_start = max(0.0, self._em_audio_s - frame.start_secs)
+            await super()._handle_vad_user_started_speaking(frame)
+
+        def em_is_wake_tail(self, stop_secs):
+            start = self._em_segment_start
+            if not self._em_first_segment or start is None:
+                return False
+            speech = self._em_audio_s - stop_secs - start
+            return start < WAKE_TAIL_WINDOW_S and speech < WAKE_TAIL_MAX_S
+
+        async def _handle_vad_user_stopped_speaking(self, frame):
+            tail = self.em_is_wake_tail(frame.stop_secs)
+            self._em_first_segment = False
+            if not tail:
+                await super()._handle_vad_user_stopped_speaking(frame)
+                return
+            usual, self._user_speech_timeout = self._user_speech_timeout, WAKE_PAUSE_S
+            try:
+                await super()._handle_vad_user_stopped_speaking(frame)
+            finally:
+                self._user_speech_timeout = usual
+            try:
+                from loguru import logger
+                logger.debug("Wake word tail heard on its own; waiting {:.1f}s for the command", WAKE_PAUSE_S)
+            except ImportError:
+                pass
+
+    return WakeTailStop
+
+
 # Cartesia closes a streaming socket after five minutes without a message and
 # has no keepalive. Pipecat reconnects when it notices, but text sent in the
 # same moment goes to a socket that is closing and is lost: the reply was
