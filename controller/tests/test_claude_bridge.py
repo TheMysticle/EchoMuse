@@ -283,3 +283,33 @@ def test_a_report_session_ends_after_it_is_said(fresh_db):
         finally:
             await d.workflow.stop()
     asyncio.run(main())
+
+
+# ----- a long spoken request (2026-11-15: cut off at 8.2s) -------------------
+
+def test_speech_keeps_the_listen_window_open_and_silence_does_not(fresh_db, monkeypatch):
+    import numpy as np
+
+    async def main():
+        d = bridge()
+        try:
+            assert await d.workflow.wake(3)
+            loop = asyncio.get_running_loop()
+            speech = (np.sin(np.arange(1280) / 3) * 3000).astype('<i2').tobytes()
+            silence = bytes(2560)
+            first = d.workflow.session_deadline
+            clock = [loop.time()]
+            monkeypatch.setattr(type(loop), 'time', lambda self: clock[0])
+            clock[0] += 6
+            d.workflow.feed(silence, 3)
+            assert d.workflow.session_deadline == first          # quiet room: no renewal
+            d.workflow.feed(speech, 3)
+            assert d.workflow.session_deadline == clock[0] + W.LISTEN_IDLE_S
+            clock[0] += W.LISTEN_SPEECH_MAX_S
+            held = d.workflow.session_deadline
+            d.workflow.feed(speech, 3)
+            assert d.workflow.session_deadline == held           # capped per listening turn
+        finally:
+            monkeypatch.undo()
+            await d.workflow.stop()
+    asyncio.run(main())

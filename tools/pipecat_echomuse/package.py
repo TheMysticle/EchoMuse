@@ -746,6 +746,18 @@ def adapt_text_agent(text):
 def adapt_mcp_bridge_pool(text):
     """Appends the per-device MCP bridge pool to app/mcp_bridge.py."""
 
+    # The controller's own per-speaker server is never served from the tool
+    # schema cache: its list changes at runtime (the PC bridge's Claude tools
+    # appear when it is configured, schedules with a capability), it is one
+    # LAN round trip, and a cached copy outlived a controller restart and hid
+    # the Claude tools for good (2026-11-15).
+    old = """            schema = await bridge.tools_schema(
+                cache_enabled=cache_enabled,"""
+    if text.count(old) != 1:
+        raise ValueError("Upstream mcp_bridge.py anchor changed: CombinedMCPBridge.tools_schema")
+    text = text.replace(old, """            schema = await bridge.tools_schema(
+                cache_enabled=cache_enabled and spec.get("id") != "echomuse",""")
+
     marker = "async def check_mcp("
     if text.count(marker) != 1:
         raise ValueError("Upstream mcp_bridge.py anchor changed: " + marker)

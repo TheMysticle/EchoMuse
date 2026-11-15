@@ -679,6 +679,27 @@ after; not while a voice turn or a ringing timer owns the ring
   add-on's `AUDIO_DEBUG_ENABLED` was off). Shared conversations
   (docs/voice-workflow.md) answer the double replies by name, not area.
 
+- **2026-11-15 — a Pipecat (Gemini Live) request over ~8s was cut off mid-sentence.**
+  "Ask Claude on my PC to design a 3D printable coffee tamper..." ended as
+  `listen_timeout after 8.2s`: `LISTEN_IDLE_S` is renewed only by a server
+  message, and a realtime server sends none while the user talks (the
+  add-on's VAD events never cross the wire). The reply then arrived with no
+  session open ("Pipecat is speaking with no session open"). Fix:
+  `Bridge.hear_speech` renews the window while the Echo's own session audio
+  is speech (int16 RMS >= 500; speech measured 750-2600 at the add-on), at
+  most `LISTEN_SPEECH_MAX_S` 45s into one listening turn. A loud room can
+  hold a session open that long at most; the Echo's endpoint, its own session
+  limit and `SESSION_MAX_S` still end it. em_workflow.py's size baseline was
+  raised 1517 -> 1534 for this.
+- **2026-11-15 — the Claude tools were missing although the controller listed
+  them.** The add-on caches each MCP server's tool list and the cache survived
+  a controller restart: fetched at 17:54 before `claude_bridge_url` was set,
+  reused at 18:02 ("Using cached MCP tool schema for EchoMuse controls"). The
+  controller's own server is now never cached (`package.adapt_mcp_bridge_pool`,
+  pinned by `test_pipecat_adapter.py`). The tools stay on the controller rather
+  than a Pipecat "Integration": only the controller knows which Echo asked,
+  and it is the one that speaks the answer back there.
+
 ### HA entities beyond the voice satellite
 
 Both are advertised **only when the device declares the capability** — an

@@ -59,6 +59,9 @@ PCM_RATES = (8000, 16000, 22050, 24000, 44100, 48000)
 # mid-sentence keeps the listening window open and a person who said nothing
 # loses the session in LISTEN_IDLE_S. Native Assist ends a silent turn at 5s.
 LISTEN_IDLE_S = 8.0     # mic open, nothing heard from the server
+# Speech at the Echo renews the listen window (a realtime server is silent while
+# the user talks), at most this far into one listening turn (docs/history).
+LISTEN_SPEECH_RMS, LISTEN_SPEECH_MAX_S = 500, 45.0
 THINK_IDLE_S = 30.0     # mic gated, server working (matches the native TTS wait)
 REPLY_IDLE_S = 10.0     # reply audio started, then the server went quiet
 SESSION_MAX_S = 120.0   # whole conversation, continuations included
@@ -491,6 +494,7 @@ class Bridge:
         self.session_deadline = 0.0
         self.session_hard_deadline = 0.0
         self.deadline_reason = "listen_timeout"
+        self.listen_since = 0.0
         self.session_started = 0.0
         self.session_epoch = 0
         self.output_epoch = 0
@@ -551,6 +555,7 @@ class Bridge:
                 or self.device.muted or not self.accept_audio or self.reply_gated
                 or self.endpointed or session != self.session or self.status not in {"connected", "connecting"}):
             return
+        self.hear_speech(pcm)
         if self.queue.full():
             self.queue.get_nowait()
         self.queue.put_nowait((self.session_epoch, pcm))
@@ -849,10 +854,22 @@ class Bridge:
         return (self.awake and self.accept_audio and not self.endpointed
                 and not self.speaking and not self.uplink_closed)
 
-    def arm(self, seconds, reason):
-        """Set the idle deadline poll() enforces, and the name it is logged under."""
-        self.session_deadline = asyncio.get_running_loop().time() + seconds
+    def arm(self, seconds, reason, renew=False):
+        """Set the idle deadline poll() enforces; any arm but touch()'s renewal starts a new wait."""
+        now = asyncio.get_running_loop().time()
+        if reason == "listen_timeout" and not (renew and self.deadline_reason == reason):
+            self.listen_since = now
+        self.session_deadline = now + seconds
         self.deadline_reason = reason
+
+    def hear_speech(self, pcm):
+        if self.deadline_reason != "listen_timeout" or len(pcm) < 2:
+            return
+        now = asyncio.get_running_loop().time()
+        if self.deadline_reason == "listen_timeout" and now - self.listen_since < LISTEN_SPEECH_MAX_S:
+            x = np.frombuffer(pcm[:len(pcm) // 2 * 2], dtype="<i2").astype(np.float32)
+            if x.size and float(np.sqrt(np.mean(x * x))) >= LISTEN_SPEECH_RMS:
+                self.session_deadline = max(self.session_deadline, now + LISTEN_IDLE_S)
 
     def touch(self):
         """Any server message restarts the idle window for what the session is waiting on."""
@@ -861,7 +878,7 @@ class Bridge:
         elif not self.accept_audio:
             self.arm(THINK_IDLE_S, "think_timeout")
         else:
-            self.arm(LISTEN_IDLE_S, "listen_timeout")
+            self.arm(LISTEN_IDLE_S, "listen_timeout", renew=True)
 
     async def end_session(self, session=None, *, reason="ended", notify=True, drain=False):
         if not drain and (session is None or session == self.session):

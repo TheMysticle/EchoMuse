@@ -604,3 +604,21 @@ def test_the_model_is_told_the_households_zone_and_never_a_time():
     assert 'Ask' in adapter.timezone_rule({}) and 'Ask' in adapter.composed_instructions({}, 'en')
     package = (ROOT/'tools/pipecat_echomuse/package.py').read_text(encoding='utf-8')
     assert 'echomuse.timezone_rule(session_body["echomuse"])' in package
+
+
+def test_the_controllers_tool_list_is_never_served_from_the_schema_cache():
+    """A cached copy outlived a controller restart and hid the Claude tools (2026-11-15)."""
+    spec = importlib.util.spec_from_file_location('em_pipecat_package', ROOT/'tools/pipecat_echomuse/package.py')
+    package = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(package)
+    upstream = ('class CombinedMCPBridge:\n    async def tools_schema(self):\n'
+                '        for spec, bridge in self.bridges:\n'
+                '            schema = await bridge.tools_schema(\n                cache_enabled=cache_enabled,\n'
+                '                cache_ttl_seconds=cache_ttl_seconds,\n            )\n\n\nasync def check_mcp(\n    url):\n    pass\n')
+    adapted = package.adapt_mcp_bridge_pool(upstream)
+    assert 'cache_enabled=cache_enabled and spec.get("id") != "echomuse",' in adapted
+    with pytest.raises(ValueError):
+        package.adapt_mcp_bridge_pool(upstream.replace('cache_enabled=cache_enabled,', 'cache=True,'))
+    built = ROOT/'dist/pipecat-assist-echomuse-dev/app/mcp_bridge.py'
+    if built.exists():
+        assert 'spec.get("id") != "echomuse"' in built.read_text(encoding='utf-8')
