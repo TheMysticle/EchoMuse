@@ -16,6 +16,7 @@ from pathlib import Path
 
 import _sources
 import em_state
+import em_listen
 
 CONTROLLER = Path(__file__).resolve().parents[1]
 
@@ -151,7 +152,8 @@ def test_a_device_that_goes_private_releases_its_models():
     import em_controller   # imports without openwakeword since it became lazy
 
     dev = types.SimpleNamespace(device_id="d1", private_listening=True, mic_capable=True,
-                                workflow=types.SimpleNamespace(switching=False, active=False, awake=False))
+                                workflow=types.SimpleNamespace(switching=False, active=False, awake=False),
+                                listen_view=em_listen.ListenView(em_listen.STATE_LOCAL, False))
     seen = {}
 
     async def fake_private(d):

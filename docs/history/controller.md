@@ -41,6 +41,14 @@ Key env vars in `.env` (see `.env.example` for the full list):
   directions; the missing env mapping is the quiet one, since Supervisor
   accepts, displays and stores the setting and `em_start` warns to a log
   nobody reads.
+- **2026-11-12: `DEVICE_APPROVAL` / the add-on's "Device approval policy" has
+  no effect.** Found by the scenario harness. The first migration seeds
+  `system_config.device_approval = 'strict'`, and `handle_control` reads
+  `db.get_config("device_approval", DEVICE_APPROVAL)`, so the env value is
+  only a default for a key that always exists. `auto` set in the add-on is
+  stored and shown by Supervisor and silently ignored; only the dashboard's
+  PATCH `/api/system/config` changes it. Fails safe (strict). Not fixed yet:
+  which should win, the option or the dashboard, is Wil's call.
 
 ### Home Assistant add-on
 
@@ -224,6 +232,10 @@ match the CA) into the add-on's `/data/tls/`. The devices then verify,
 arrive at a controller whose DB does not know them, and are allowed through
 because `em_linkauth` **ignores** a token for a device with nothing on
 record; they appear as pending and are approved onto fresh config.
+
+- 2026-11-03: the EA and dev add-ons cannot run at once: both take the
+  device ports 8767/8770 on the host network, so whichever starts second
+  errors. Satellite ports differ by channel; the device link does not.
 
 ### Voice backend
 
@@ -643,6 +655,12 @@ the same `meter_anim` a reply gets, for the clip's known length, and clears it
 after; not while a voice turn or a ringing timer owns the ring
 (`em_scenes.announcement_ring`). Until then the opening message of a
 `start_conversation` played with the ring dark.
+
+- **2026-11-03, HA's "Set up voice assistant" failing with `required key not
+  provided @ data['entity_id']`** after a satellite was deleted and re-added
+  was a STALE BROWSER TAB: the dialog looks the satellite up in the page's
+  `hass.entities`. HA's registry and `assist_satellite/get_configuration` were
+  correct throughout; a refresh fixed it.
 
 ### HA entities beyond the voice satellite
 
@@ -1265,7 +1283,7 @@ single written ladder. `docs/audio-states.md` §2 is the nearest thing.
 | `em_endpoints.py` | The fleet's controller address list (`controllerEndpoints`, fleet-only via `em_config_sections.FLEET_KEYS`): validation to what a device can dial (IP literals, RFC 1123 names, ports) and the `controller.json` #166's firmware reads. Delivered as a FILE over the shell plane on save (one retry at 30s) and on connect, and by the wizard over adb. **Two removal rules on purpose**: the fleet sync removes only a file carrying `managed_by`, so hand-written files survive an upgrade; the wizard removes any file, because at provisioning this controller is the source of truth (Wil, 2026-09-24). mDNS fallback always on |
 | `em_wifi.py` | What a WiFi network may be called (0–32 arbitrary bytes, `ssid_hex` on the wire) and what its WPA2 passphrase may be. Mirrors `device/internal/wifi/ssid.go` and the dashboard's `_ssidProblem`/`_pskProblem`; `_post_device_wifi` checks with it so a bad request fails before a device-side switch and rollback |
 | `em_tcp.py` | The device link at the TCP layer: thin-stream retransmission on every accepted device socket (`tune`), `TCP_INFO` reads for downlink loss (`read_info`, `LossWindow`), and the per-minute grade behind the Status tab's Link tile (`MinuteStrip`, `verdict`). Tested against real sockets |
-| `em_health.py` | Boot-time health from the register message as dashboard lines: eMMC wear (EXT_CSD life-time and pre-EOL, worse of the two estimates; below rev 7 the bytes are not health) and boot reason (watchdog/panic = warning). Schema v28: `device_boots`, one row per kernel `boot_id` for the reason; `device_wear`, one row per device per day (latest reading wins, written on change) from the register message and the stats tick, so a device that never reboots still builds a history. Pure, tested from the spec's edges |
+| `em_health.py` | Boot-time health from the register message as dashboard lines: eMMC wear (EXT_CSD life-time and pre-EOL, worse of the two estimates; below rev 7 the bytes are not health) and boot reason (watchdog/panic = warning). Schema v28: `device_boots`, one row per kernel `boot_id` for the reason; `device_wear`, one row per device per day (latest reading wins, written on change) from the register message and the stats tick, so a device that never reboots still builds a history. Pure, tested from the spec's edges. Schema v33 (#1135, 2026-11-08): MediaTek routes its own software restarts through the watchdog, so every donut and emOS Dot reboot read `wdt_by_pass_pwk` and showed as unplanned; the previous boot's `em_crashlog` verdict is stored as `device_boots.prev_clean`, a watchdog reason with a clean log is "(clean restart)", level ok, and panic, crash, thermal or an unread log stay warnings |
 | `em_dbwriter.py` | One worker thread for database writes nothing reads back, in submission order. **No coroutine in `em_controller` calls `db.*` directly** (`tests/test_db_off_loop.py`, by AST): writes go through `em_dbwriter.submit`, reads through `run_in_executor`. A synchronous write held the loop for the commit plus any wait on `_db_lock`, which executor threads share — measured 2026-09-26 at 114ms p99 / 122ms max loop lateness with a 20,000-turn activity read holding the lock, against 18ms / 42ms queued. `submit` never raises, which also fixed a delete bug: the disconnect path's `log_device` hit `FOREIGN KEY constraint failed` for the device just deleted, inside `handle_control`'s `finally`, and skipped the `_devices.pop` and service release after it with nothing logged |
 | `em_tasks.py` | `spawn` for background tasks nothing awaits: held in a set until done, exception logged when it happens. **No `asyncio.create_task` result is discarded** in em_api/em_controller/em_esphome, and every task wrapping an `Event.wait()` is torn down in a `finally` of the function that made it (`tests/test_tasks.py`, by AST). The second rule is the one that bit: `_run_post_turn_playback` cancelled its helpers at the end of its `try`, so a cancelled playback left two `Event.wait()` tasks pending — "Task was destroyed but it is pending!" on the dev add-on 2026-09-25, reproduced against 2.23.0 |
 | `em_linkauth.py` | The device-link auth decision as a pure function. Split out of `em_controller._link_auth_ok` so it is testable: the suite does not import em_controller, so this was security logic with no coverage until it orphaned a device |
@@ -2066,6 +2084,59 @@ on 07MU 2026-10-23, end to end, then a network update to `emos-v0.11-ea.1` in
 this TWRP marks the slot it installed to as active, so the post's flip makes
 the second install hit B again: install until slot A has been written, and
 finish on `_b`, the slot `boot-root.zip` patches for root.
+
+### Donut (2026-11-10, first run on hardware 2026-11-15)
+
+- **2026-11-10, walked the emOS flow for a donut, code only.** Before this a
+  donut was refused at Connect (`_echoBoard` knew biscuit and radar), and past
+  that `donorVerdict` would have refused it three ways: no amonet LK (it is
+  unlocked with kaeru), a 64-bit kernel where FireOS 6 meant 32-bit, and
+  `/system` lacking biscuit's MT6620 WiFi tools (its MT7668 is SDIO, brought
+  up from `wlan_mt76x8_sdio*.ko`). All three are now board-aware. The
+  controller side already knew the donut (`em_emos_build` cmdline recipe,
+  `skip_initramfs`, `FIREOS6_BOARDS`; `em_boards` model; init's ttyGS0 major).
+- **Bench run on 41C8, 2026-11-15** (back to stock first: boot_a d57017aa,
+  boot_b 5e10fa26, cache and data wiped in TWRP). TWRP reports **3.7.0_9-0**
+  (omni_donut); by-name is the same under `platform/bootdevice` and
+  `platform/mtk-msdc.0`: boot_a p10, boot_b p11, swdl p12 (`recovery` →
+  swdl), system_a p13, system_b p14, cache p15, userdata p16. `lk_a`, `lk_b`,
+  `tee1`, `tee2` and `preloader` point at `/tmp/ota-decoy/*`, the real ones at
+  `*_real`: the unlock's guard against an OTA, and names the wizard never
+  writes. Both slots hold FireOS 6 but different builds (system_a 6.5.5.5,
+  system_b 6.5.7.5); slot B was active, and the gate read it right. **No
+  `bin/e2fsck` in either slot**, only `vendor/bin/fsck_msdos_mtk`: the gate
+  refused before any write. emOS now carries its own (#1182), so the donut
+  list no longer asks for Amazon's. `/init recovery` from the emOS console
+  reaches TWRP on the donut too.
+- **First full donut run, 2026-11-15** (dev controller, `emos-v0.12-ea.1`,
+  which carries #1134 and #1182). Three attempts. (1) Step 1 hung silently on
+  the duplicate-serial path: `AdbClient.close()` was awaited before the choice
+  was shown and never returned on this TWRP; a retry got through. (2) The
+  Echo reset partway through step 5's wake word push (~18 MB into the
+  run's writes, official power brick, nothing logged) and booted stock
+  FireOS; nothing had been written but /data. (3) Clean: flash to boot_a,
+  slot set to A, `fsck_data status=0 by=/sbin/e2fsck`, /dev/stpbt, all ten
+  wake word files from the on-connect reconcile within seconds, listening
+  privately, HA connected. Deleting the old record made it a new device, so
+  strict approval asked once. TWRP's format of /data sets **max mount count
+  10** (biscuits read -1), so e2fsck runs a full check every tenth boot; a
+  read-only full check of its 1.5 GB /data took 0.07 s. TWRP's toybox `dd`
+  rejects `conv=fsync`. Led to: no picker, no asset step, bounded close.
+- **An Echo reports `stream` from boot until its first config, and the
+  controller could start a stream into it** (41C8, 2026-11-15). After a
+  reboot the Echo registered with `stream` (firmware default before config),
+  the controller logged "listening: unknown (streams continuously)" and began
+  `_stream_listen`, which loads its model and THEN sends `mic_start`. The
+  Echo reported `local` 0.9s after connecting; the load took 2.9s (no other
+  Echo had the model cached), so `mic_start` reached a private Echo and sent
+  nothing. With a cached model it would have landed in the window. Fixed by
+  `em_listen.awaiting_report`: an `unknown` Echo is waited on, and
+  `_stream_listen` re-checks before `mic_start`. The firmware's boot default
+  (stream until config) is the other half: **Wil 2026-11-15, the Echo is
+  inert until its first config** (device side owed, spec first).
+- **`test_a_signature_is_kept_beside_its_binary_and_pruned_with_it` is flaky**
+  (2026-11-15: pass, fail, pass on one checkout): `em_firmware.prune` orders by
+  mtime and the test's three writes share a tick. Not yet fixed.
 
 ### The emOS flow, and what a run against real hardware found
 

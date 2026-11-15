@@ -109,6 +109,13 @@ own wake word is either broken or waiting on an install, and it still answers
 the button. Quietly streaming instead would make the dashboard's privacy
 statement false without anyone choosing it.
 
+**Nor does `unknown`.** Until a private-capable Echo set to On this Echo
+reports `local` or `degraded`, the controller starts nothing for it: no
+`mic_start`, no scorer (`em_listen.awaiting_report`). The Echo boots in the
+streaming state and holds it until its first config arrives, so a `mic_start`
+sent in that window would stream; one Echo that never reports stays
+unanswered, which is button-only, never a stream.
+
 `legacy` does stream, and is shown doing so. That is today's firmware
 behaviour; the fix is a firmware update, and the dashboard says so.
 
@@ -207,6 +214,11 @@ The Echo scores against:
   above it (`em_barge.decide`'s rule), because a single frame at a bar ten
   times below the wake threshold fired on the assistant's own voice.
 
+At `owwThreshold` one frame is enough by default. `OWW_MIN_FRAMES` on the
+Echo (1–4, #294) asks for that many consecutive frames instead; the wake is
+dated from the first of them, so the session starts at the same audio. It is
+not on the dashboard and changes nothing at the barge-in bar.
+
 With barge-in off, a wake heard while a reply plays is still reported and the
 controller declines it (`listen_close`), so the rule lives in one place.
 
@@ -270,6 +282,12 @@ earliest-heard when:
   contains the reply or the music; a barge-in is always this case;
 - the Echoes' MICPGA or digital gain settings differ, since those are still
   inside the reading.
+
+**An Echo with a timer ringing wins before any of that** (#862): a wake word
+over a ring is answering it, and the ringer, heard over its own alarm, would
+otherwise lose on time to whichever neighbour heard it first. Among several
+ringing Echoes the rules above choose. A ringer's claim that arrives after
+the hold has ended still meets the granted winner.
 
 Why not time: the scorer works in 80 ms frames on a grid that starts at a
 different moment on each Echo, so the order of hearing is mostly frame

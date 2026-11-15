@@ -22,13 +22,15 @@ are shape guards on the shipped source.
 
 from pathlib import Path
 
+import _sources
+
 CONTROLLER = Path(__file__).resolve().parents[1]
 
 
 def _listener_src() -> str:
     src = (CONTROLLER / "em_controller.py").read_text()
     start = src.index("async def wake_word_listener")
-    return src[start:start + 30_000]
+    return src[start:start + 40_000]
 
 
 def test_link_down_stands_down_before_the_ladder():
@@ -72,9 +74,8 @@ def test_past_the_grace_the_ladder_runs_zombie_repair():
 
 def test_both_time_sources_are_updated():
     src = (CONTROLLER / "em_controller.py").read_text()
-    hd = src[src.index("device.data_ws = ws"):]
-    hd = hd[:hd.index("async def", 10)]
-    assert "data_connected_at" in hd, \
+    hd = _sources.code_only(_sources.def_source("em_controller.handle_data"))
+    assert "device.data_connected_at =" in hd, \
         "handle_data must timestamp each new connection"
     # Both ends anchored from the SAME start, or the slice silently inverts:
     # the end marker is searched from 0, so any `except asyncio.TimeoutError`

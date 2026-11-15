@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import em_esphome as esphome
+import em_volume
 
 
 def _run(coro):
@@ -32,10 +33,11 @@ def test_a_bare_volume_command_reaches_only_the_named_device(monkeypatch):
             _send_volume_set=AsyncMock())
         monkeypatch.setitem(esphome._servers, "A", server)
         assert esphome.command_device_volume("A", 0.2) is True
-        # 20% of unity (127) on the plain-proportion law.
-        assert sent == [round(0.2 * 127)]
+        # 20% on the button band (em_volume, upstream #1093).
+        want = em_volume.ha_volume_to_device(0.2)
+        assert sent == [want]
         await asyncio.sleep(0)
-        server._send_volume_set.assert_awaited_once_with(round(0.2 * 127))
+        server._send_volume_set.assert_awaited_once_with(want)
     _run(main())
 
 

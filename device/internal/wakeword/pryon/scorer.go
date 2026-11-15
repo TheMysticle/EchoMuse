@@ -221,6 +221,10 @@ func (s *Scorer) TakeBargeWindow() (peak, bar float32, frames uint64) {
 // calibrated against.
 func (s *Scorer) SetThreshold(float32) {}
 
+// SetMinFrames is accepted and ignored for the same reason: the decoder
+// decides a wake by its own rule, not frame by frame at a bar.
+func (s *Scorer) SetMinFrames(int) {}
+
 // SetBargeThreshold turns the lower, playback bar on (any t > 0) with the
 // predicate that says when audio is playing. The bar itself is the model's.
 func (s *Scorer) SetBargeThreshold(t float32, active func() bool) {

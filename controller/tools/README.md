@@ -7,7 +7,7 @@ it as `Authorization: Bearer`, and delete it afterwards):
 
 ```bash
 docker cp controller/tools/devshell.py echomuse-controller:/tmp/
-docker exec echomuse-controller python /tmp/devshell.py "<shell command>" ["<another>" ...]
+docker exec -e EM_DEVICE=<device id> echomuse-controller python /tmp/devshell.py "<shell command>" ["<another>" ...]
 ```
 
 - **devshell.py** — run commands on a device over the `/shell` proxy (PTY
@@ -28,7 +28,7 @@ docker exec echomuse-controller python /tmp/devshell.py "<shell command>" ["<ano
   `server` symlink and `busybox killall server`.
 - **pull_so.py** — pull a file off the device (busybox base64 over the
   shell, echo disabled, split end-markers). Writes the decoded file to
-  stdout: `python /tmp/pull_so.py /system/lib64/libled_hal.so > out.so`.
+  stdout: `EM_DEVICE=<device id> python /tmp/pull_so.py /system/lib64/libled_hal.so > out.so`.
 - **push_file.py** — the other direction, for arbitrary paths (`ota.py`
   only writes the firmware slot): `python /tmp/push_file.py <device_id>
   /tmp/oww_probe /data/local/tmp/oww_probe --chmod 755`. Reconnects every
@@ -54,3 +54,12 @@ Two run anywhere, with the test venv:
   issue is the reporter's data: never commit one.
 - **config_map.py** — regenerates `docs/config-keys.md` from the code;
   `tests/test_config_map.py` fails until it is run after a key changes.
+
+And one needs openwakeword, so neither the test venv nor CI can run it:
+
+- **trim_check.py** — whether the controller's trim of openwakeword's 10 s
+  raw-audio buffer (`_trim_oww_raw_buffer`, #176) changes any score, and what
+  it saves per predict: it builds a stock and a trimmed model over the same
+  audio from `device/internal/wakeword/testdata/vad_fixture.pcm` and compares
+  every prediction. Run from the repo root where openwakeword is installed
+  (a dev box or the controller image): `python controller/tools/trim_check.py`.

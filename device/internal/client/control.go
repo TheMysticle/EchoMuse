@@ -1530,6 +1530,9 @@ func capabilities() []string {
 	// key from the controller in place of pairing, and run without
 	// advertising itself. Every board that has "sendspin" has it.
 	caps = append(caps, "group_member")
+	if thermalReadable() {
+		caps = append(caps, "thermal")
+	}
 	return caps
 }
 

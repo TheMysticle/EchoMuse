@@ -9,6 +9,9 @@ the matching section there before changing that area or a rule.
 **Before diagnosing a fault, reopening a decision or changing a default, grep
 `docs/history/` and `JOURNAL.md` for the symptom, setting or function name.**
 The stories behind the rules are no longer loaded; this is how they are found.
+JOURNAL.md is an archive to 2026-10-25. **A finding that produces no commit**
+(a measurement, a cause ruled out, a hardware fact) **goes in
+`docs/history/<area>.md` as a dated bullet under the matching heading.**
 
 ## What this is
 
@@ -163,7 +166,7 @@ own wake word fires, then only until end of speech; "On the controller"
 
 Any device/controller pairing can occur in the field (`tests/test_capabilities.py`):
 
-- **Negotiate by capability, never by version string.** The register message lists them (`internal/client/control.go`, `capabilities()`): `mic`, `speaker`, `leds`, `led_anim`, `buttons`, `oww_shadow`, `oww_trigger`, `button_hold`, `audio_mix`, `aec_hw_ref`, `oww_local_only`, `output_chain`, `wake_cue`, `volume_cue`, `remote_volume_arc`, `response_level`, `stock_sound` (only with a board voicing), `wake_mic`, `wake_beam`, `wake_beam_ara`, `wake_beam_turns`, `wake_beam_stock` (all four only on a 7-mic array), `wake_endpoint`, `wake_pryon` (only when the Echo's own decoder is present), `voice_prebuffer`, `pairing`, `sendspin`, `ble_connect`, `wake_word_off`, and `ambient_light` only when the sensor is readable. A UI control whose feature is missing is **disabled with the reason**. `oww_shadow` (scores) and `oww_trigger` (acts) must stay two; without `audio_mix` keep the pause/resume path. When a capability cannot be proven at registration, report the runtime state separately (`aec_hw_ref` vs `aecRef` on stats) and gate UI on that.
+- **Negotiate by capability, never by version string.** The register message lists them (`internal/client/control.go`, `capabilities()`): `mic`, `speaker`, `leds`, `led_anim`, `buttons`, `oww_shadow`, `oww_trigger`, `button_hold`, `audio_mix`, `aec_hw_ref`, `oww_local_only`, `output_chain`, `wake_cue`, `volume_cue`, `remote_volume_arc`, `response_level`, `stock_sound` (only with a board voicing), `wake_mic`, `wake_beam`, `wake_beam_ara`, `wake_beam_turns`, `wake_beam_stock` (all four only on a 7-mic array), `wake_endpoint`, `wake_pryon` (only when the Echo's own decoder is present), `voice_prebuffer`, `pairing`, `sendspin`, `ble_connect`, `wake_word_off`, `ambient_light` only when the sensor is readable, and `thermal` only when the kernel exposes a thermal zone. A UI control whose feature is missing is **disabled with the reason**. `oww_shadow` (scores) and `oww_trigger` (acts) must stay two; without `audio_mix` keep the pause/resume path. When a capability cannot be proven at registration, report the runtime state separately (`aec_hw_ref` vs `aecRef` on stats) and gate UI on that.
 - **Both ways**: the `ack` carries the controller's `features`. Adding a message is safe unnegotiated; MOVING one never is — the new path is silently discarded.
 - **A static boot property rides REGISTER, not the stats tick, and is persisted** — its consumer (`em_reconcile.on_connect`) runs before the first tick. `base_os` (schema v21): absence means Android for payload gating, but must NOT disable a control.
 - The controller sets the device clock via `time_ms` on the `ack`, stepped only past 30s; no NTP on the device.
@@ -259,6 +262,7 @@ git submodule update --init          # GoTinyAlsa fork — see device/CLAUDE.md
 cd device && ./compile.sh            # needs the echomuse-compiler image
 cd device && go test ./...
 cd controller && python -m pytest tests/   # needs: pytest numpy scipy pyyaml
+cd controller && python -m pytest scenarios/   # + aioesphomeapi; never in one run with tests/ (protobuf clash)
 cd emos/init && cc -O2 -o /tmp/ringsim ringsim.c -lm && /tmp/ringsim --check
 cd emos/init && cc -O2 -o /tmp/pwcheck pwcheck.c && /tmp/pwcheck
 cd emos/init && cc -O2 -o /tmp/tmoutcheck tmoutcheck.c && /tmp/tmoutcheck

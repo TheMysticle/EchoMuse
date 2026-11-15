@@ -63,6 +63,20 @@ keep `pkg/led`, `pkg/mic`, `pkg/speaker` and `pkg/buttons` honest as
 interfaces, and treat each Android call site as something to isolate. Nothing
 here commits the project to shipping a distro.
 
+- **2026-11-15, emOS carries its own e2fsck.** The Dot 3's FireOS 6 has no ext4
+  checker: on 41C8 both slots (6.5.5.5 and 6.5.7.5) ship only
+  `vendor/bin/fsck_msdos_mtk`. init ran `/system/bin/e2fsck -p` on /data
+  unconditionally, so every donut boot under emOS since 2026-11-03 mounted /data
+  unchecked behind a failed exec. Found by the wizard's donor gate (#1160 bench),
+  which refused before writing anything. e2fsprogs 1.47.4, static armv7 on
+  Alpine like busybox (530 KB, 344 KB gzipped); bundled blkid and uuid, so no
+  util-linux LGPL in a static binary. musl 1.2.4 has no `lseek64` symbol, so
+  `ac_cv_func_lseek64=yes` + `-D_LARGEFILE64_SOURCE` (else blkid's `_syscall5`
+  shim fails to compile). Under qemu: clean image 0, a bad link count fixed by
+  `-p` (1), root inode not a directory refused for a manual run (4). init now
+  prefers `/sbin/e2fsck`, so FireOS 5 images move to ours too; the trail names
+  the checker (`by=`), or `none`.
+
 ## Where a standard exists, conform to it and prove it
 
 **If what we are handling has a known standard or spec, abide by the spec, and
@@ -330,3 +344,9 @@ image was built beside, two devices sharing a serial). `emos/device/em-wifi-chec
 in the pinned compiler image, and
 asserts the result is static — a dynamically linked PID 1 produces no output
 at all, which is indistinguishable from a kernel that never started.
+
+- **2026-11-03, JOURNAL.md stopped at 2026-10-25** and is the archive before
+  that date. The why of a change is in its commit; the why of a rule is here
+  under its heading; a finding that produced no commit (a measurement, a
+  cause ruled out, a hardware fact) goes here too, as a dated bullet under the
+  matching heading. Those are the "do not look there again" facts.

@@ -22,6 +22,9 @@ The Echo Dot runs FireOS 5 (API 22). Standard Go cross-compilation won't work �
 # signal-interrupted WRITEI returns, so the rest of the buffer was silently
 # dropped — ~15 audible clicks an hour per device, on every playback path,
 # before; 0 after. Don't repoint it upstream until that one is there too.
+# Fork PR #4 (2026-11-08) added GetAudioStreamChunked for the donut loopback
+# (#1139), merged with a merge commit so 990b29c, the commit EchoMuse pins,
+# stays reachable from the fork's master; a squash would orphan the pin.
 git submodule update --init
 
 # Build the compiler Docker image (from device/)
@@ -230,6 +233,24 @@ The always-on wake stream (`mic_start` without `lock_mic`) is **ungated and AGC-
 
 - **VAD** (lock_mic turns only) runs on pre-NS/AGC audio; opens gate after `VAD_SPEECH_MS` of speech, closes after `VAD_SILENCE_MS` of silence, then sends an end-of-speech sentinel
 
+- **2026-11-03, the Dot 3 woke 1 time in 5 beside the radar's 5 of 5** (41C8
+  and 035T side by side, normal voice, "Hey Verona"). Not mic gain: on the one
+  wake both heard the Dot 3 was louder by only 1.2 dB, noise floors matched
+  (0.0074 vs 0.0066-0.0122), and a raw capture puts its four mics at -65 dBFS
+  against a Dot 2's -63..-65 in the same quiet room. Its wake stream is ONE
+  corner mic (ch1, no centre mic), so the leading suspect is the body shading
+  that mic from a talker on another side; not yet tested per corner. Its high
+  clip count (29,631 in 13 min, against hundreds on a Dot 2) came while it
+  played, i.e. its own speaker into its mics.
+- **2026-11-03, superdirective beams are the direction** (Wil), for the Dot 2
+  and the Dot 3, still gated on noisy-room captures. The 10-14 "noisy" run
+  (`log-noisy.txt`) was SYNTHETIC: quiet-room takes with their own noise
+  raised 12-30 dB, so a real TV/fan/music/own-reply capture has never been
+  made. Commercial devices (Echo, HomePod, XMOS-based satellites) cancel echo
+  per mic, form fixed directional beams and score the wake word per beam or
+  best stream; none uses one raw mic or a plain sum. Tooling for the capture:
+  `device/tools/capture_session` with the bench raw tap.
+
 ### The speaker's voicing (stock sound, #229, 2026-10)
 
 **Firmware that announces `stock_sound` always voices its own speaker; there
@@ -304,6 +325,72 @@ own files that informed it stay off the repo (Amazon's).
 | `internal/wifi/` | Safe WiFi network change with auto-rollback (wifi_change/wifi_commit/wifi_scan control messages; pending-marker recovery at startup). Reload path is `svc wifi disable/enable` ONLY — see package comment for the hardware-proven constraints. **An SSID is 0–32 arbitrary BYTES and is handled as bytes** (`ssid.go`): decoded from wpa_cli's printf_encode, carried as `ssid_hex`, compared as bytes, and written quoted when wpa_supplicant's quoted form can hold it (it reads to the LAST `"`, so quotes and backslashes are literal) or as hex when not. Until 2026-09-19 every path refused `"` and `\`, trimmed spaces, and wrote escaped text back as a different network — and the emOS wizard put SSIDs into a shell command |
 | `internal/bluetooth/` | BLE proxy — raw HCI passive scan over `/dev/stpbt` (single-owner, so Android's Bluedroid is durably `pm disable`d first), parsed into adverts and forwarded to the controller. `emit.go` decides which of them are worth sending; see "The BLE proxy" below, and read it before changing the scan cadence or the filtering |
 | `pkg/led/`, `pkg/mic/`, `pkg/speaker/`, `pkg/buttons/` | Hardware abstractions (interfaces) |
+
+- **2026-11-02, FireOS's WifiService rewrites `wpa_supplicant.conf` from
+  memory on `svc wifi enable`**, so restoring a backed-up conf by copying it
+  and toggling WiFi does nothing (VVV lost its network that way). Change WiFi
+  through the firmware's own wifi change path, never by copying the conf.
+- 2026-11-02: on 64-bit emOS (no busybox payload) the shell's `nslookup` and
+  `wget` are Amazon's bionic builds, which resolve through netd's
+  `dnsproxyd` and so fail; the firmware resolves since #1085. Debugging only.
+
+- **2026-11-10, Sendspin asks for stereo Opus** (Wil: stereo from the
+  source, downmixed on the device where the output is mono). libopus 1.5.2
+  decoder, fixed point with NEON, measured on VVV at 1.3GHz with 60s of
+  synthetic audio: stereo 128k **2.14%** of one core, 160k 2.22%, mono 64k
+  speech 1.42%, music and speech at once 3.53-3.62%, three identical runs.
+  Mono FLAC, what it replaces, was 3.28% (PR #271), at about three times the
+  bytes. Firmware +193KB. Built from libopus's own source lists with the NDK
+  clang in echomuse-compiler: no cmake; the encoder needs OPUS_SOURCES_FLOAT
+  (analysis.c), the decoder alone does not.
+- **2026-11-10, Music Assistant 2.10.9 pins aiosendspin 10.2.1** (dev: 10.3.0),
+  not the 9.1.1 the interop test was written against. 10.x always sends the
+  13-byte chunk header; renames `decode_token` to `decode_psk_token` with the
+  `SP:0` token format unchanged (an Echo's token still pairs); and wants
+  `client_id` in a `PairingAttempt`. The interop test now runs both versions.
+- **2026-11-10, `client/state` carries the delay under both names.** 9.1.1
+  reads `static_delay_ms`, 10.x `output_delay_ms` (it maps the old key, logs
+  "non-compliant client ... pre-rename" twice per connection, key and
+  `set_static_delay`, and aiosendspin #393 plans to stop accepting them).
+  Neither handshake identifies the server, and 9.1.1 rejects an unknown
+  command name, so the command keeps its 9.1.1 name. MA moved to 10.x in
+  2.10.7 (2026-10-17); 2.10.0-2.10.6 run 9.1.1. Drop the old names when
+  supporting those stops being worth the warnings. Interop now checks the
+  delay round trip on both.
+- **2026-11-10, left/right pairs survive a stereo request.** MA 2.10.9
+  (`controllers/streams/audio.py`) pans a left or right player with
+  `pan=stereo|c0=FL|c1=FL` when the format is stereo, so the Echo gets its own
+  side on both channels and the average is that side. From the code; by ear
+  on 2026-11-15 (below).
+- **2026-11-10, under 10.x a stream that starts before the player's first
+  `client/state` loses ~its lead (~1.8-2s for us).** Not the clock and not a
+  drop on the device: 10.x keeps a role "awaiting state" out of every stream
+  (`SendspinClient.join_active_stream`), and when the state arrives joins it
+  to the running stream as a late joiner at now + that role's lead
+  (`get_late_join_target_timestamp_us`); the skipped audio is never sent.
+  Timeline (interop, ms after activation): stream started 52, our state 78,
+  first chunk stamped 1.86s past the stream's start. Generic to every spec
+  client (the spec holds the first state until the clock converges); ours
+  loses more because we ask for a 2s lead. Narrowed, spec-aligned: the
+  clock now converges in two round trips (onTime asks again at once) where
+  the 200ms ladder took ~250ms. Wil: keep spec-aligned, no early state. Real
+  exposure: MA starting a stream within ~80ms of connecting. The fix belongs
+  upstream: hold a stream whose members all await state rather than skip.
+- **2026-11-15, real music through Music Assistant 2.10.9, on hardware.** MA
+  chose `opus 48000Hz 2ch` on its own for VVV, 15LE and C95, 0 underruns.
+  The `server` process's CPU (utime+stime over 60s, music minus idle, % of
+  one core), ea.4's FLAC → #1159's Opus: 15LE 36.4 → 35.5, VVV 43.1 → 38.4,
+  C95 40.9 → 38.4; one window each, so read it as "no worse", the decoder
+  difference being ~1 point. **Playing music costs 35-43% of a core whatever
+  the codec**: decode is a few percent of that; the rest is the playback path
+  (voicing, mix, ALSA writes, the echo cancellers waking on a live reference),
+  which is where to look if music ever needs to get cheaper. aiosendspin
+  10.2.1 opens libopus with no bitrate (its options argument is ignored), so
+  it is FFmpeg's default: 96k stereo, 64k mono, VBR, 20ms frames. A 15LE +
+  C95 left/right group passed by ear (Wil); each Echo held syncErr 68-73us
+  against the server clock and ~30s buffered (MA sends a group that far
+  ahead). ea.4 drops a standalone aiosendspin 9.1.1 or 10.2.1 server after
+  the hello (WS 1006) yet plays with MA; not chased, #1159 replaces it.
 
 ## Boards: hardware is found by name (#541, 2026-10-04)
 
@@ -406,6 +493,24 @@ above the rest). Its TDM is 4ch S32_LE at 16kHz on two tlv320aic3101, and:
   carries exactly the samples played (correlation 1.0 per channel), in 16ms
   periods in step with the TDM's.
 
+- **2026-11-07, it became the AEC reference (#1139, #1140, 41C8).** Read as a
+  whole ring per `pcm_read` (`GetAudioStream`), the loopback-to-echo delay
+  jumped 144 ms and then 32 ms within one minute of speech: a read completes
+  only when the ring is full, a late reader is lapped, and tinyalsa restarts
+  on EPIPE without a word. With `GetAudioStreamChunked` (768-frame reads, the
+  same ring, 160 ms slices out) there was no jump in 50 s and three 16 ms
+  single-period slips in a second play, which a tracker can follow. Between
+  slips the delay held to half a millisecond, hence a slow search (1/s,
+  decimated) and two agreeing searches before a move. Live: lead 3.9 ms
+  (correlation 0.84), cancellation 26.3 / 27.6 / 27.3 dB against the software
+  tap's 8.5-17. **The first live run cancelled 0 dB**: the lead was inverted,
+  the reference 4 ms BEHIND the echo, and the unit test asserted the same
+  wrong sign, so it passed. The live check caught it; the test now checks
+  samples against first principles. Also learned: the canceller runs only
+  during a stream, so anything that must be warm before a turn (the aligner)
+  has to run from the capture loop. `tools/echoref_replay` caught every jump
+  the offline analysis found on four raw captures.
+
 - **`MicMutes`** are the board's ADC mutes; the donut has only ADC_A and ADC_B
   fitted.
 
@@ -421,6 +526,35 @@ above the rest). Its TDM is 4ch S32_LE at 16kHz on two tlv320aic3101, and:
 
 **Still biscuit's, inside the drivers:** the amp switch and DAC unity, the
 jack tables and the Android `stop <service>` names.
+
+- **2026-11-03, the Dot 3 runs EchoMuse under emOS** (41C8): packer image
+  from its own stock boot_a + the emos-v0.11-ea.2 release init, firmware
+  v2.19.0-ea.4 installed as the wizard does, started by init through
+  `start_server.sh`; registered, a full voice turn, ambient light and mute
+  work. The packer refuses the 16 MB partition as its reference: trim it to
+  the image's own length from the header first (9,336,832 bytes here), as the
+  wizard does.
+- **The Dot 3's eMMC cannot report wear.** H4G2a is eMMC 4.5 (EXT_CSD_REV 6);
+  the life-time bytes 267-269 arrived in 5.0 and read 00 00 00, the spec's
+  "not defined". "Not reported by this part" is the right answer.
+- The Dot 3's boot reason after a plain `adb reboot` is `wdt_by_pass_pwk`,
+  which the dashboard shows as a warning: its normal reboot misread as a
+  fault (not fixed).
+- **2026-11-08, fixed by #1135 (schema v33).** MediaTek sends its own software
+  restarts through the watchdog, so every reboot of a donut or an emOS Dot
+  reports `wdt_by_pass_pwk`. The previous boot's saved kernel log
+  (`em_crashlog`) now decides: it is stored as `device_boots.prev_clean`, and a
+  watchdog reason with a clean log reads "(clean restart)". 41C8 and C95 both
+  save `/proc/last_kmsg` under emOS; 41C8's last restart ends `reboot:
+  Restarting system`.
+- **2026-11-07, Bluetooth on the donut under emOS (#1134).** Two things were
+  missing. emOS loaded only the WiFi modules, so `btmtksdio.ko` never loaded
+  and `/dev/stpbt` never existed; init now loads it after them and makes the
+  node from its uevent (a failure costs Bluetooth only). And the driver's
+  `read()` returns 0 bytes when nothing is queued, which `os.File` reads as
+  EOF, ending every session at its first command; the poll reader is
+  @Starker3's from #1044 (co-author), on @technotiger's diagnosis in #527.
+  41C8: the scan starts ~30 s after boot, no HCI errors, adverts reach HA.
 
 ## Private listening (the default since 2026-09-21)
 
@@ -515,6 +649,12 @@ absent — never to `on`, which would leave the controller waiting for wakes the
 firmware has no code to send while no longer acting on its own. That is a wrong
 answer rather than the old behaviour, which is the line the whole capability
 rule is drawn along.
+
+- **2026-11-03, a custom wake model that "stops" after a turn (#1094) kept
+  scoring**: the Echo scored every frame of the dead stretches (about 15,700
+  frames in 22 minutes, 0 drops, 55-74 ms inference); the model's scores just
+  never crossed 0.50 again. Read `wake_counters.dev_frames`/`dev_drops` before
+  calling a stall.
 
 ### `on` — the device decides, the controller keeps watching
 
@@ -1254,6 +1394,19 @@ The plane is chosen **per batch** in `cmd/server.go`, not once at
 registration: the control connection can drop and re-register against a
 different controller without the scanner callback being rebuilt.
 
+### Each Echo's own Bluetooth address (#1136, 2026-11-07)
+
+Amazon writes each Echo's address into idme and its own stack loads it after
+power-on. Nothing did under emOS or under our scanner, so every Dot 2
+reported the NVRAM default `00:00:46:81:63:01` (seen fleet-wide 2026-09-22)
+and the donut a different default. A passive scan does not care; a
+connection, pairing or the A2DP speaker output does, since two Echoes with
+one address cannot both be one device's peer. The write is `0xFC1A`, six
+bytes little-endian, the command Linux's `btmtk` uses for set_bdaddr. It does
+not survive an HCI Reset or a power cycle, so it follows the reset that opens
+every session. On C95 and 41C8 the chip read back exactly the idme address
+and HA kept taking adverts through the proxy.
+
 ### The emission gate (`emit.go`) — derived from what HA reads, not from taste
 
 Nothing downstream wants every broadcast. `habluetooth` tolerates 195s
@@ -1389,6 +1542,13 @@ thought to watch. Idle sits at 31–34°C, nowhere near throttling.
 **`thermalCoreLimit` (`num_limit_thermal`) is the sharpest throttling signal
 this SoC offers** — below `coresTotal` means the governor is already capping
 capacity, which bites well before any temperature reading looks alarming.
+
+- **2026-11-03, the Dot 3's `cpuPct` (18-20%) is not an outlier.** With the
+  on-device wake word running on both, it is about 36% of a core (2 cores
+  online) against the radar's 45% (15% of 3); inference 33 ms vs 19 ms. A
+  muted Echo scores nothing, so compare unmuted. Its load average (~3.6 at
+  86% idle) is Amazon kernel threads asleep in D state (`GCPU`, `fuse_log`,
+  `entropy_thread`), counted in load, using no CPU.
 
 ## Volume / mute persistence
 

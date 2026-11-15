@@ -1,22 +1,22 @@
 {
  "files": {
-  "em_controller.py": 6614,
-  "em_db.py": 3522,
-  "em_esphome.py": 3801
+  "em_controller.py": 6677,
+  "em_db.py": 3548,
+  "em_esphome.py": 3318
  },
  "functions": {
-  "em_controller.Device.__init__": 409,
+  "em_controller.Device.__init__": 410,
   "em_controller._barge_watcher": 293,
   "em_controller._run_post_turn_playback": 172,
-  "em_controller._run_voice_locked": 381,
-  "em_controller._stream_listen": 672,
-  "em_controller.handle_control": 613,
-  "em_controller.handle_data": 208,
+  "em_controller._run_voice_locked": 384,
+  "em_controller._stream_listen": 676,
+  "em_controller.handle_control": 614,
+  "em_controller.handle_data": 212,
   "em_db.record_device_stats": 206,
   "em_device_view.merge_device": 192,
   "em_esphome.EchoMuseSatellite._handle_voice_event": 225,
   "em_esphome.EchoMuseSatellite._stream_mic_audio": 377,
-  "em_esphome.EchoMuseSatellite.handle_message": 376,
+  "em_esphome.EchoMuseSatellite.handle_message": 395,
   "em_esphome.EchoMuseSatellite.run_esphome_voice_turn": 378,
   "em_ota._run_update_locked": 229,
   "em_player.MediaSession._feed": 339,

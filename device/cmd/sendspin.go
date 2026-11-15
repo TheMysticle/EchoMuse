@@ -13,6 +13,7 @@ import (
 	"github.com/wilbowes/EchoMuse/internal/firewall"
 	"github.com/wilbowes/EchoMuse/internal/outchain"
 	"github.com/wilbowes/EchoMuse/internal/sendspin"
+	"github.com/wilbowes/EchoMuse/internal/server"
 	"github.com/wilbowes/EchoMuse/pkg/board"
 )
 
@@ -41,9 +42,9 @@ func sendspinPlayer() *sendspin.Client {
 }
 
 // deviceVolume is the Echo's one volume: the level HA and the buttons move,
-// 0..127 with unity at 127. Server volume is mapped onto it with the same
-// proportion as HA's percentage (controller em_volume), so the same volume
-// reads the same number in Music Assistant and in Home Assistant.
+// 0..127 with unity at 127. Server volume is mapped onto it with the same law
+// as HA's percentage (server.PercentToLevel, controller em_volume), so the
+// same volume reads the same number in Music Assistant and in Home Assistant.
 type deviceVolume interface {
 	VolumeLevel() int
 	SetVolume(level int)
@@ -57,27 +58,30 @@ type deviceVolume interface {
 	SetOutputMuted(muted bool, src string)
 }
 
-const volumeMax = 127
+// ssVolume converts Sendspin's percentage, echoing a server's own command.
+var ssVolume server.PercentEcho
 
 // On a board that plays its stock tuning (Radar) the server's 0-100 is
 // stock's own volume value, read through stock's mixer table
 // (outchain.StockVolumeLevel), exactly as the controller reads HA's slider
 // there. A straight proportion played Music Assistant's 30 at -44.5dB where
-// stock's 30 is -35dB.
+// stock's 30 is -35dB. Stock's table maps its 101 values onto 101 distinct
+// levels, so a command round-trips exactly and needs no PercentEcho.
+// Every other board uses the 36-step button band through ssVolume.
 func stockVolumeLaw() bool { return board.CurrentLayout().Speaker.StockTuning != "" }
 
 func levelToPct(level int) int {
 	if stockVolumeLaw() {
 		return outchain.StockVolumeValue(level)
 	}
-	return sendspin.LevelToPercent(level, volumeMax)
+	return ssVolume.ToPercent(level)
 }
 
 func pctToLevel(pct int) int {
 	if stockVolumeLaw() {
 		return outchain.StockVolumeLevel(pct)
 	}
-	return sendspin.PercentToLevel(pct, volumeMax)
+	return ssVolume.ToLevel(pct)
 }
 
 // sendspinVolumeChanged tells the player the device's volume moved, by any

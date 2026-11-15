@@ -549,7 +549,7 @@ MIGRATIONS: list[str] = [
     # ── v5 — persistent activity stats ────────────────────────────────────────
     #
     # turns: one row per voice turn (wake/button/barge-in/continuation),
-    # written at turn completion from the TurnTrace in em_esphome. Survives
+    # written at turn completion from the TurnTrace in em_turn_record. Survives
     # controller and device restarts — the in-memory Device.turn_history is
     # hydrated from here on connect. trigger_type not "trigger": TRIGGER is
     # an SQLite keyword. underruns/playback_periods arrive asynchronously
@@ -948,8 +948,8 @@ MIGRATIONS: list[str] = [
     # collapsed to the same address and Home Assistant treated two Echoes as
     # one, overwriting the first (#212, found by @lennart24 in #217):
     #
-    #     G090LF1180440C9K -> 090F1180440C9 -> 90:F1:18:04:40:C9
-    #     G090LF1180440C9R -> 090F1180440C9 -> 90:F1:18:04:40:C9
+    #     G090LF9920110C9K -> 090F9920110C9 -> 90:F9:92:01:10:C9
+    #     G090LF9920110C9R -> 090F9920110C9 -> 90:F9:92:01:10:C9
     #
     # And because it was a function, changing it to fix that would have
     # changed EVERY device's identity, orphaning every HA device row and the
@@ -1212,6 +1212,20 @@ MIGRATIONS: list[str] = [
     # the list is append-only, so it follows ours here.
     """
     UPDATE system_config SET value = '33' WHERE key = 'schema_version';
+    """,
+
+    # v34 — whether the boot before this one ended cleanly, from the emOS
+    # kernel log it saved (em_crashlog.is_clean). MediaTek reports every
+    # software restart as wdt_by_pass_pwk, so the boot reason alone cannot
+    # tell an ordinary reboot from a watchdog reset; this can. 1 clean, 0 not,
+    # NULL never examined (FireOS, older init, a log already handled before
+    # this column existed). Upstream numbers this v33; this fork's v33 (the EQ
+    # preset reset above) was already in the field, so it follows ours here,
+    # as upstream's v32 did on 2026-11-05.
+    """
+    ALTER TABLE device_boots ADD COLUMN prev_clean INTEGER;
+
+    UPDATE system_config SET value = '34' WHERE key = 'schema_version';
     """,
 ]
 
@@ -1937,6 +1951,17 @@ def record_boot(device_id: str, boot_id: str, firmware_ver: Optional[str],
         )
 
 
+def set_boot_prev_clean(device_id: str, boot_id: str, clean: bool) -> None:
+    """Record whether the boot before `boot_id` ended cleanly. The row exists
+    once the register message was written; if it does not, nothing is
+    recorded, and the boot reason stands alone."""
+    with _tx() as conn:
+        conn.execute(
+            "UPDATE device_boots SET prev_clean = ? WHERE device_id = ? AND boot_id = ?",
+            (1 if clean else 0, device_id, boot_id),
+        )
+
+
 def record_wear(device_id: str, day: str, values: tuple) -> None:
     """Upsert the day's eMMC reading: the latest reading of the day wins."""
     with _tx() as conn:
@@ -1959,7 +1984,8 @@ def latest_health() -> dict[str, dict]:
     """Each device's latest boot and latest wear reading merged into one dict,
     keyed by device_id: one pass for the device list, not a query per device."""
     out: dict[str, dict] = {}
-    for r in _q("""SELECT b.device_id, b.first_seen AS boot_at, b.boot_reason, b.firmware_ver
+    for r in _q("""SELECT b.device_id, b.first_seen AS boot_at, b.boot_reason, b.firmware_ver,
+                          b.prev_clean
                    FROM device_boots b
                    JOIN (SELECT device_id, MAX(first_seen) AS t FROM device_boots
                          GROUP BY device_id) m

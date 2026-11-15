@@ -118,6 +118,7 @@ import em_button
 import em_wakeword
 import em_tap_burst
 import em_esphome as esphome
+import em_turn_record
 import em_ble_proxy
 import em_oww_models
 import em_player
@@ -482,6 +483,7 @@ class Device:
         self.board_id: str | None = None
         # From the register message (schema v28): see em_health.
         self.boot_reason: str | None = None
+        self.boot_id: str | None = None
         # The last eMMC wear row written, as (day, values), so a reading that
         # has not changed since is not rewritten every stats tick.
         self.wear_written: tuple | None = None
@@ -600,7 +602,7 @@ class Device:
         self.stream_reply:  bool  = False
         self.voice_prebuffer_ms = 1024
         # This turn's captured mic audio, handed from _stream_mic_audio to
-        # _persist_turn (which owns the write — it has the rowid the
+        # em_turn_record.persist_turn (which owns the write — it has the rowid the
         # filename is keyed on) and consumed there.
         self.last_utterance_pcm: bytes | None = None
         self.eq_bands:      list  = [0.0] * 8
@@ -764,7 +766,7 @@ class Device:
         # use so an announcement's report can't overwrite a turn's stats).
         # pending_playback_stats covers stats-before-persist: (ts, periods,
         # underruns) stashed by handle_control, folded into the record by
-        # em_esphome._persist_turn if fresh (staleness window keeps a
+        # em_turn_record.persist_turn if fresh (staleness window keeps a
         # long-ago announcement's stats out of an unrelated later turn).
         self.last_turn_id: int | None = None
         self.pending_playback_stats: tuple | None = None
@@ -1438,7 +1440,7 @@ class Device:
 
     async def workflow_turn(self, record):
         """A finished Pipecat session as an Activity row, written as a native turn is."""
-        await esphome._persist_turn(self, record)
+        await em_turn_record.persist_turn(self, record)
         self.turn_history.append(record)
         with contextlib.suppress(Exception):
             await em_events.push({"type": "turn_complete", "device_id": self.device_id, "turn": record})
@@ -1706,6 +1708,28 @@ def _reset_wake_model(model) -> "asyncio.Future":
     return asyncio.get_event_loop().run_in_executor(None, model.reset)
 
 
+# openWakeWord's AudioFeatures keeps ~10s of raw audio (160k Python ints) and
+# converts the whole deque to a list on every predict() to take the last
+# ~1.7k samples. Nothing else reads it, and trimming it changes no score
+# (tools/trim_check.py: 1200 frames, 0 differing, max delta 0). This is the
+# idle-CPU hot path the wake loop hits 12.5 times a second per device.
+_OWW_RAW_BUFFER_KEEP = 8 * 1280 + 480  # 8 chunks + the mel tail
+
+
+def _trim_oww_raw_buffer(model):
+    try:
+        pre = model.preprocessor
+        buf = pre.raw_data_buffer
+        if buf.maxlen != _OWW_RAW_BUFFER_KEEP:
+            pre.raw_data_buffer = collections.deque(buf, maxlen=_OWW_RAW_BUFFER_KEEP)
+    except Exception as exc:
+        # Never fail wake-model acquisition over an optimisation, but say when
+        # the buffer is gone (a renamed one) instead of silently paying the copy.
+        log.warning("wake model raw-audio buffer not trimmed (%s) — every "
+                    "predict() keeps copying the full 10s buffer", exc)
+    return model
+
+
 async def _acquire_wake_model(device: "Device", name: str, speex: bool):
     """Return the device's wake model, reusing the cached one when the wake word
     and speex setting are unchanged, else building a fresh one and replacing any
@@ -1723,13 +1747,14 @@ async def _acquire_wake_model(device: "Device", name: str, speex: bool):
     if cached is not None and cached[0] == name and cached[1] == speex:
         model = cached[2]
         await _reset_wake_model(model)
+        _trim_oww_raw_buffer(model)
         return model
     model = await loop.run_in_executor(
         None,
-        lambda: em_oww_models.model_class()(
+        lambda: _trim_oww_raw_buffer(em_oww_models.model_class()(
             wakeword_models=[name],
             enable_speex_noise_suppression=speex,
-        ),
+        )),
     )
     em_state.oww_models[device.device_id] = (name, speex, model)
     em_state.live_oww_models.add(model)
@@ -1747,7 +1772,7 @@ async def _acquire_barge_model(device: "Device", name: str):
     if cached is not None and cached[0] == name:
         return cached[1]
     model = await asyncio.get_event_loop().run_in_executor(
-        None, lambda: em_oww_models.model_class()(wakeword_models=[name])
+        None, lambda: _trim_oww_raw_buffer(em_oww_models.model_class()(wakeword_models=[name]))
     )
     em_state.oww_barge_models[device.device_id] = (name, model)
     em_state.live_oww_models.add(model)
@@ -1982,7 +2007,7 @@ async def leds_spin_green(device: Device, stop_event: asyncio.Event):
 # ─── Audio conversion ─────────────────────────────────────────────────────────
 
 # (The numpy linear-interpolation resample_to_48k that used to live here is
-# gone: _fetch_tts_audio now decodes at SPEAKER_RATE directly, with ffmpeg
+# gone: em_tts_audio.fetch now decodes at SPEAKER_RATE directly, with ffmpeg
 # doing any rate conversion — and HA transcodes to 48kHz at source when it
 # honours the media player's declared supported_formats.)
 
@@ -2237,7 +2262,7 @@ async def _barge_watcher(device: Device, playback_started: asyncio.Event):
                         # Only CARRIED here. The turn loop's ceded branch is
                         # where it is recorded, because this block runs before
                         # anything below can unwind the turn: the interrupted
-                        # turn's own _persist_turn then overwrites the outcome
+                        # turn's own em_turn_record.persist_turn then overwrites the outcome
                         # with "barged", and _leds_turn_end — which
                         # cleanup_esphome ends on, and which owns the ring —
                         # reads that. Recording here meant the row was right
@@ -2289,7 +2314,7 @@ async def _run_post_turn_playback(device: Device, voice_response: bytes) -> None
     """
     Post-turn timing concern: EQ, stream to device, acoustic-feedback wait.
 
-    voice_response is 48kHz mono S16_LE PCM (_fetch_tts_audio decodes at the
+    voice_response is 48kHz mono S16_LE PCM (em_tts_audio.fetch decodes at the
     wire rate now — no controller-side resample). Returns once the device
     audio buffer has drained (or cancel_event fires), so the caller can
     safely restart the mic without acoustic feedback into the next turn.
@@ -3275,6 +3300,9 @@ async def _run_voice_locked(device: Device, trigger_label: str = "unknown",
                         await device.mic_start_turn()
                     else:
                         await device.mic_start()
+                    # Wake sound (#1095): the mic is open for an answer, with no wake word said.
+                    if getattr(device, "wake_sound", False) and device.wake_cue_capable:
+                        await device.play_cue("wake")
                     # Fresh stream starts with the VAD gate closed — the
                     # user must speak again from zero, same onset cost
                     # as any post-mic_stop restart. Acceptable for v1 of
@@ -3451,7 +3479,11 @@ async def wake_word_listener(device: Device):
         if not device.mic_capable:
             await _no_mic(device)
         elif device.workflow.switching or (device.workflow.active and device.workflow.awake):
+            # Services a Pipecat session already under way (or a reconnect);
+            # never sends mic_start, so it may precede the report guard below.
             await device.workflow.poll()
+        elif em_listen.awaiting_report(device.listen_view):
+            await _await_listen_report(device)
         elif device.private_listening:
             # Nothing here scores a private Echo, so its cached models (three
             # ONNX sessions each) are released, not held for the life of the
@@ -3461,6 +3493,18 @@ async def wake_word_listener(device: Device):
             await _private_listen(device)
         else:
             await _stream_listen(device)
+
+
+async def _await_listen_report(device: Device) -> None:
+    """Start nothing until the Echo reports how it listens (em_listen.awaiting_report)."""
+    log.info(f"[{device.device_id}] waiting for the Echo to report private listening — not streaming")
+    t0 = asyncio.get_event_loop().time()
+    while (em_state.devices.get(device.device_id) is device
+           and em_listen.awaiting_report(device.listen_view)):
+        await asyncio.sleep(0.25)
+        if t0 and asyncio.get_event_loop().time() - t0 > 30:
+            log.warning(f"[{device.device_id}] no listen_state report after 30s — not listening")
+            t0 = 0
 
 
 async def _no_mic(device: Device) -> None:
@@ -3558,6 +3602,7 @@ async def _claim_wake(device: "Device", heard_at: float | None,
         heard_at=heard_at, slack_s=_arbitration_slack(), hold_s=hold,
         level=level[0] if level is not None else None,
         gains=device.adc_gains, over_playback=over_playback,
+        ringing=device.timer_alarm_ringing,
     )
     now = asyncio.get_event_loop().time()
     if hold > 0:
@@ -3785,7 +3830,7 @@ async def _private_barge(device: Device, ev: dict) -> None:
         #
         # Carried, not recorded — see the same note in _barge_watcher. This
         # path runs before the interrupted turn unwinds, so a row written here
-        # is overwritten by its _persist_turn before the ring reads it. The
+        # is overwritten by its em_turn_record.persist_turn before the ring reads it. The
         # loop's ceded branch is where it lands.
         device.barge_no_ha = (verdict.trigger_label, device.last_wake)
         device.last_wake = None
@@ -3814,6 +3859,10 @@ async def _stream_listen(device: Device):
     # the prediction dict by the filename stem — never score by the raw name.
     model_key = em_oww_models.prediction_key(current_model_name)
 
+    # The Echo may have gone private, or still be waiting to report, while the
+    # model loaded: never send mic_start into that (em_listen.awaiting_report).
+    if device.private_listening or em_listen.awaiting_report(device.listen_view):
+        return
     log.info(f"[{device.device_id}] OWW: starting (initial threshold={device.oww_threshold:.3f})")
     await device.mic_start()
 
@@ -4417,7 +4466,7 @@ async def _stream_listen(device: Device):
 
                         # "wakeword-dev" rather than a separate field: every
                         # reader of trigger already matches on the "wakeword"
-                        # prefix (including _persist_turn's shadow block), so
+                        # prefix (including em_turn_record.persist_turn's shadow block), so
                         # this distinguishes the two sources in the Activity
                         # tab and in queries without any of them changing.
                         label = "wakeword-dev" if source == "device" else "wakeword"
@@ -4912,6 +4961,9 @@ async def _on_stats(device: Device, msg: dict) -> None:
     # nothing per-frame is the standing rule here.
     if "ambientLux" in msg:
         esphome.update_ambient_lux(device_id, msg.get("ambientLux"))
+    # Temperatures the same way, on the same tick.
+    if "cpuTempC" in msg or "maxTempC" in msg:
+        esphome.update_temperatures(device_id, msg.get("cpuTempC"), msg.get("maxTempC"))
     # Fold into the persistent hourly rollup (CPU/RAM/storage/
     # RSSI trends) — one cheap upsert per ~30s report. The
     # last_seen refresh rides the same executor hop: a stats
@@ -5108,7 +5160,7 @@ async def _on_playback_stats(device: Device, msg: dict) -> None:
     else:
         # The turn row may not exist yet (device buffers
         # usually drain before the controller's drain sleep
-        # ends) — stash for _persist_turn to fold in. A
+        # ends) — stash for em_turn_record.persist_turn to fold in. A
         # displaced earlier stash was an announcement's:
         # keep its underruns in the hourly counters.
         prev = device.pending_playback_stats
@@ -5531,8 +5583,9 @@ async def handle_control(ws: WebSocketServerProtocol, secure: bool = False):
         # boot_id: a device re-registers on every redial. Held live too, so
         # the dashboard shows them without a query. Absent on older firmware.
         device.boot_reason = msg.get("boot_reason") or None
-        if isinstance(msg.get("boot_id"), str) and msg["boot_id"]:
-            em_dbwriter.submit(db.record_boot, device_id, msg["boot_id"],
+        device.boot_id = msg["boot_id"] if isinstance(msg.get("boot_id"), str) and msg["boot_id"] else None
+        if device.boot_id:
+            em_dbwriter.submit(db.record_boot, device_id, device.boot_id,
                                msg.get("version"), device.boot_reason)
         _note_wear(device, msg.get("emmc"))
         # Link-security telemetry for the dashboard: True when this control
@@ -6134,7 +6187,11 @@ async def handle_data(ws: WebSocketServerProtocol, secure: bool = False):
             await ws.close()
             return
 
-        device.data_ws = ws
+        replaced, device.data_ws = device.data_ws, ws
+        if replaced is not None and replaced is not ws:
+            # #751: a redial means the old link is dead; left open it lasts
+            # to the ping timeout. Playback carries on over this connection.
+            em_tasks.spawn(replaced.close(code=1000, reason="replaced"))
         # The connection bridge rides this plane: ask what the device holds
         # now that there is somewhere for the answer to arrive.
         em_tasks.spawn(em_ble_proxy.sync_slots(device.device_id))

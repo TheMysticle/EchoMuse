@@ -1463,6 +1463,7 @@ func applyShadowConfig(dc *client.DataClient, cc *client.ControlClient,
 	if sc := dc.ShadowScorer(); sc != nil && shadowState.model == model &&
 		shadowState.streamSig == streamSig {
 		sc.SetThreshold(threshold)
+		sc.SetMinFrames(snap.OwwMinFrames)
 		if snap.BargeInEnabled != nil && *snap.BargeInEnabled && spk != nil {
 			sc.SetBargeThreshold(float32(snap.BargeInThreshold), speakerPlaying(spk))
 		} else {
@@ -1491,6 +1492,7 @@ func applyShadowConfig(dc *client.DataClient, cc *client.ControlClient,
 		shadowState.mode, shadowState.model = mode, model
 		return
 	}
+	sc.SetMinFrames(snap.OwwMinFrames)
 	// Mirror the controller's barge-in behaviour: while the speaker is
 	// streaming its wake bar drops to bargeInThreshold, and a device scoring
 	// against the normal threshold would disagree on every barge-in.

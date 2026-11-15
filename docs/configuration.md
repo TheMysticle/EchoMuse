@@ -222,10 +222,16 @@ longer includes a stretch that only distorted. Nothing changed about how
 loud it actually is. If you have an automation with a volume threshold in
 it, check that threshold.
 
-The physical buttons step about 4dB per press across the audible range,
-rather than spending presses near the bottom of a scale where nothing is
-audible — silencing the device is the mute button's job. The cyan ring
-spans that same range, so a press always moves it.
+The physical buttons step 1dB per press across the audible range, 35
+presses from barely audible to full, rather than spending presses near the
+bottom of a scale where nothing is audible — silencing the device is the mute
+button's job. The cyan ring spans that same range in 36 states, three
+brightnesses for each of its 12 lights, so every press moves it by one.
+
+Home Assistant's percentage covers the same range: 0% is silent, 1% is the
+quietest button step and 100% the loudest, and every percentage lands on a
+button step, so a volume set from Home Assistant shows the same ring as the
+presses that reach it. Music Assistant over Sendspin uses the same scale.
 
 **Volume button sound** plays a short, low beep with a quick decay at the newly
 selected volume when you change it with the Dot's physical buttons while the
@@ -279,8 +285,8 @@ Home Assistant only reads a satellite's wake word configuration when it
 connects, so the controller drops and remakes that connection to make the new
 name show up. It takes a few milliseconds, but during it **every entity for
 that device goes unavailable and comes straight back** — the voice assistant,
-the media player, the action button, the ambient light sensor and the
-Microphone Muted sensor.
+the media player, the action button, the ambient light and temperature
+sensors and the Microphone Muted sensor.
 
 That matters if you have an automation using a **state trigger** on any of
 them: coming back online is a state change, and the automation will fire. The

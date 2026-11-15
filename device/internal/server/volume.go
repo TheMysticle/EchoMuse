@@ -22,18 +22,24 @@ const (
 	volumeMax = 127
 
 	// volumeButtonFloor is the bottom of the band the PHYSICAL buttons
-	// traverse. The scale is dB-linear, so index 0 is -63.5dB and roughly the
-	// bottom third of the control is indistinguishable from silence; stepping
-	// across it spends presses to go nowhere. Silencing the device is the
-	// mute button's job, not the volume button's.
+	// traverse, and what 1% means from Home Assistant or Sendspin
+	// (PercentToLevel; controller em_volume.VOLUME_FLOOR is pinned to it). The
+	// scale is dB-linear, so index 0 is -63.5dB and the bottom of the control
+	// is indistinguishable from silence; stepping across it spends presses to
+	// go nowhere. Silencing the device is the mute button's job, not the
+	// volume button's.
 	//
 	// Explicit Set() calls are deliberately NOT floored — HA's volume 0.0
 	// has to still mean silent. A press from below the floor lands ON the
 	// floor rather than adding a step, so one press always reaches audible.
-	volumeButtonFloor = 47 // -40dB
+	volumeButtonFloor = 57 // -35dB
 
-	// volumeStep is 4dB per press: 10 presses to cross the button band.
-	volumeStep    = 8
+	// volumeStep is 1dB per press. The band holds arcStates levels, floor to
+	// unity, one per state of the ring: 12 LEDs at three brightnesses each,
+	// as stock does. So volumeSteps (35) presses cross it.
+	volumeStep    = 2
+	volumeSteps   = (volumeMax - volumeButtonFloor) / volumeStep
+	arcStates     = volumeSteps + 1
 	volumeLEDSecs = 2 // how long to show volume ring
 
 	// volumeBoot is the level before the controller seeds the stored one:
@@ -374,7 +380,7 @@ func (vc *volumeController) StepUp() bool {
 	if steps != nil {
 		return vc.Set(stepAbove(steps, level), true, "button")
 	}
-	return vc.Set(clampToButtonBand(level+volumeStep), true, "button")
+	return vc.Set(stepLevel(level, +1), true, "button")
 }
 
 // StepDown decreases volume by one step, within the button band.
@@ -385,7 +391,7 @@ func (vc *volumeController) StepDown() bool {
 	if steps != nil {
 		return vc.Set(stepBelow(steps, level), true, "button")
 	}
-	return vc.Set(clampToButtonBand(level-volumeStep), true, "button")
+	return vc.Set(stepLevel(level, -1), true, "button")
 }
 
 // stepAbove is the first step above level, or the top step. A level between
@@ -423,10 +429,86 @@ func stepIndex(steps []int, level int) int {
 	return n
 }
 
+// stepLevel is the level one press moves to: the next step of the button grid
+// (volumeButtonFloor + n*volumeStep) in that direction. A level between steps
+// — a stored level from before the grid — snaps to the neighbouring step, so
+// the ring and the loudness agree again after one press.
+func stepLevel(level, dir int) int {
+	if level < volumeButtonFloor {
+		return volumeButtonFloor
+	}
+	off := level - volumeButtonFloor
+	n := off / volumeStep
+	if dir > 0 {
+		n++
+	} else if off%volumeStep == 0 {
+		n--
+	}
+	return clampToButtonBand(volumeButtonFloor + n*volumeStep)
+}
+
+// PercentToLevel maps a 0-100 volume (Home Assistant via the controller,
+// Sendspin from Music Assistant) onto the button grid: 0 is silent, 1 the
+// floor, 100 unity, so a percentage lands on exactly the level some number of
+// presses would. Mirrors controller em_volume.ha_volume_to_device.
+func PercentToLevel(pct float64) int {
+	if pct <= 0 {
+		return volumeMin
+	}
+	if pct >= 100 {
+		return volumeMax
+	}
+	n := int(math.Round((pct - 1) / 99 * volumeSteps))
+	return clampToButtonBand(volumeButtonFloor + max(n, 0)*volumeStep)
+}
+
+// LevelToPercent is PercentToLevel's inverse: 0 for silent, 1 for anything
+// audible below the floor (0 would read as muted), else the level's place in
+// the band. Mirrors controller em_volume.device_level_to_ha.
+func LevelToPercent(level int) float64 {
+	if level <= volumeMin {
+		return 0
+	}
+	if level <= volumeButtonFloor {
+		return 1
+	}
+	return 1 + float64(min(level, volumeMax)-volumeButtonFloor)/float64(volumeMax-volumeButtonFloor)*99
+}
+
+// PercentEcho converts a remote's 0-100 volume for one remote (Sendspin).
+// The grid has fewer levels than there are percentages, so a commanded
+// percentage does not always survive the trip to a level and back; but a
+// remote's command must come back as the same number, or the two ends correct
+// each other forever. So the last command is reported for as long as the
+// level is still the one it set.
+type PercentEcho struct {
+	mu         sync.Mutex
+	pct, level int
+	set        bool
+}
+
+// ToLevel is PercentToLevel, remembering the command.
+func (e *PercentEcho) ToLevel(pct int) int {
+	level := PercentToLevel(float64(pct))
+	e.mu.Lock()
+	e.pct, e.level, e.set = pct, level, true
+	e.mu.Unlock()
+	return level
+}
+
+// ToPercent is LevelToPercent rounded, or the remembered command while the
+// level is still the one it set.
+func (e *PercentEcho) ToPercent(level int) int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.set && e.level == level {
+		return e.pct
+	}
+	return int(math.Round(LevelToPercent(level)))
+}
+
 // clampToButtonBand holds a stepped level inside [volumeButtonFloor,
-// volumeMax]. A device sitting below the floor — HA can put it there, and so
-// can a stored level from before the cap — lands ON the floor from one press
-// instead of creeping up 4dB at a time through inaudible territory.
+// volumeMax].
 func clampToButtonBand(level int) int {
 	if level < volumeButtonFloor {
 		return volumeButtonFloor

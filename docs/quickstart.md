@@ -22,10 +22,11 @@ pretending it's easy.
 | Home Assistant | Does the actual assistant work: speech-to-text, understanding, text-to-speech. You need a working [Assist pipeline](https://www.home-assistant.io/voice_control/) already set up. |
 | A USB cable + a laptop, once | For the one-time unlock/flash of the Dot. |
 
-## Step 1 — Root the Dot (one time, per device)
+## Step 1 — Root the Echo (one time, per device)
 
-Either amonet-biscuit version works: v1.1.0 (FireOS 5, emOS or FireOS with
-root) or v2.0.0 (FireOS 6, emOS).
+On the Dot, either firebreak target works: `unlock fireos5` (FireOS 5, emOS
+or FireOS with root) or `unlock fireos6`, the default (FireOS 6, emOS). An
+Echo 2nd gen has `unlock fireos6` only, and runs emOS.
 
 The Dot ships locked to Amazon's software. Unlocking it involves flashing
 modified firmware over USB. [firebreak](rooting.md#unlocking-with-firebreak)
@@ -178,8 +179,11 @@ Voice Assistant"), with Model "Echo Dot Gen 2 (biscuit)" — the Bluetooth
 proxy, if enabled, shows up separately as `<name> BT Proxy`.
 
 Each device also has a **media player**, an **Action Button** event
-(hold-capable firmware), an **Ambient Light** sensor (where fitted) and a
-read-only **Microphone Muted** sensor. HA's **Wake word** dropdown turns
+(hold-capable firmware), an **Ambient Light** sensor (where fitted), **CPU
+Temperature** and **Hottest Zone Temperature** diagnostic sensors (firmware
+that reports them; off until you enable them in HA; Hottest Zone is the
+hottest part of the Echo right now) and a read-only **Microphone Muted**
+sensor. HA's **Wake word** dropdown turns
 detection off and on. See
 [the FAQ](faq.md#can-home-assistant-stop-a-device-listening-or-tell-whether-its-microphone-is-muted).
 

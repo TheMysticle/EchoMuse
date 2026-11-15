@@ -170,7 +170,7 @@ _QUOTED = re.compile(
 )
 _URL = re.compile(r"""https?://[^\s'"]+""")
 
-# Bare network identifiers in log prose — "Device connected: ... at 10.10.1.60"
+# Bare network identifiers in log prose — "Device connected: ... at 192.0.2.60"
 # is not quoted and is not a URL, so neither of the rules above catches it.
 # Found by auditing a REAL bundle against the live database; the synthetic
 # fixture had no such line.
@@ -487,7 +487,7 @@ def redact_view(view: Any) -> dict:
 
 # The latest boot and wear rows (schema v28), by name for the allowlist's reason.
 _BOOT_FIELDS = (
-    "boot_at", "firmware_ver", "boot_reason", "day", "emmc_rev", "emmc_pre_eol",
+    "boot_at", "firmware_ver", "boot_reason", "prev_clean", "day", "emmc_rev", "emmc_pre_eol",
     "emmc_life_a", "emmc_life_b", "emmc_name", "emmc_date", "emmc_manfid",
 )
 
