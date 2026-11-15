@@ -313,3 +313,13 @@ def test_speech_keeps_the_listen_window_open_and_silence_does_not(fresh_db, monk
             monkeypatch.undo()
             await d.workflow.stop()
     asyncio.run(main())
+
+
+def test_the_model_starts_a_task_when_asked_without_a_confirmation_round():
+    """2026-11-15: it read the task back, asked "is that correct?" and the session ended
+    before the answer could be heard. Asking Claude is the go-ahead."""
+    start = next(t for t in CB.CLAUDE_TOOLS if t['name'] == 'ClaudeStart')['description']
+    assert 'straight away' in start and 'do not read it back or ask for confirmation' in start
+    assert 'explicit yes' not in start and 'never say you cannot reach them' in start
+    printing = next(t for t in CB.CLAUDE_TOOLS if t['name'] == 'ClaudePrint')['description']
+    assert 'without asking again' in printing and 'ask that first' not in printing

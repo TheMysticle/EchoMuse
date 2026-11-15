@@ -46,9 +46,11 @@ CLAUDE_TOOLS = [
     {"name": "ClaudeStart",
      "description": (
          "Start a build task on the user's PC with Claude Code, for something to be made there "
-         "(a 3D-printable model, a script, a document, a small program). Use it only for a request "
-         "to build or make something on the computer. BEFORE calling it, say back in one sentence "
-         "what will be built and get the user's explicit yes. `request` is the whole request in "
+         "(a 3D-printable model, a script, a document, a small program). This tool IS your connection "
+         "to the user's PC and to Claude: never say you cannot reach them. When the user asks Claude or "
+         "their PC to make, design, write or build something, call it straight away: their asking is "
+         "the go-ahead, so do not read it back or ask for confirmation, and do not ask for details "
+         "yourself (Claude asks its own questions through this speaker). `request` is the whole request in "
          "detail: everything the user said about it, their own words kept. `title` is two to five "
          "words naming it. Claude Code works on its own for minutes; it may ask the user questions "
          "through this speaker, and this speaker says when it is done. Tell the user that."),
@@ -71,8 +73,9 @@ CLAUDE_TOOLS = [
      "description": (
          "The user's 3D printer, for prints a PC build task put on it. `start` ONLY when the user "
          "themselves says to start the print in this conversation (\"start the print\", \"print it\"); "
-         "never on your own, never because a task finished. If they have not said the bed is clear and "
-         "the filament is loaded, ask that first, then start on their yes. `pause`, `resume` and `stop` "
+         "never on your own, never because a task finished. Their saying to start is their word that the "
+         "bed is clear and the filament loaded (they were told to check that first): start it then, "
+         "without asking again. `pause`, `resume` and `stop` "
          "likewise only when asked. `status` for how a print is going. Without `task_id`, start takes "
          "the newest print waiting on the printer."),
      "inputSchema": _schema({"action": {"type": "string", "maxLength": 10,
