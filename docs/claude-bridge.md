@@ -35,6 +35,7 @@ If the Echo is busy, muted or has its wake word off, the update waits, retried e
 | Key | Default | |
 |---|---|---|
 | `model` | `claude-sonnet-5-5` | Any model name `claude --model` accepts |
+| `effort` | `medium` | `claude --effort`: `low`, `medium`, `high`, `xhigh`, `max`, or `""` for the CLI's own default |
 | `projects_dir` | `~/voice-projects` | One subfolder per task |
 | `port`, `host` | `8790`, `0.0.0.0` | |
 | `max_running` | `2` | Tasks running at once |

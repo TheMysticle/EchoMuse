@@ -422,3 +422,19 @@ def test_an_unknown_usual_material_is_reported_and_falls_back(printer_bridge):
     bridge, *_ = printer_bridge
     bridge.printer.material = "Unobtainium"
     assert any("Unobtainium" in p for p in bridge.printer.problems()) and bridge.printer.material == "PLA"
+
+
+def test_the_effort_level_reaches_every_run(tmp_path):
+    bridge = bridge_mod.Bridge({**bridge_mod.DEFAULTS, "token": "t" * 40, "projects_dir": str(tmp_path),
+                                "claude": "claude", "sandbox": False})
+    task = bridge_mod.Task(id="t-1", folder=str(tmp_path), status="running", session_id="s")
+    for first in (True, False):
+        cmd = bridge._command(task, first=first)
+        assert cmd[cmd.index("--effort") + 1] == "medium"
+    bridge.config["effort"] = ""
+    assert "--effort" not in bridge._command(task, first=True)
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"token": "x" * 40, "effort": "turbo"}))
+    assert bridge_mod.load_config(path)["effort"] == "medium"
+    path.write_text(json.dumps({"token": "x" * 40, "effort": "high"}))
+    assert bridge_mod.load_config(path)["effort"] == "high"

@@ -48,6 +48,7 @@ DEFAULTS = {
     "port": 8790,
     "projects_dir": "~/voice-projects",
     "model": "claude-sonnet-5-5",
+    "effort": "medium",                 # claude --effort: low, medium, high, xhigh, max ("" = the CLI's own)
     "claude": "claude",
     "max_running": 2,
     # "auto": Claude Code's bash sandbox when bubblewrap and socat are installed.
@@ -101,6 +102,9 @@ def log(*parts):
     print(datetime.now().strftime("%H:%M:%S"), *parts, file=sys.stderr, flush=True)
 
 
+EFFORTS = ("", "low", "medium", "high", "xhigh", "max")
+
+
 def load_config(path):
     path.parent.mkdir(parents=True, exist_ok=True)
     stored = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
@@ -109,7 +113,11 @@ def load_config(path):
         path.write_text(json.dumps(stored, indent=2) + "\n", encoding="utf-8")
         os.chmod(path, 0o600)
         log(f"New token written to {path}")
-    return {**DEFAULTS, **stored}
+    config = {**DEFAULTS, **stored}
+    if config.get("effort") not in EFFORTS:
+        log(f"Unknown effort {config.get('effort')!r} (use one of {', '.join(e for e in EFFORTS if e)}); using medium")
+        config["effort"] = "medium"
+    return config
 
 
 def slugify(text):
@@ -507,7 +515,8 @@ class Bridge:
         if self.printer.enabled:
             tools.append("mcp__echomuse__send_to_printer")
         cmd = [self.claude, "-p", "--output-format", "stream-json", "--verbose",
-               "--model", self.config["model"], "--permission-mode", self.config["permission_mode"],
+               "--model", self.config["model"], *(["--effort", self.config["effort"]] if self.config.get("effort") else []),
+               "--permission-mode", self.config["permission_mode"],
                "--append-system-prompt", SYSTEM.format(folder=Path(task.folder).name)
                + (PRINT_NOTE.replace("MATERIAL", self.printer.material) if self.printer.enabled else ""),
                "--mcp-config", json.dumps(mcp), "--strict-mcp-config"]
@@ -805,7 +814,7 @@ def main():
     bridge = Bridge(config)
     server = ThreadingHTTPServer((config["host"], int(config["port"])), make_handler(bridge))
     server.daemon_threads = True
-    log(f"Claude bridge on http://{config['host']}:{config['port']}  projects: {bridge.root}  model: {config['model']}")
+    log(f"Claude bridge on http://{config['host']}:{config['port']}  projects: {bridge.root}  model: {config['model']}  effort: {config.get('effort') or 'CLI default'}")
     log(f"Bash sandbox: {'on' if sandbox_on(config) else 'off (install bubblewrap and socat to allow shell commands)'}")
     if bridge.printer.enabled:
         problems = bridge.printer.problems()
