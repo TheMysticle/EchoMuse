@@ -111,13 +111,15 @@ func TestPCMStereoIsDownmixed(t *testing.T) {
 	}
 }
 
-// Stereo Opus first (a third of mono FLAC's bytes), mono FLAC for a server
-// that cannot encode Opus. aiosendspin keeps the client's order.
-func TestFormatsAskForStereoOpusThenMonoFlac(t *testing.T) {
+// This fork asks for mono FLAC first and stereo Opus second (upstream has
+// Opus first). aiosendspin keeps the client's order, so this order decides
+// what the low-latency TV streamer sends: its 50 ms lead needs FLAC's 10 ms
+// frames, not Opus's 20 ms frames and encoder lookahead.
+func TestFormatsAskForMonoFlacThenStereoOpus(t *testing.T) {
 	got := supportedFormats()
 	want := []audioFormat{
-		{Codec: "opus", Channels: 2, SampleRate: 48000, BitDepth: 16},
 		{Codec: "flac", Channels: 1, SampleRate: 48000, BitDepth: 16},
+		{Codec: "opus", Channels: 2, SampleRate: 48000, BitDepth: 16},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("got %+v", got)

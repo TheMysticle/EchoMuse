@@ -48,8 +48,13 @@ func offered(codecs []string) []audioFormat {
 
 func supportedFormats() []audioFormat {
 	return []audioFormat{
-		{Codec: "opus", Channels: 2, SampleRate: outRate, BitDepth: outBits},
+		// This fork: mono FLAC FIRST (2026-11-15). aiosendspin takes the
+		// client's first format, and the TV streamer's 50 ms lead depends on
+		// its patched 10 ms FLAC frames; Opus would bring 20 ms frames plus
+		// ~6.5 ms of encoder lookahead, and is lossy, for ~1% of a core.
+		// Opus stays offered for a server that cannot encode FLAC.
 		{Codec: "flac", Channels: 1, SampleRate: outRate, BitDepth: outBits},
+		{Codec: "opus", Channels: 2, SampleRate: outRate, BitDepth: outBits},
 	}
 }
 
