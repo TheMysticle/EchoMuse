@@ -104,3 +104,16 @@ configuration:
       silent — no audio and no error, which looks like a deaf Echo. Above
       120 is not accepted, because the ring stops showing that the Echo is
       working at 135 seconds.
+  claude_bridge_url:
+    name: Claude Code bridge URL
+    description: >-
+      Address of tools/claude_bridge running on your PC, for example
+      http://<your PC address>:8790. Pipecat Echoes then get tools to start
+      Claude Code build tasks there, and they say its questions and results
+      out loud. Leave empty to keep it off.
+  claude_bridge_token:
+    name: Claude Code bridge token
+    description: >-
+      The token the bridge printed when it first started (also in its
+      config.json). It lets this controller start tasks on that PC, so keep
+      it private.

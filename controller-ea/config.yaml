@@ -118,6 +118,11 @@ options:
   # goes idle while the controller is still waiting, which is the same silent
   # failure from the other side.
   tts_wait_timeout: 30
+  # A PC running tools/claude_bridge (docs/claude-bridge.md): Pipecat Echoes
+  # get tools to start Claude Code build tasks there, and say its questions
+  # and results. Empty = off. The controller connects out to it.
+  claude_bridge_url: ""
+  claude_bridge_token: ""
 schema:
   server_host: "str"
   server_port: "int(1,65535)"
@@ -134,3 +139,5 @@ schema:
   log_levels: "str"
   extra_ca_cert: "str?"
   tts_wait_timeout: "int(5,120)"
+  claude_bridge_url: "str?"
+  claude_bridge_token: "password?"

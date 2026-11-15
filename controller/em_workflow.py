@@ -195,6 +195,7 @@ async def take_over(device, peers):
 
 
 SHARED_EXCHANGES_MAX = 3
+PROMPT_MAX = 1500        # what the controller asks the model to say first (prompt())
 
 
 def note_exchange(turn, event):
@@ -461,6 +462,7 @@ async def handshake(config, device_id):
             ws.echomuse_device_endpoint = hello.get("echomuse", {}).get("device_endpoint") is True
             ws.echomuse_turn_events = hello.get("echomuse", {}).get("turn_events") is True
             ws.echomuse_peer_context = hello.get("echomuse", {}).get("peer_context") is True
+            ws.echomuse_prompt = hello.get("echomuse", {}).get("prompt") is True
     except BaseException:
         await ws.close()
         raise
@@ -520,6 +522,10 @@ class Bridge:
         self.turn: dict | None = None
         self.turn_tasks = set()
         self.error_times: list[float] = []
+        # A session the controller opened to say something first (prompt()):
+        # the model's reply is followed by a bounded turn stream for the answer
+        # instead of ending the session.
+        self.prompting = False
 
     @property
     def active(self):
@@ -584,7 +590,51 @@ class Bridge:
             finally:
                 self.opening = False
 
-    async def _wake(self, session=None, *, age_ms=0, button=False, wake_info=None):
+    async def prompt(self, text, *, listen=True):
+        """Open a session that starts with the model saying something, then hears the answer.
+
+        For a speaker-initiated message (the PC task bridge, em_claude_bridge):
+        the controller sends the server `{"type": "prompt"}` while it is idle,
+        plays the reply, and then opens the same bounded turn stream a
+        follow-up question uses (reopen_uplink), which the Echo gates on speech
+        and ends itself. Nothing streams before the question has been heard,
+        and nothing is opened on a muted Echo or one with its wake word off.
+        Returns None when said, or why not ("busy" is worth retrying).
+        """
+        ws = self.ws
+        if not self.active or self.switching or ws is None or self.status != "connected":
+            return "unavailable"
+        if not getattr(ws, "echomuse_prompt", False):
+            return "adapter_required"
+        if self.device.muted or not self.device.wake_word_enabled:
+            return "busy"
+        if self.awake or self.opening or self.speaking:
+            return "busy"
+        text = " ".join(str(text).split())[:PROMPT_MAX]
+        if not text:
+            return "empty"
+        async with self.session_lock:
+            if self.awake or self.opening:
+                return "busy"
+            self.opening = True
+            try:
+                if not await self._wake(None, wake_info={"source": "prompt"}, prompt=True):
+                    return "busy"
+            finally:
+                self.opening = False
+        self.prompting = bool(listen)
+        payload = json.dumps({"type": "prompt",
+                              "text_b64": base64.b64encode(text.encode("utf-8")).decode("ascii")})
+        try:
+            await ws.send(payload)
+        except Exception:
+            await self.end_session(reason="prompt_failed")
+            return "unavailable"
+        log.info("[%s] Pipecat: opened a session to say something first (%d chars, listen=%s)",
+                 self.device.device_id, len(text), bool(listen))
+        return None
+
+    async def _wake(self, session=None, *, age_ms=0, button=False, wake_info=None, prompt=False):
         """Open only the numbered session announced by the device's wake."""
         if (not self.active or self.switching or self.device.muted
                 or (not button and not self.device.wake_word_enabled)
@@ -618,6 +668,7 @@ class Bridge:
         if self.awake:
             await self.interrupt()
             await self._end_session(notify=False)
+        self.prompting = False
         if not self.voice_owned:
             await self.device.voice_lock.acquire()
             self.voice_owned = True
@@ -629,17 +680,24 @@ class Bridge:
         self.device.cancel_event.clear()
         self.session_epoch += 1
         self.awake = True
-        self.awaiting_user_turn = bool(getattr(self.ws, "echomuse_turn_events", False))
-        self.accept_audio = True
+        # A prompt's reply is the first thing the server says: nothing to skip.
+        self.awaiting_user_turn = not prompt and bool(getattr(self.ws, "echomuse_turn_events", False))
+        # A prompt waits on the server (thinking) with the Echo's microphone
+        # closed; reopen_uplink opens it once the question has been heard.
+        self.accept_audio = not prompt
         self.session = session
         self.endpointed = False
-        self.uplink_closed = False
+        self.uplink_closed = prompt
         self.follow_up_stream = False
         self.session_started = asyncio.get_running_loop().time()
         self.session_hard_deadline = self.session_started + SESSION_MAX_S
         self.turn = {"t0": self.session_started, "wake": wake_info, "button": button,
                      "composed": bool(getattr(self.ws, "echomuse_device_endpoint", False)),
                      "vad_end": -1, "stt": -1, "stt_text": "", "first_audio": -1}
+        if prompt:
+            self.arm(THINK_IDLE_S, "think_timeout")
+            await self.device.workflow_phase("thinking")
+            return True
         self.arm(LISTEN_IDLE_S, "listen_timeout")
         self.device.listen_session = session
         if session is not None:
@@ -917,6 +975,7 @@ class Bridge:
             self.session_epoch += 1
         old_session, self.session = self.session, None
         self.uplink_closed = False
+        self.prompting = False
         if self.follow_up_stream:
             self.follow_up_stream = False
             await self.device.mic_stop()
@@ -1262,6 +1321,17 @@ class Bridge:
             return
         normal_reply_done = (phase == "listening" and event.get("follow_up")
                              and not event.get("continuation_question"))
+        if normal_reply_done and self.prompting:
+            # The model has said what the controller asked it to: the answer is
+            # heard through the bounded turn stream once the reply has played.
+            self.prompting = False
+            self.accept_audio = True
+            if self.playback_tasks:
+                self.finish_output("listening")
+            else:
+                await self.reopen_uplink()
+                await self.device.workflow_phase("listening")
+            return
         if normal_reply_done or phase in {"idle", "thanks"} or event.get("terminal"):
             # Stop the uplink now; let the acknowledged speaker tail finish
             # before releasing music ownership and restoring the idle ring.

@@ -1,8 +1,9 @@
 {
  "files": {
-  "em_controller.py": 6677,
+  "em_controller.py": 6680,
   "em_db.py": 3548,
-  "em_esphome.py": 3318
+  "em_esphome.py": 3318,
+  "em_workflow.py": 1517
  },
  "functions": {
   "em_controller.Device.__init__": 410,

@@ -129,6 +129,7 @@ import em_timers
 import em_schedule
 import em_schedule_share
 import em_groups
+import em_claude_bridge
 import em_loglevel
 
 _LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s — %(message)s"
@@ -6587,6 +6588,7 @@ async def main():
     release_task       = asyncio.create_task(em_releases.poll_loop())
     session_prune_task = asyncio.create_task(api.session_prune_loop())
     loop_lag_task      = asyncio.create_task(event_loop_lag_monitor())
+    claude_bridge_task = asyncio.create_task(em_claude_bridge.poll_loop(em_state.devices))
 
     # Device-link TLS: generate/load the CA + server cert. Failure to set
     # up TLS (missing cryptography package, unwritable dir) must never take
@@ -6664,6 +6666,7 @@ async def main():
         await esphome.stop_esphome_servers()
         release_task.cancel()
         session_prune_task.cancel()
+        claude_bridge_task.cancel()
         loop_lag_task.cancel()
         mdns_task.cancel()
         await azc.async_unregister_service(info)

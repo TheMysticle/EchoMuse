@@ -1,0 +1,17 @@
+# systemd user unit for tools/claude_bridge/bridge.py (docs/claude-bridge.md).
+# Install:  cp echomuse-claude-bridge.service ~/.config/systemd/user/
+#           systemctl --user daemon-reload
+#           systemctl --user enable --now echomuse-claude-bridge
+#           loginctl enable-linger "$USER"     # keep it running while logged out
+[Unit]
+Description=EchoMuse Claude Code bridge
+After=network-online.target
+
+[Service]
+ExecStart=/usr/bin/python3 %h/EchoMuse/tools/claude_bridge/bridge.py
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target

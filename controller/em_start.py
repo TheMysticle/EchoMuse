@@ -45,6 +45,8 @@ OPTION_ENV_VARS = {
     "log_levels": "LOG_LEVELS",
     "extra_ca_cert": "EM_EXTRA_CA_CERT",
     "tts_wait_timeout": "EM_TTS_WAIT_TIMEOUT",
+    "claude_bridge_url": "CLAUDE_BRIDGE_URL",
+    "claude_bridge_token": "CLAUDE_BRIDGE_TOKEN",
 }
 
 if OPTIONS_PATH.is_file():

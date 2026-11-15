@@ -21,7 +21,7 @@ def adapt_va_pipecat(text):
     old = "        action = self.protocol.client_action(data)\n"
     if text.count(old) != 1:
         raise ValueError("Upstream va_pipecat deserialize anchor changed")
-    text = text.replace(old, "        peer = echomuse.peer_context_frame(data)\n        if peer is not None:\n            return peer\n" + old)
+    text = text.replace(old, "        peer = echomuse.peer_context_frame(data) or echomuse.prompt_frame(data)\n        if peer is not None:\n            return peer\n" + old)
     old = "from app.va_pipecat_protocol import VaPipecatProtocol\n"
     if text.count(old) != 1:
         raise ValueError("Upstream va_pipecat import anchor changed")
@@ -36,7 +36,7 @@ def adapt(text):
         text = text.replace(old, new)
     replace('from __future__ import annotations', 'from __future__ import annotations\n\nfrom app import brave_search\nfrom app import echomuse\nfrom app import fast_path\nfrom app import heard_check\nfrom app import mcp_bridge\nfrom app import transcription_languages\nfrom app import tool_scope')
     replace('    await websocket.send_text(_va_pipecat_protocol(config).hello())', '''    hello = json.loads(_va_pipecat_protocol(config).hello())
-    hello["echomuse"] = {"scheduler": bool(session_options.get("scheduler", {}).get("schedules")), "stop": bool(session_options.get("scheduler")), "barge_in": bool(session_options.get("barge_in")), "device_endpoint": _runtime_mode(flow) == "composed", "turn_events": _runtime_mode(flow) != "composed", "peer_context": _runtime_mode(flow) != "composed" and (getattr(config.model_integration(flow), "kind", None) or flow.provider_id) == "gemini"}
+    hello["echomuse"] = {"scheduler": bool(session_options.get("scheduler", {}).get("schedules")), "stop": bool(session_options.get("scheduler")), "barge_in": bool(session_options.get("barge_in")), "device_endpoint": _runtime_mode(flow) == "composed", "turn_events": _runtime_mode(flow) != "composed", "peer_context": _runtime_mode(flow) != "composed" and (getattr(config.model_integration(flow), "kind", None) or flow.provider_id) == "gemini", "prompt": _runtime_mode(flow) != "composed" and (getattr(config.model_integration(flow), "kind", None) or flow.provider_id) == "gemini"}
     await websocket.send_text(json.dumps(hello))''')
     replace('    model = integration.default_model or provider.default_model or DEFAULT_WEB_SEARCH_MODEL\n\n    if provider.kind in {"openai", "openai_cloud"}:', '''    if provider.kind == "brave_search":
         api_key = (provider.api_key or "").strip()
@@ -144,12 +144,16 @@ def adapt(text):
             await super()._handle_msg_turn_complete(message)
             await echomuse.answer_silent_tool_turn(self)
             await echomuse.flush_peer_context(self)
+            await echomuse.flush_prompt(self)
 
         async def process_frame(self, frame, direction):
             # What the other Echo in a shared conversation heard and said
             # (echomuse.flush_peer_context); never passed down the pipeline.
             if echomuse.is_peer_context(frame):
                 await echomuse.take_peer_context(self, frame)
+                return
+            if echomuse.is_prompt(frame):
+                await echomuse.take_prompt(self, frame)
                 return
             await super().process_frame(frame, direction)
 

@@ -398,6 +398,9 @@ def mcp_options(settings, servers, allowlist):
             allowed.extend(["EchoMuseStop", "EchoMuseVolume"])
             if scheduler.get("schedules"):
                 allowed.extend(["EchoMuseCreate", "EchoMuseList", "EchoMuseAction"])
+            # Listed by the controller only when its PC bridge is configured
+            # (em_claude_bridge); naming them here admits nothing else.
+            allowed.extend(["ClaudeStart", "ClaudeStatus", "ClaudeReply", "ClaudeCancel"])
     return result, allowed
 
 
@@ -930,6 +933,105 @@ async def take_peer_context(service, frame, delay=PEER_COALESCE_S):
         await flush_peer_context(service)
 
     service._em_peer_flush_task = asyncio.get_running_loop().create_task(later())
+
+
+# Something the controller asks the model to say first, with no wake
+# (em_workflow.Bridge.prompt): a PC task's question or result
+# (em_claude_bridge). {"type": "prompt", "text_b64"}. The controller has
+# opened a session with the Echo's microphone closed and plays the reply; it
+# then opens a bounded turn stream for the answer. Sent the same way as a
+# peer note (outside any activity window, only while idle), but its answer is
+# the point, so it is not dropped.
+PROMPT_MAX = 1500
+PROMPT_WAIT_S = 20.0
+PROMPT_NOTE = (
+    "Not from the user: this is your own system, asking you to speak first. {text}"
+)
+_prompt_frame_class = None
+
+
+def _prompt_frame_type():
+    global _prompt_frame_class
+    if _prompt_frame_class is None:
+        from pipecat.frames.frames import SystemFrame
+
+        class PromptFrame(SystemFrame):
+            def __init__(self, text):
+                super().__init__()
+                self.text = text
+
+        _prompt_frame_class = PromptFrame
+    return _prompt_frame_class
+
+
+def parse_prompt(data):
+    """The text of a controller prompt message, or None for anything else."""
+    import base64
+    import binascii
+    import json
+    if not isinstance(data, str) or '"prompt"' not in data:
+        return None
+    try:
+        message = json.loads(data)
+    except ValueError:
+        return None
+    if not isinstance(message, dict) or message.get("type") != "prompt":
+        return None
+    value = message.get("text_b64")
+    if not isinstance(value, str) or len(value) > PROMPT_MAX * 8:
+        return None
+    try:
+        text = base64.b64decode(value, validate=True).decode("utf-8", "replace")
+    except (binascii.Error, ValueError):
+        return None
+    text = " ".join(text.split())[:PROMPT_MAX]
+    return text or None
+
+
+def prompt_frame(data):
+    text = parse_prompt(data)
+    return None if text is None else _prompt_frame_type()(text)
+
+
+def is_prompt(frame):
+    return _prompt_frame_class is not None and isinstance(frame, _prompt_frame_class)
+
+
+async def flush_prompt(service, now=None):
+    """Send the waiting prompt if the model is idle. Never raises."""
+    import time
+    pending = getattr(service, "_em_prompt", None)
+    if not pending:
+        return False
+    now = time.monotonic() if now is None else now
+    at, text = pending
+    if now - at > PROMPT_WAIT_S:
+        service._em_prompt = None    # the controller's session has timed out by now
+        return False
+    if peer_idle_problem(service) is not None:
+        return False
+    from loguru import logger
+    service._em_prompt = None
+    session = service._session
+    try:
+        if getattr(service, "_em_interrupt_activity", False):
+            from google.genai.types import ActivityEnd
+            service._em_interrupt_activity = False
+            await session.send_realtime_input(activity_end=ActivityEnd())
+        service._em_drop_response = False
+        await session.send_realtime_input(text=PROMPT_NOTE.format(text=text))
+    except Exception as error:
+        logger.warning("Controller prompt not sent ({})", type(error).__name__)
+        return False
+    logger.info("Controller prompt: asked the model to speak first ({} chars)", len(text))
+    return True
+
+
+async def take_prompt(service, frame):
+    """Keep the newest prompt and send it now if idle, else at the next turn_complete."""
+    import time
+    service._em_prompt = (time.monotonic(), frame.text)
+    await flush_prompt(service)
 
 
 AREA_MISSING = "The area does not exist"

@@ -345,7 +345,9 @@ async def handle(request, devices):
     elif method == "ping":
         result = {}
     elif method == "tools/list":
-        result = {"tools": [STOP_TOOL, VOLUME_TOOL, *(TOOLS if schedules_enabled else [])]}
+        import em_claude_bridge
+        result = {"tools": [STOP_TOOL, VOLUME_TOOL, *(TOOLS if schedules_enabled else []),
+                            *(em_claude_bridge.CLAUDE_TOOLS if em_claude_bridge.enabled() else [])]}
     elif method == "tools/call":
         try:
             if live is None or workflow is None or not workflow.active:
@@ -372,6 +374,13 @@ async def handle(request, devices):
                 text = json.dumps({"volume_set": level}) if ok else "Speaker not connected"
                 result = {"content": [{"type": "text", "text": text}], "isError": not ok}
                 response["result"] = result
+                return web.json_response(response, headers={"Cache-Control": "no-store"})
+            import em_claude_bridge
+            if name in em_claude_bridge.TOOL_NAMES:
+                if not em_claude_bridge.enabled():
+                    raise ValueError("The PC bridge is not configured on this controller")
+                # The satellite is the bearer key's, never an argument (module docstring).
+                response["result"] = await em_claude_bridge.tool(name, args, live.device_id)
                 return web.json_response(response, headers={"Cache-Control": "no-store"})
             if "local_schedule" not in (live.capabilities or []) or not schedules_enabled:
                 raise ValueError("Local schedules are disabled or unavailable on this speaker")

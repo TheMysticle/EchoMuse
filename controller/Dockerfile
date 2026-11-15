@@ -161,6 +161,7 @@ COPY em_routes_schedule.py .
 COPY em_routes_spotify.py .
 COPY em_routes_groups.py .
 COPY em_groups.py .
+COPY em_claude_bridge.py .
 COPY em_routes_workflow.py .
 COPY em_routes_provision.py .
 COPY em_routes_shell.py .
