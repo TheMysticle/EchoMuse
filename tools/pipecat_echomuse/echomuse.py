@@ -400,7 +400,7 @@ def mcp_options(settings, servers, allowlist):
                 allowed.extend(["EchoMuseCreate", "EchoMuseList", "EchoMuseAction"])
             # Listed by the controller only when its PC bridge is configured
             # (em_claude_bridge); naming them here admits nothing else.
-            allowed.extend(["ClaudeStart", "ClaudeStatus", "ClaudeReply", "ClaudeCancel"])
+            allowed.extend(["ClaudeStart", "ClaudeStatus", "ClaudeReply", "ClaudePrint", "ClaudeCancel"])
     return result, allowed
 
 

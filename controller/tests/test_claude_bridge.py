@@ -206,7 +206,7 @@ def test_what_is_said_for_each_event():
 def test_a_busy_echo_is_retried_and_a_missing_adapter_is_not():
     async def main():
         answers = ['busy', 'busy', None]
-        workflow = SimpleNamespace(prompt=AsyncMock(side_effect=lambda text: answers.pop(0)))
+        workflow = SimpleNamespace(prompt=AsyncMock(side_effect=lambda text, listen=True: answers.pop(0)))
         devices = {'kitchen': SimpleNamespace(workflow=workflow)}
         event = {'type': 'ask', 'task_id': 't-1', 'device': 'kitchen', 'text': 'Which colour?'}
         assert await CB.deliver(event, devices, retry_s=0, give_up_s=5)
@@ -234,4 +234,52 @@ def test_a_newer_event_replaces_the_delivery_still_waiting(monkeypatch):
         await asyncio.sleep(0)
         assert first.cancelled() or first.cancelling()
         CB._deliveries.pop('t-1').cancel()
+    asyncio.run(main())
+
+
+# ----- the printer --------------------------------------------------------
+
+def test_a_print_request_goes_to_the_bridge_and_nothing_else_does(monkeypatch):
+    async def main():
+        monkeypatch.setenv('CLAUDE_BRIDGE_URL', 'http://pc.lan:8790')
+        monkeypatch.setenv('CLAUDE_BRIDGE_TOKEN', 'secret')
+        calls = []
+
+        async def fake_call(method, path, body=None, **kw):
+            calls.append((method, path, body))
+            return {'started': True}
+        monkeypatch.setattr(CB, '_call', fake_call)
+        assert not (await CB.tool('ClaudePrint', {'action': 'start'}, 'kitchen'))['isError']
+        assert not (await CB.tool('ClaudePrint', {'action': 'stop', 'task_id': 'tamper-1a2b'}, 'kitchen'))['isError']
+        assert calls == [('POST', '/printer', {'action': 'start'}),
+                         ('POST', '/printer', {'action': 'stop', 'task_id': 'tamper-1a2b'})]
+        assert (await CB.tool('ClaudePrint', {'action': 'delete_all'}, 'kitchen'))['isError']
+        assert (await CB.tool('ClaudePrint', {'action': 'start', 'task_id': '../x'}, 'kitchen'))['isError']
+        assert len(calls) == 2
+    asyncio.run(main())
+
+
+def test_a_waiting_print_is_offered_never_started_and_reports_do_not_listen():
+    done = CB.spoken_instruction({'type': 'done', 'task_id': 't-1', 'title': 'Tamper', 'text': 'Made it.',
+                                  'print': {'minutes': 66, 'material': 'PETG'}})
+    assert 'not started' in done and 'about 66 minutes' in done and 'PETG' in done
+    assert 'start the print' in done and 'clearly say' in done
+    assert CB.listens({'type': 'done'}) and CB.listens({'type': 'ask'})
+    printed = CB.spoken_instruction({'type': 'printed', 'task_id': 't-1', 'title': 'Tamper'})
+    assert 'finished' in printed and 'Call no tool' in printed and not CB.listens({'type': 'printed'})
+    failed = CB.spoken_instruction({'type': 'print_failed', 'task_id': 't-1', 'title': 'Tamper',
+                                    'text': 'The printer reported an error.'})
+    assert 'reported an error' in failed and not CB.listens({'type': 'print_failed'})
+
+
+def test_a_report_session_ends_after_it_is_said(fresh_db):
+    async def main():
+        d = bridge()
+        try:
+            assert await d.workflow.prompt('The print finished.', listen=False) is None
+            await d.workflow.on_event({'type': 'phase', 'phase': 'listening', 'follow_up': True})
+            d.mic_start_turn.assert_not_awaited()
+            assert not d.workflow.awake
+        finally:
+            await d.workflow.stop()
     asyncio.run(main())

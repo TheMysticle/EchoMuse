@@ -78,6 +78,6 @@ def test_a_busy_model_keeps_it_for_the_next_turn_complete_and_a_stale_one_is_dro
 
 def test_the_scheduler_allowlist_admits_the_claude_tools():
     _, allowed = echomuse.mcp_options({'scheduler': {'id': 'echomuse'}}, [], ['HassTurnOn'])
-    assert {'ClaudeStart', 'ClaudeStatus', 'ClaudeReply', 'ClaudeCancel'} <= set(allowed)
+    assert {'ClaudeStart', 'ClaudeStatus', 'ClaudeReply', 'ClaudePrint', 'ClaudeCancel'} <= set(allowed)
     _, allowed = echomuse.mcp_options({}, [], ['HassTurnOn'])
     assert 'ClaudeStart' not in allowed

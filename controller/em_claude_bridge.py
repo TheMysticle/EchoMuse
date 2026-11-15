@@ -67,6 +67,17 @@ CLAUDE_TOOLS = [
          "question or ClaudeStatus gave."),
      "inputSchema": _schema({"task_id": {"type": "string", "maxLength": 64},
                              "text": {"type": "string", "maxLength": TEXT_MAX}}, ("task_id", "text"))},
+    {"name": "ClaudePrint",
+     "description": (
+         "The user's 3D printer, for prints a PC build task put on it. `start` ONLY when the user "
+         "themselves says to start the print in this conversation (\"start the print\", \"print it\"); "
+         "never on your own, never because a task finished. If they have not said the bed is clear and "
+         "the filament is loaded, ask that first, then start on their yes. `pause`, `resume` and `stop` "
+         "likewise only when asked. `status` for how a print is going. Without `task_id`, start takes "
+         "the newest print waiting on the printer."),
+     "inputSchema": _schema({"action": {"type": "string", "maxLength": 10,
+                                        "enum": ["start", "pause", "resume", "stop", "status"]},
+                             "task_id": {"type": "string", "maxLength": 64}}, ("action",))},
     {"name": "ClaudeCancel",
      "description": "Stop a PC build task. Only when the user asks for it to be stopped or cancelled.",
      "inputSchema": _schema({"task_id": {"type": "string", "maxLength": 64}}, ("task_id",))},
@@ -131,6 +142,11 @@ async def tool(name, args, device_id):
             data = await _call("POST", "/tasks", {"device": device_id, **args})
         elif name == "ClaudeStatus":
             data = await _call("GET", "/tasks/" + args["task_id"] if args.get("task_id") else "/tasks")
+        elif name == "ClaudePrint":
+            if args["action"] not in ("start", "pause", "resume", "stop", "status"):
+                raise ValueError("Unknown printer action")
+            data = await _call("POST", "/printer", {"action": args["action"], **({"task_id": args["task_id"]} if args.get("task_id") else {})},
+                               timeout=90)
         elif name == "ClaudeReply":
             data = await _call("POST", f"/tasks/{args['task_id']}/reply", {"text": args["text"], "device": device_id})
         else:
@@ -141,6 +157,11 @@ async def tool(name, args, device_id):
     except (aiohttp.ClientError, asyncio.TimeoutError):
         return {"content": [{"type": "text", "text": "The PC is not answering; it may be off or the bridge not running."}],
                 "isError": True}
+
+
+def listens(event):
+    """Whether the Echo opens its microphone after saying this event (not for a print report)."""
+    return event.get("type") not in ("printed", "print_failed")
 
 
 def spoken_instruction(event):
@@ -155,9 +176,26 @@ def spoken_instruction(event):
                 f'When they answer, call ClaudeReply with task_id "{task_id}" and their answer in their '
                 "own words. If they say not now, say that is fine and call no tool.")
     if kind == "done":
+        job = event.get("print") if isinstance(event.get("print"), dict) else None
+        if job:
+            minutes = job.get("minutes")
+            material = " ".join(str(job.get("material") or "the filament").split())[:20]
+            about = f", about {int(minutes)} minutes" if isinstance(minutes, int) else ""
+            return (f'The build task "{title}" on the user\'s PC (task id {task_id}) has finished and its print '
+                    f"is waiting on the 3D printer, not started{about}. Tell them now, in at most three short "
+                    f"sentences: {text or 'it is done.'} Then tell them that when the bed is clear and "
+                    f"{material} is loaded they can say \"start the print\". Only if they then clearly say to "
+                    f'start it, call ClaudePrint with action "start" and task_id "{task_id}". If they want '
+                    f'changes instead, call ClaudeReply with task_id "{task_id}" and what they want changed.')
         return (f'The build task "{title}" on the user\'s PC (task id {task_id}) has finished. Tell them now, '
                 f"in at most three short sentences: {text or 'it is done.'} Then ask whether they want any "
                 f'changes; if they do, call ClaudeReply with task_id "{task_id}" and what they want changed.')
+    if kind == "printed":
+        return (f'Tell the user, in one short sentence, that the 3D print of "{title}" has finished. '
+                "Call no tool.")
+    if kind == "print_failed":
+        return (f'Tell the user, briefly, that the 3D print of "{title}" did not finish: '
+                f"{text or 'it stopped.'} Call no tool.")
     if kind == "failed":
         return (f'The build task "{title}" on the user\'s PC (task id {task_id}) stopped with a problem. '
                 f"Tell them briefly: {text or 'it did not finish.'} If they want it to try again or do "
@@ -179,7 +217,7 @@ async def deliver(event, devices, *, retry_s=RETRY_S, give_up_s=DELIVER_FOR_S):
     while True:
         live = devices.get(device_id)
         workflow = getattr(live, "workflow", None) if live else None
-        why = await workflow.prompt(instruction) if workflow is not None else "offline"
+        why = await workflow.prompt(instruction, listen=listens(event)) if workflow is not None else "offline"
         if why is None:
             log.info("[%s] PC task %s: said the %s update", device_id, event.get("task_id"), event.get("type"))
             return True

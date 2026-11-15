@@ -39,6 +39,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import printing  # noqa: E402  (beside this file; standard library only)
+
 CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "echomuse-claude-bridge"
 DEFAULTS = {
     "host": "0.0.0.0",
@@ -49,11 +52,20 @@ DEFAULTS = {
     "max_running": 2,
     # "auto": Claude Code's bash sandbox when bubblewrap and socat are installed.
     "sandbox": "auto",
+    # Hosts shell commands may reach inside the sandbox (web search and fetch
+    # are Claude Code's own tools and are not limited by this). PyPI, so a task
+    # can `pip install` into a venv in its folder.
+    "sandbox_domains": ["pypi.org", "files.pythonhosted.org"],
     "permission_mode": "acceptEdits",
     # Reading and editing inside the task folder needs no rule under acceptEdits;
     # anything outside it is refused, because nobody is there to approve it.
     "allowed_tools": ["WebSearch", "WebFetch", "TodoWrite", "Bash(openscad *)"],
     "max_turn_seconds": 3600,
+    # A Centauri Carbon on the LAN: {"host": "<printer IP>"} turns printing on
+    # (docs/claude-bridge.md, "Printing"). Claude can slice and upload; only the
+    # user, by voice, can start a print.
+    "printer": {},
+    "printer_poll_s": 30,
 }
 TEXT_MAX = 4000
 PROGRESS_KEEP = 12
@@ -67,11 +79,19 @@ How to work:
 - You have the ask_user tool. Use it when the user's answer would change what you build and you cannot find it out yourself: a measurement only they can take, a preference, a choice between real options. Find out what you can first (search the web for product dimensions and specifications, for example) and offer what you found as the default: "I found the capsule is about 53 millimetres across. Shall I use that, or will you measure yours?"
 - Ask ONE question at a time, short enough to say in one breath, with the options named. After calling ask_user, stop: end your turn with one short line and do no more work. The user's answer arrives as your next message.
 - Ask the questions that matter early, before the long work, so the user is not kept waiting. Never ask permission for ordinary work in this folder.
+- Shell commands run in a sandbox: they can write only in this folder, and reach only PyPI on the network. For Python packages, make a venv here (`python3 -m venv .venv`, then `.venv/bin/pip install --no-cache-dir ...`). OpenSCAD is installed for rendering models to STL.
 - If a tool you want is not permitted, do the work another way, or say in the README what the user needs to run.
 
 When you are finished:
 - Leave a README.md in the folder: what you made, the key decisions and dimensions, and how to use it (for a 3D model: which file to print and suggested print settings).
 - Your final message is spoken aloud: two or three short plain sentences. No markdown, lists, file paths or code. Say what you made, the main choice you made, and that it is in the folder "{folder}"."""
+
+PRINT_NOTE = """
+
+Printing: the user's 3D printer (an Elegoo Centauri Carbon, 0.4 mm nozzle, 256 x 256 x 256 mm) is connected. When a model is finished and checked, call send_to_printer with the model file (STL, 3MF or OBJ) in this folder. It slices with the printer's own profiles and puts the file on the printer; it never starts a print. Only the user starts it, by voice, once they have checked the bed. So:
+- Put the part in its print orientation in the file itself: largest flat face down on Z=0, as little overhang as you can, no supports needed if you can design it that way.
+- Before you call send_to_printer, ask the user which material to print in with ask_user, unless they already said: offer MATERIAL, which is what they usually have loaded, and mention another only if the part needs it (heat resistance, flexibility). Put it in the same question as anything else you need to ask. Choose the quality yourself (standard unless the part needs otherwise).
+- In your final message, say it is on the printer and roughly how long it takes."""
 
 ASK_RESULT = ("Your question will be said to the user on their speaker. End your turn now with one short line and "
               "do no more work; their answer arrives as your next message.")
@@ -106,7 +126,7 @@ def sandbox_on(config):
 
 class Task:
     FIELDS = ("id", "title", "request", "device", "folder", "status", "session_id", "question",
-              "result", "error", "progress", "created", "updated", "cost_usd", "runs", "queued")
+              "result", "error", "progress", "created", "updated", "cost_usd", "runs", "queued", "print")
 
     def __init__(self, **values):
         self.id = values["id"]
@@ -125,6 +145,9 @@ class Task:
         self.cost_usd = values.get("cost_usd", 0.0)
         self.runs = values.get("runs", 0)
         self.queued = values.get("queued")
+        # The print Claude prepared: {file, minutes, material, quality, state, ...}.
+        # state: ready (on the printer), printing, printed, stopped, failed.
+        self.print = values.get("print")
         self.agent_token = secrets.token_urlsafe(24)
         self.proc = None
         self.cancelled = False
@@ -152,7 +175,11 @@ class Bridge:
         self.events: list[dict] = []
         self.seq = 0
         self.claude = shutil.which(config["claude"]) or config["claude"]
+        self.printer = printing.Printer(config, self.root / ".bridge-cache")
         self._load()
+        for task in self.tasks.values():
+            if task.print and task.print.get("state") == "printing":
+                self._watch_print(task)            # the bridge restarted mid-print
 
     # ----- persistence -------------------------------------------------
     def _load(self):
@@ -177,10 +204,10 @@ class Bridge:
         tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
         tmp.replace(self.state_path)
 
-    def _event(self, kind, task, text=""):
+    def _event(self, kind, task, text="", **extra):
         self.seq += 1
         self.events.append({"seq": self.seq, "type": kind, "task_id": task.id, "device": task.device,
-                            "title": task.title, "text": text, "delivered": False})
+                            "title": task.title, "text": text, "delivered": False, **extra})
         del self.events[:-EVENTS_KEEP]
         self._save()
         self.changed.notify_all()
@@ -195,6 +222,8 @@ class Bridge:
             out["result"] = task.result
         if task.status == "failed" and task.error:
             out["problem"] = task.error
+        if task.print:
+            out["print"] = {k: task.print.get(k) for k in ("state", "material", "quality", "minutes") if task.print.get(k)}
         if detail:
             out["folder"] = Path(task.folder).name
             out["latest_progress"] = task.progress[-5:]
@@ -285,6 +314,167 @@ class Bridge:
                 event["delivered"] = True
         self._event("clear", task)
 
+    # ----- printing ----------------------------------------------------
+    def prepare_print(self, task_id, model, material="PLA", quality="standard"):
+        """Claude's half: slice its model and put it on the printer. Never starts anything."""
+        with self.lock:
+            task = self.tasks.get(task_id)
+            if task is None or task.status not in ("starting", "running"):
+                raise printing.PrinterError("This task is not running.")
+            folder = Path(task.folder).resolve()
+        if not self.printer.enabled:
+            raise printing.PrinterError("No printer is set up.")
+        path = (folder / str(model)).resolve()
+        if folder not in path.parents:
+            raise printing.PrinterError("The model must be a file inside this task's folder.")
+        if path.suffix.lower() not in printing.MODEL_SUFFIXES or not path.is_file():
+            raise printing.PrinterError("Give an existing STL, 3MF or OBJ file in this folder.")
+        if path.stat().st_size > printing.MAX_MODEL_BYTES:
+            raise printing.PrinterError("That model file is too large.")
+        with self.lock:
+            if task.print and task.print.get("state") == "printing":
+                raise printing.PrinterError("This task's print is running now; it cannot be replaced.")
+            task.note(f"slicing {path.name} ({material}, {quality})")
+        gcode, minutes = self.printer.slice(path, folder / "print", material, quality)
+        remote = f"{task.id}.gcode"
+        with self.lock:
+            task.note("uploading to the printer")
+        self.printer.upload(gcode, remote)
+        with self.lock:
+            task.print = {"file": remote, "local": gcode.name, "model": path.name, "minutes": minutes,
+                          "material": material, "quality": quality, "state": "ready", "at": time.time()}
+            task.note(f"on the printer, about {minutes} minutes" if minutes else "on the printer")
+            self._save()
+        log(f"[{task.id}] {path.name} sliced ({material}, {quality}, ~{minutes} min) and uploaded as {remote}")
+        about = f" It takes about {minutes} minutes." if minutes else ""
+        return (f"Sliced ({material}, {quality} quality) and uploaded to the printer as {remote}.{about} "
+                "It has NOT started: the user starts it by voice after checking the bed. Say in your final "
+                "message that it is on the printer and how long it takes.")
+
+    def _print_task(self, task_id=None):
+        """The task whose print the user means: the one named, else the newest ready one."""
+        if task_id:
+            task = self.tasks.get(task_id)
+            if task is None or not task.print:
+                raise printing.PrinterError("That task has nothing on the printer.")
+            return task
+        ready = [t for t in self.tasks.values() if t.print and t.print.get("state") == "ready"]
+        if not ready:
+            raise printing.PrinterError("No print is waiting on the printer.")
+        return max(ready, key=lambda t: t.print.get("at", 0))
+
+    def printer_view(self):
+        if not self.printer.enabled:
+            raise printing.PrinterError("No printer is set up.")
+        status = self.printer.status()
+        with self.lock:
+            ours = next((t for t in self.tasks.values() if t.print and t.print.get("file") == status.get("filename")), None)
+            out = printing.describe(status, ours.print.get("minutes") if ours else None)
+            if ours:
+                out["task_id"], out["title"] = ours.id, ours.title
+            waiting = [t for t in self.tasks.values() if t.print and t.print.get("state") == "ready"]
+            if waiting:
+                out["waiting_to_start"] = [{"task_id": t.id, "title": t.title, "minutes": t.print.get("minutes"),
+                                            "material": t.print.get("material")} for t in waiting]
+        return out
+
+    def printer_action(self, action, task_id=None):
+        """The user's half, on their spoken request only (the controller's ClaudePrint)."""
+        if not self.printer.enabled:
+            raise printing.PrinterError("No printer is set up.")
+        if action == "status":
+            return self.printer_view()
+        if action == "start":
+            with self.lock:
+                task = self._print_task(task_id)
+                job = dict(task.print)
+            if job.get("state") == "printing":
+                raise printing.PrinterError("That print is already running.")
+            problem = printing.startable_problem(self.printer.status())
+            if problem:
+                raise printing.PrinterError(problem)
+            self.printer.start(job["file"])
+            with self.lock:
+                task.print.update(state="printing", started=time.time())
+                task.note("printing")
+                self._save()
+            log(f"[{task.id}] print started on the user's request ({job['file']})")
+            self._watch_print(task)
+            return {"started": True, "title": task.title, "about_minutes": job.get("minutes"),
+                    "material": job.get("material")}
+        if action in ("pause", "resume", "stop"):
+            code = self.printer.status().get("print_status")
+            if action == "resume" and code != printing.PAUSED:
+                raise printing.PrinterError("The printer is not paused.")
+            if action in ("pause", "stop") and code in printing.STARTABLE:
+                raise printing.PrinterError("The printer is not printing.")
+            with self.lock:
+                if action == "stop":
+                    for task in self.tasks.values():
+                        if task.print and task.print.get("state") == "printing":
+                            task.print["state"] = "stopping"   # the watcher stays quiet about it
+            try:
+                self.printer.control(action)
+            except printing.PrinterError:
+                with self.lock:
+                    for task in self.tasks.values():
+                        if task.print and task.print.get("state") == "stopping":
+                            task.print["state"] = "printing"
+                raise
+            log(f"printer: {action} on the user's request")
+            return {action: True}
+        raise printing.PrinterError("Unknown printer action.")
+
+    def _watch_print(self, task):
+        """Follow a print this bridge started, and say when it ends. One thread per print."""
+        def watch():
+            failures = 0
+            seen_printing = False
+            minutes = (task.print or {}).get("minutes") or 600
+            deadline = time.time() + minutes * 180 + 7200
+            while time.time() < deadline:
+                time.sleep(float(self.config.get("printer_poll_s", 30)))
+                with self.lock:
+                    job = task.print or {}
+                    if job.get("state") not in ("printing", "stopping"):
+                        return
+                try:
+                    status = self.printer.status()
+                    failures = 0
+                except printing.PrinterError:
+                    failures += 1
+                    if failures >= 20:                     # printer off for ~10 minutes
+                        log(f"[{task.id}] lost the printer; stopped following the print")
+                        return
+                    continue
+                code = status.get("print_status")
+                if status.get("filename") and status.get("filename") != job.get("file"):
+                    return                                  # something else is printing now
+                if code not in printing.STARTABLE and code != printing.ERROR:
+                    seen_printing = True
+                    continue
+                if not seen_printing and code == printing.IDLE:
+                    continue                                # not begun yet
+                with self.lock:
+                    stopping = job.get("state") == "stopping"
+                    if code == printing.COMPLETED:
+                        task.print["state"] = "printed"
+                        task.note("printed")
+                        self._event("printed", task, f"The {task.title} has finished printing.")
+                    elif code == printing.ERROR:
+                        task.print["state"] = "failed"
+                        task.note("print failed")
+                        self._event("print_failed", task, "The printer reported an error.")
+                    else:
+                        task.print["state"] = "stopped"
+                        task.note("print stopped")
+                        if not stopping:
+                            self._event("print_failed", task, "The print was stopped on the printer.")
+                    self._save()
+                log(f"[{task.id}] print ended: {printing.WORDS.get(code, code)}")
+                return
+        threading.Thread(target=watch, daemon=True, name=f"print-{task.id}").start()
+
     def ask(self, task_id, question):
         with self.lock:
             task = self.tasks.get(task_id)
@@ -314,14 +504,18 @@ class Bridge:
             "type": "http", "url": f"http://127.0.0.1:{port}/agent/{task.id}/mcp",
             "headers": {"Authorization": "Bearer " + task.agent_token}}}}
         tools = list(self.config["allowed_tools"]) + ["mcp__echomuse__ask_user"]
+        if self.printer.enabled:
+            tools.append("mcp__echomuse__send_to_printer")
         cmd = [self.claude, "-p", "--output-format", "stream-json", "--verbose",
                "--model", self.config["model"], "--permission-mode", self.config["permission_mode"],
-               "--append-system-prompt", SYSTEM.format(folder=Path(task.folder).name),
+               "--append-system-prompt", SYSTEM.format(folder=Path(task.folder).name)
+               + (PRINT_NOTE.replace("MATERIAL", self.printer.material) if self.printer.enabled else ""),
                "--mcp-config", json.dumps(mcp), "--strict-mcp-config"]
         if sandbox_on(self.config):
             tools.append("Bash")
-            cmd += ["--settings", json.dumps({"sandbox": {"enabled": True, "autoAllowBashIfSandboxed": True,
-                                                         "allowUnsandboxedCommands": False}})]
+            cmd += ["--settings", json.dumps({"sandbox": {
+                "enabled": True, "autoAllowBashIfSandboxed": True, "allowUnsandboxedCommands": False,
+                "network": {"allowedDomains": list(self.config.get("sandbox_domains") or [])}}})]
         cmd += ["--session-id", task.session_id] if first else ["--resume", task.session_id]
         cmd += ["--allowedTools", *tools]
         return cmd
@@ -398,7 +592,9 @@ class Bridge:
             elif ok:
                 task.status, task.result = "done", text[:900]
                 task.note("finished")
-                self._event("done", task, task.result)
+                ready = task.print if task.print and task.print.get("state") == "ready" else None
+                self._event("done", task, task.result,
+                            **({"print": {k: ready.get(k) for k in ("minutes", "material")}} if ready else {}))
                 log(f"[{task.id}] done (${task.cost_usd})")
             else:
                 why = text or (stderr_tail[-1] if stderr_tail else f"exit code {proc.returncode}")
@@ -428,6 +624,27 @@ ASK_TOOL = {
 }
 
 
+SEND_TOOL = {
+    "name": "send_to_printer",
+    "description": ("Slice a finished model with the user's printer's own profiles and upload it to the printer. "
+                    "It never starts a print: the user starts it by voice after checking the bed. Call it once the "
+                    "model is final and in print orientation."),
+    "inputSchema": {"type": "object", "additionalProperties": False, "required": ["model"],
+                    "properties": {
+                        "model": {"type": "string", "description": "STL, 3MF or OBJ file in this task's folder (relative path)."},
+                        "material": {"type": "string", "enum": list(printing.MATERIALS), "default": "PLA"},
+                        "quality": {"type": "string", "enum": list(printing.QUALITIES), "default": "standard",
+                                    "description": "draft 0.24 mm, standard 0.20 mm, fine 0.16 mm, strong 0.20 mm with more walls and infill."}}},
+}
+
+
+
+def send_tool(material):
+    """SEND_TOOL with the user's usual material as its default."""
+    tool = json.loads(json.dumps(SEND_TOOL))
+    tool["inputSchema"]["properties"]["material"]["default"] = material
+    return tool
+
 def agent_mcp(bridge, task_id, payload):
     """The task's own MCP server: initialize, tools/list, tools/call ask_user."""
     method = payload.get("method")
@@ -441,11 +658,19 @@ def agent_mcp(bridge, task_id, payload):
     elif method == "ping":
         response["result"] = {}
     elif method == "tools/list":
-        response["result"] = {"tools": [ASK_TOOL]}
+        response["result"] = {"tools": [ASK_TOOL, *([send_tool(bridge.printer.material)] if bridge.printer.enabled else [])]}
     elif method == "tools/call":
         params = payload.get("params") or {}
-        question = (params.get("arguments") or {}).get("question")
-        if params.get("name") != "ask_user" or not isinstance(question, str) or not question.strip():
+        args = params.get("arguments") or {}
+        question = args.get("question")
+        if params.get("name") == "send_to_printer" and bridge.printer.enabled:
+            try:
+                text = bridge.prepare_print(task_id, args.get("model", ""), args.get("material") or bridge.printer.material,
+                                            args.get("quality") or "standard")
+                response["result"] = {"content": [{"type": "text", "text": text}], "isError": False}
+            except printing.PrinterError as error:
+                response["result"] = {"content": [{"type": "text", "text": str(error)}], "isError": True}
+        elif params.get("name") != "ask_user" or not isinstance(question, str) or not question.strip():
             response["result"] = {"content": [{"type": "text", "text": "ask_user needs a question."}], "isError": True}
         elif bridge.ask(task_id, question):
             response["result"] = {"content": [{"type": "text", "text": ASK_RESULT}], "isError": False}
@@ -513,6 +738,15 @@ def make_handler(bridge):
                 return self._send(200, bridge.events_after(after, wait))
             if method == "GET" and path == "/tasks":
                 return self._send(200, bridge.list_view())
+            if path == "/printer" and method in ("GET", "POST"):
+                body = self._body() if method == "POST" else {"action": "status"}
+                action, task_id = body.get("action"), body.get("task_id") or None
+                if task_id is not None and not (isinstance(task_id, str) and TASK_ID.match(task_id)):
+                    return self._send(400, {"error": "Unknown task id."})
+                try:
+                    return self._send(200, bridge.printer_action(str(action), task_id))
+                except printing.PrinterError as error:
+                    return self._send(409, {"error": str(error)})
             if method == "POST" and path == "/tasks":
                 body = self._body()
                 request, title = str(body.get("request", "")).strip(), str(body.get("title", "")).strip()
@@ -573,6 +807,9 @@ def main():
     server.daemon_threads = True
     log(f"Claude bridge on http://{config['host']}:{config['port']}  projects: {bridge.root}  model: {config['model']}")
     log(f"Bash sandbox: {'on' if sandbox_on(config) else 'off (install bubblewrap and socat to allow shell commands)'}")
+    if bridge.printer.enabled:
+        problems = bridge.printer.problems()
+        log(f"Printer {bridge.printer.host}: " + ("ready" if not problems else "NOT ready: " + "; ".join(problems)))
     log(f"Token: in {args.config} (run with --show-token to print it)")
     def stop(*_):
         raise KeyboardInterrupt

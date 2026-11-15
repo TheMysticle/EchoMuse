@@ -19,7 +19,7 @@ TOOL_CATEGORIES = {
     'covers': {'hasscoveropen', 'hasscoverclose', 'hasscoversetposition',
                'hassturnon', 'hassturnoff'},
     'schedules': {'echomusecreate', 'echomuselist', 'echomuseaction', 'echomusestop'},
-    'pc_tasks': {'claudestart', 'claudestatus', 'claudereply', 'claudecancel'},
+    'pc_tasks': {'claudestart', 'claudestatus', 'claudereply', 'claudeprint', 'claudecancel'},
 }
 SUPPORT_TOOLS = {'getlivecontext', 'hassgetstate', 'echomuserequestcontinuation'}
 EXPANSION = 'EchoMuseExpandTools'
@@ -60,6 +60,9 @@ RULES = {
         r'(?:build|make|design|create|model) (?:me )?(?:a |an )?[\w\x27 ,.:-]+ on (?:my|the) (?:pc|computer)',
         r'(?:how is|how\x27s|what is the status of|check on|what about) (?:my |the )?(?:pc |computer |claude )?(?:build|task|project)s?(?: [\w\x27 -]+)?',
         r'(?:cancel|stop) (?:my |the )?(?:pc |computer |claude )?(?:build|task|project)(?: [\w\x27 -]+)?',
+        r'(?:start|pause|resume|stop|cancel) (?:the |my )?(?:3d )?print(?:ing|er)?(?: [\w\x27 -]+)?',
+        r'(?:how is|how\x27s|what about|check on) (?:the |my )?(?:3d )?print(?:er)?(?: going| doing)?',
+        r'print it',
     ],
 }
 _RULES = {category: [re.compile(pattern) for pattern in patterns]
