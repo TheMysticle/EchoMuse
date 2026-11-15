@@ -622,3 +622,19 @@ def test_the_controllers_tool_list_is_never_served_from_the_schema_cache():
     built = ROOT/'dist/pipecat-assist-echomuse-dev/app/mcp_bridge.py'
     if built.exists():
         assert 'spec.get("id") != "echomuse"' in built.read_text(encoding='utf-8')
+
+
+def test_the_dependencies_install_before_the_code_is_copied():
+    """A code change must reuse the cached dependency layer (2026-11-15: builds stalled re-downloading it)."""
+    spec = importlib.util.spec_from_file_location('em_pipecat_package', ROOT/'tools/pipecat_echomuse/package.py')
+    package = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(package)
+    assert package.requirements_of('[project]\ndependencies = ["a>=1", "b[x]<2"]\n') == 'a>=1\nb[x]<2\n'
+    with pytest.raises(ValueError):
+        package.adapt_dockerfile('FROM x\nRUN pip3 install /tmp/pipecat_assist\n')
+    built = ROOT/'dist/pipecat-assist-echomuse-dev/Dockerfile'
+    if not built.exists():
+        pytest.skip('Package pinned Pipecat source for adapter integration tests')
+    text = built.read_text(encoding='utf-8')
+    assert text.index('-r /tmp/pipecat_deps/requirements.txt') < text.index('COPY app/')
+    assert 'pip3 install --no-deps /tmp/pipecat_assist' in text and 'PIP_DEFAULT_TIMEOUT' in text

@@ -743,6 +743,55 @@ def adapt_text_agent(text):
     return text
 
 
+def adapt_dockerfile(text):
+    """Install the dependencies in a layer of their own, cached across code changes.
+
+    Upstream copies app/ and then pip-installs the project, so every change to
+    the code re-downloads all of Pipecat's dependencies (about 4.5 minutes on
+    the HA host), and on 2026-11-15 two such builds stalled for over half an
+    hour with nothing logged. The dependencies are installed from
+    requirements.txt (written from pyproject.toml's list alone), before the
+    code is copied; the project itself goes in with --no-deps. A stalled
+    download now fails after PIP_DEFAULT_TIMEOUT instead of hanging.
+    """
+    old = """COPY pyproject.toml /tmp/pipecat_assist/pyproject.toml
+COPY constraints-legacy-amd64.txt /tmp/pipecat_assist/constraints-legacy-amd64.txt
+COPY app/ /tmp/pipecat_assist/app/
+RUN if [ "${LEGACY_AMD64_NUMPY}" = "true" ]; then \\
+        pip3 install --constraint /tmp/pipecat_assist/constraints-legacy-amd64.txt /tmp/pipecat_assist; \\
+    else \\
+        pip3 install /tmp/pipecat_assist; \\
+    fi \\
+    && rm -rf /tmp/pipecat_assist
+"""
+    new = """ENV PIP_DEFAULT_TIMEOUT=60 \\
+    PIP_RETRIES=5
+
+COPY requirements.txt /tmp/pipecat_deps/requirements.txt
+COPY constraints-legacy-amd64.txt /tmp/pipecat_deps/constraints-legacy-amd64.txt
+RUN if [ "${LEGACY_AMD64_NUMPY}" = "true" ]; then \\
+        pip3 install --constraint /tmp/pipecat_deps/constraints-legacy-amd64.txt -r /tmp/pipecat_deps/requirements.txt; \\
+    else \\
+        pip3 install -r /tmp/pipecat_deps/requirements.txt; \\
+    fi \\
+    && rm -rf /tmp/pipecat_deps
+
+COPY pyproject.toml /tmp/pipecat_assist/pyproject.toml
+COPY app/ /tmp/pipecat_assist/app/
+RUN pip3 install --no-deps /tmp/pipecat_assist \\
+    && rm -rf /tmp/pipecat_assist
+"""
+    if text.count(old) != 1:
+        raise ValueError("Upstream Dockerfile anchor changed: the pip install step")
+    return text.replace(old, new)
+
+
+def requirements_of(pyproject_text):
+    """pyproject.toml's dependency list, one per line, for the cached install layer."""
+    import tomllib
+    return "\n".join(tomllib.loads(pyproject_text)["project"]["dependencies"]) + "\n"
+
+
 def adapt_mcp_bridge_pool(text):
     """Appends the per-device MCP bridge pool to app/mcp_bridge.py."""
 
@@ -1384,6 +1433,9 @@ def main():
     "tzdata>=2025.1",
 ]''')
     pyproject_path.write_text(pyproject, encoding='utf-8')
+    (args.out / 'requirements.txt').write_text(requirements_of(pyproject), encoding='utf-8')
+    dockerfile = args.out / 'Dockerfile'
+    dockerfile.write_text(adapt_dockerfile(dockerfile.read_text(encoding='utf-8')), encoding='utf-8')
     build_ui(args.out)
     version = subprocess.check_output(['git', '-C', str(ROOT), 'rev-parse', '--short', 'HEAD'], text=True).strip()
     # Home Assistant offers an update only when this string changes, so builds of
