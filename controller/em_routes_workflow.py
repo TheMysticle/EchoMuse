@@ -27,6 +27,24 @@ def register(app: web.Application) -> None:
 _workflow_locks: dict[str, asyncio.Lock] = {}
 
 
+def _conversation_view(device_id: str, config: dict) -> list[dict]:
+    """The other connected Echoes sharing this Echo's conversation, for the
+    settings page: who they are, and whether their server takes the shared
+    context (an older adapter still shares the wake rules, not the words)."""
+    key = em_workflow.conversation_key(config)
+    if not key:
+        return []
+    out = []
+    for peer in list(em_state.devices.values()):
+        if peer.device_id == device_id or em_workflow.conversation_key(peer.workflow.config) != key:
+            continue
+        row = db.get_device(peer.device_id)
+        out.append({"device_id": peer.device_id,
+                    "label": (row["label"] if row else None) or peer.device_id,
+                    "context": bool(getattr(peer.workflow.ws, "echomuse_peer_context", False))})
+    return out
+
+
 @schedule_auth.require_admin
 async def _post_workflow_mcp(request):
     import em_workflow_tools
@@ -46,6 +64,7 @@ async def _get_voice_workflow(request: web.Request) -> web.Response:
                 "session_active": bool(bridge and bridge.awake),
                 "interrupt_effective": bridge.interrupt_effective if bridge else None,
                 "last_error": bridge.last_error if bridge else None,
+                "conversation_peers": await asyncio.to_thread(_conversation_view, device_id, config),
                 "dependencies": "ready — WebSocket, protobuf and PCM bridge bundled"})
 
 
@@ -97,6 +116,7 @@ async def _post_voice_workflow(request: web.Request) -> web.Response:
                         "session_active": bool(live and live.workflow.awake),
                         "interrupt_effective": live.workflow.interrupt_effective if live else None,
                         "last_error": live.workflow.last_error if live else None,
+                        "conversation_peers": await asyncio.to_thread(_conversation_view, device_id, config),
                         "dependencies": "ready — WebSocket, protobuf and PCM bridge bundled"})
         finally:
             if ws is not None:

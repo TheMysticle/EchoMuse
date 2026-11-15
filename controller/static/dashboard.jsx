@@ -1957,7 +1957,7 @@ function VoiceWorkflow({ deviceId, isAdmin }) {
       setConfig(c);
       setDraft({ mode: c.mode, endpoint: c.endpoint || '', area: c.area || '', target_device: c.target_device || '',
         local_schedules: c.local_schedules ?? false, barge_in_sensitivity: c.barge_in_sensitivity || 'responsive',
-        interrupt_by: c.interrupt_by || 'wake' });
+        interrupt_by: c.interrupt_by || 'wake', conversation: c.conversation || '' });
     }).catch(() => { if (live) { setFailed(true); setMessage('Could not load voice workflow.'); } });
     return () => { live = false; };
   }, [deviceId]);
@@ -2031,6 +2031,19 @@ function VoiceWorkflow({ deviceId, isAdmin }) {
           sub="How long the server must hear speech before it counts you. Responsive catches one-word commands like stop and play. Needs the EchoMuse adapter on the server."
           options={[{ value: 'responsive', label: 'Responsive' }, { value: 'balanced', label: 'Balanced' }, { value: 'low', label: 'Low' }]}
           onChange={v => field('barge_in_sensitivity', v)}/>
+        <TextField label="Shared conversation" value={draft.conversation ?? ''} disabled={off}
+          placeholder="Not shared"
+          sub="Echoes given the same name are one conversation: either can be asked a follow-up about what the other said, and waking one stops the other mid-answer. Save the same name on each Echo."
+          onChange={v => field('conversation', v.slice(0, 40))}/>
+        {(config?.conversation || '').trim() && (
+          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-sm)', color: 'var(--text2)', marginBottom: 'var(--space-6)' }}>
+            {(config.conversation_peers || []).length === 0
+              ? 'No other connected Echo uses this name yet.'
+              : <>Shared with {config.conversation_peers.map(p => p.label).join(', ')}.
+                {config.conversation_peers.some(p => !p.context) &&
+                  <span style={{ color: 'var(--warn)' }}> {config.conversation_peers.filter(p => !p.context).map(p => p.label).join(', ')} cannot receive what was said here: update the Pipecat add-on. Wakes are still shared.</span>}</>}
+          </div>
+        )}
         <Toggle label="Timers, alarms and reminders" disabled={off}
           sub="gives the model this Echo’s own scheduler; needs the EchoMuse adapter"
           value={draft.local_schedules ?? false} onChange={v => field('local_schedules', v)}/>

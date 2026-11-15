@@ -662,6 +662,23 @@ after; not while a voice turn or a ringing timer owns the ring
   `hass.entities`. HA's registry and `assist_satellite/get_configuration` were
   correct throughout; a refresh fixed it.
 
+- **2026-11-15, Echoes telling the time unprompted (Pipecat, Gemini Live), and
+  what was found looking at it.** Over 2026-11-12..15 the unprompted
+  time/date replies all followed false wakes: a single Echo claimed the wake
+  (the other Living Room Echo heard nothing), the best score stayed under
+  0.935 and the claim was often late, and Gemini then called GetDateTime on
+  room speech or silence. GetDateTime was exempt from the heard check as a
+  read; it is now gated on time words in the transcript. Raising the wake
+  threshold to drop such wakes was not done: three days of data leave too thin
+  a margin to know it would not lose real wakes. Also found: the room
+  ownership rule (`active_room_session`) never fired, because the area field
+  sits under Advanced and neither Echo had one, so both Echoes could answer one
+  wake; wrong-language transcription of short Polish commands led to refusals;
+  13 of 145 one-second ingress windows clipped; no recording of a Pipecat turn
+  exists to listen to (the controller records native turns only and the
+  add-on's `AUDIO_DEBUG_ENABLED` was off). Shared conversations
+  (docs/voice-workflow.md) answer the double replies by name, not area.
+
 ### HA entities beyond the voice satellite
 
 Both are advertised **only when the device declares the capability** — an

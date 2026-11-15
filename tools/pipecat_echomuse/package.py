@@ -16,6 +16,18 @@ PIN = "a538d1d1bacc8609061719f0b05c1622147ccb4b"
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def adapt_va_pipecat(text):
+    """A controller peer_context message becomes a frame for the Gemini service."""
+    old = "        action = self.protocol.client_action(data)\n"
+    if text.count(old) != 1:
+        raise ValueError("Upstream va_pipecat deserialize anchor changed")
+    text = text.replace(old, "        peer = echomuse.peer_context_frame(data)\n        if peer is not None:\n            return peer\n" + old)
+    old = "from app.va_pipecat_protocol import VaPipecatProtocol\n"
+    if text.count(old) != 1:
+        raise ValueError("Upstream va_pipecat import anchor changed")
+    return text.replace(old, "from app import echomuse\n" + old)
+
+
 def adapt(text):
     def replace(old, new):
         nonlocal text
@@ -24,7 +36,7 @@ def adapt(text):
         text = text.replace(old, new)
     replace('from __future__ import annotations', 'from __future__ import annotations\n\nfrom app import brave_search\nfrom app import echomuse\nfrom app import fast_path\nfrom app import heard_check\nfrom app import mcp_bridge\nfrom app import transcription_languages\nfrom app import tool_scope')
     replace('    await websocket.send_text(_va_pipecat_protocol(config).hello())', '''    hello = json.loads(_va_pipecat_protocol(config).hello())
-    hello["echomuse"] = {"scheduler": bool(session_options.get("scheduler", {}).get("schedules")), "stop": bool(session_options.get("scheduler")), "barge_in": bool(session_options.get("barge_in")), "device_endpoint": _runtime_mode(flow) == "composed", "turn_events": _runtime_mode(flow) != "composed"}
+    hello["echomuse"] = {"scheduler": bool(session_options.get("scheduler", {}).get("schedules")), "stop": bool(session_options.get("scheduler")), "barge_in": bool(session_options.get("barge_in")), "device_endpoint": _runtime_mode(flow) == "composed", "turn_events": _runtime_mode(flow) != "composed", "peer_context": _runtime_mode(flow) != "composed" and (getattr(config.model_integration(flow), "kind", None) or flow.provider_id) == "gemini"}
     await websocket.send_text(json.dumps(hello))''')
     replace('    model = integration.default_model or provider.default_model or DEFAULT_WEB_SEARCH_MODEL\n\n    if provider.kind in {"openai", "openai_cloud"}:', '''    if provider.kind == "brave_search":
         api_key = (provider.api_key or "").strip()
@@ -131,6 +143,15 @@ def adapt(text):
             heard_check.state_of(self).bot_text_out("")
             await super()._handle_msg_turn_complete(message)
             await echomuse.answer_silent_tool_turn(self)
+            await echomuse.flush_peer_context(self)
+
+        async def process_frame(self, frame, direction):
+            # What the other Echo in a shared conversation heard and said
+            # (echomuse.flush_peer_context); never passed down the pipeline.
+            if echomuse.is_peer_context(frame):
+                await echomuse.take_peer_context(self, frame)
+                return
+            await super().process_frame(frame, direction)
 
         async def _handle_msg_tool_call(self, message):
             if getattr(self, "_em_drop_response", False) or getattr(self, "_em_turn_expired", False):
@@ -1262,6 +1283,8 @@ def main():
     protocol = path.read_text(encoding='utf-8')
     protocol = adapt_protocol(protocol)
     path.write_text(protocol, encoding='utf-8')
+    path = args.out/'app/va_pipecat.py'
+    path.write_text(adapt_va_pipecat(path.read_text(encoding='utf-8')), encoding='utf-8')
     path = args.out/'app/mcp_bridge.py'
     bridge = path.read_text(encoding='utf-8')
     old_call = """            session = self.client._ensure_connected()  # Pipecat exposes no public call_tool yet.

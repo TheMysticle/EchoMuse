@@ -763,6 +763,175 @@ async def answer_silent_tool_turn(service):
         await service._handle_send_error(error)
 
 
+
+# Echoes that share a conversation (docs/voice-workflow.md, "Echoes that share
+# a conversation"). Each Echo keeps its own Gemini Live session; when one ends
+# a turn the controller sends the others what was said, as
+# {"type": "peer_context", "user_b64", "reply_b64"}, and it reaches the model
+# here as a note, so a follow-up asked of the other Echo makes sense to it.
+#
+# WHEN the note is sent is what keeps this off the wake path. Realtime text
+# inside an activity window closes the session ("1007 Precondition check
+# failed", probed 2026-11-02, see answer_silent_tool_turn), and text outside
+# one is answered. So the note goes only while this Echo is idle: no user
+# speech, no reply in progress or awaited, and no open activity (an open
+# interrupt window is closed first). Its answer is dropped by the same flag
+# that drops an interrupted reply, so nothing reaches the Echo, and a wake
+# that comes while Gemini is still answering the note interrupts it with the
+# ordinary activity_start. Nothing is sent or awaited when the user speaks.
+PEER_NOTE_KEEP = 3
+PEER_NOTE_MAX_AGE_S = 15 * 60
+PEER_USER_MAX = 500
+PEER_REPLY_MAX = 1000
+PEER_NOTE = (
+    "Context only, not a request. A moment ago, in this same room, the user spoke "
+    "to the other speaker that shares this conversation with you. {exchanges} "
+    "If the user follows up on it with you, you know what was said. "
+    "Do not call any tool and do not answer this note: reply only with: OK."
+)
+_peer_frame_class = None
+
+
+def _peer_frame_type():
+    global _peer_frame_class
+    if _peer_frame_class is None:
+        from pipecat.frames.frames import SystemFrame
+
+        class PeerContextFrame(SystemFrame):
+            def __init__(self, user, reply):
+                super().__init__()
+                self.user = user
+                self.reply = reply
+
+        _peer_frame_class = PeerContextFrame
+    return _peer_frame_class
+
+
+def parse_peer_context(data):
+    """(user, reply) from a controller peer_context message, or None for anything else."""
+    import base64
+    import binascii
+    import json
+    if not isinstance(data, str) or '"peer_context"' not in data:
+        return None
+    try:
+        message = json.loads(data)
+    except ValueError:
+        return None
+    if not isinstance(message, dict) or message.get("type") != "peer_context":
+        return None
+    out = []
+    for key, limit in (("user_b64", PEER_USER_MAX), ("reply_b64", PEER_REPLY_MAX)):
+        value = message.get(key)
+        if not isinstance(value, str) or len(value) > limit * 8:
+            return None
+        try:
+            text = base64.b64decode(value, validate=True).decode("utf-8", "replace")
+        except (binascii.Error, ValueError):
+            return None
+        out.append(" ".join(text.split())[:limit])
+    if not out[0] and not out[1]:
+        return None
+    return tuple(out)
+
+
+def peer_context_frame(data):
+    parsed = parse_peer_context(data)
+    if parsed is None:
+        return None
+    return _peer_frame_type()(*parsed)
+
+
+def is_peer_context(frame):
+    return _peer_frame_class is not None and isinstance(frame, _peer_frame_class)
+
+
+def note_peer_context(service, user, reply, now=None):
+    import time
+    now = time.monotonic() if now is None else now
+    notes = [n for n in getattr(service, "_em_peer_notes", []) if now - n[0] < PEER_NOTE_MAX_AGE_S]
+    notes.append((now, user, reply))
+    service._em_peer_notes = notes[-PEER_NOTE_KEEP:]
+
+
+def peer_note_text(notes):
+    import json
+    exchanges = []
+    for _, user, reply in notes:
+        part = "The user said: " + json.dumps(user, ensure_ascii=False) + "."
+        if reply:
+            part += " The other speaker answered: " + json.dumps(reply, ensure_ascii=False) + "."
+        exchanges.append(part)
+    return PEER_NOTE.format(exchanges=" ".join(exchanges))
+
+
+def peer_idle_problem(service):
+    """Why a note cannot be sent now, or None. Pure: reads the service's state only."""
+    if getattr(service, "_session", None) is None or getattr(service, "_disconnecting", False):
+        return "no session"
+    if not getattr(service, "_ready_for_realtime_input", False):
+        return "session not ready"
+    if getattr(service, "_needs_initial_turn_complete_message", False):
+        return "first turn not taken"
+    if getattr(service, "_user_is_speaking", False):
+        return "user speaking"
+    if getattr(service, "_bot_is_responding", False):
+        return "replying"
+    watch = _reply_watch(service)
+    if (getattr(service, "_em_response_task", None) is not None or watch.pending
+            or (watch.nudged and not watch.heard)):
+        return "reply awaited"
+    return None
+
+
+async def flush_peer_context(service, now=None):
+    """Send what the other Echo heard and said, if this one is idle. Never raises."""
+    import time
+    notes = getattr(service, "_em_peer_notes", None)
+    if not notes:
+        return False
+    now = time.monotonic() if now is None else now
+    notes = [n for n in notes if now - n[0] < PEER_NOTE_MAX_AGE_S]
+    service._em_peer_notes = notes
+    if not notes or peer_idle_problem(service) is not None:
+        return False
+    from loguru import logger
+    service._em_peer_notes = []
+    session = service._session
+    try:
+        if getattr(service, "_em_interrupt_activity", False):
+            from google.genai.types import ActivityEnd
+            service._em_interrupt_activity = False
+            await session.send_realtime_input(activity_end=ActivityEnd())
+        service._em_drop_response = True
+        await session.send_realtime_input(text=peer_note_text(notes))
+    except Exception as error:
+        logger.warning("Shared conversation note not sent ({})", type(error).__name__)
+        return False
+    logger.info("Shared conversation: told the model about {} exchange(s) with the other Echo", len(notes))
+    return True
+
+
+PEER_COALESCE_S = 0.2  # a session's exchanges arrive back to back: one note
+
+
+async def take_peer_context(service, frame, delay=PEER_COALESCE_S):
+    """Keep the exchange, and send what has been kept once the burst is over.
+
+    Off every wake path: this runs when the OTHER Echo's session ends.
+    """
+    note_peer_context(service, frame.user, frame.reply)
+    task = getattr(service, "_em_peer_flush_task", None)
+    if task is not None and not task.done():
+        return
+
+    async def later():
+        await asyncio.sleep(delay)
+        await flush_peer_context(service)
+
+    service._em_peer_flush_task = asyncio.get_running_loop().create_task(later())
+
+
 AREA_MISSING = "The area does not exist"
 
 

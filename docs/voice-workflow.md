@@ -392,6 +392,34 @@ runs a script called *Clean the kitchen*.
 Refusals are logged as `Heard check refused …` with what was heard. Set
 `ECHOMUSE_HEARD_CHECK=off` in the add-on's environment to turn it off.
 
+The time and date are the one lookup that is checked. Gemini Live called
+GetDateTime on false wakes and read the time to an empty room, so it runs only
+when the transcript mentions a time, a date, a day, an alarm or a reminder (in
+English or Polish). A call with words already heard is judged at once, so this
+adds no delay.
+
+### Echoes that share a conversation
+
+Give two or more Echoes the same name under **Shared conversation** (Voice
+workflow, Pipecat mode) and they act as one assistant:
+
+- **One wake, one answer.** If one Echo is already listening, a wake on the
+  other is the same wake word heard twice, and it gives way.
+- **Waking one stops the other.** If one Echo is thinking or answering, a wake
+  on the other ends that turn or cuts the reply, and the new Echo takes over.
+- **Either can take the follow-up.** When a session ends, the other Echoes get
+  what you said and what was answered (the last three exchanges), so "and
+  what about tomorrow?" makes sense to the other one.
+
+Each Echo keeps its own Gemini Live session, because timers, local schedules
+and the room a command means all belong to the Echo you spoke to. The
+exchange reaches the other session as a short note, sent only while that Echo
+is idle; Gemini's answer to the note is dropped. Nothing is sent or awaited
+when you wake an Echo, so this adds no delay. Sharing the words needs this
+add-on version; an older one still follows the wake rules, and the settings
+page says which Echoes are missing it. The name replaces the room rule under
+Advanced for those Echoes. Names match ignoring case and spacing.
+
 ### Weather, forecasts and other custom attributes
 
 `GetLiveContext` passes the model each exposed entity's name, domain, state and

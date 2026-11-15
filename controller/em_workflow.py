@@ -131,6 +131,147 @@ class ProtocolError(ValueError):
     """A safe, static diagnostic code (never a server response or credential)."""
 
 
+def _b64_text(event):
+    try:
+        return base64.b64decode(event.get("text_b64", "")).decode("utf-8")
+    except (ValueError, UnicodeDecodeError):
+        return None
+
+
+CONVERSATION_MAX = 40
+# What one Echo tells the others of a turn it finished. Bounded: the note
+# rides the start of the next turn on the receiving Echo.
+SHARED_USER_MAX = 500
+SHARED_REPLY_MAX = 1000
+
+
+def conversation_key(config):
+    """The shared-conversation name this Echo is in, normalised; "" for none.
+
+    Echoes given the same name are one conversation (docs/voice-workflow.md,
+    "Echoes that share a conversation"): a wake on one while another is
+    listening is the same wake heard twice, a wake on one while another is
+    thinking or speaking takes the conversation over, and each tells the
+    others what was said so a follow-up can be asked of either.
+    """
+    if not isinstance(config, dict) or config.get("mode") != PIPECAT:
+        return ""
+    return " ".join(str(config.get("conversation", "")).casefold().split())
+
+
+def conversation_peers(device):
+    """The other connected Echoes in Pipecat mode sharing this Echo's conversation.
+
+    A peer whose Pipecat link is down is still one: its wake state still
+    counts, and share_exchanges skips it until it is back.
+    """
+    import em_state
+    key = conversation_key(device.workflow.config)
+    if not key:
+        return []
+    return [peer for peer in list(em_state.devices.values())
+            if peer is not device and peer.workflow.active
+            and conversation_key(peer.workflow.config) == key]
+
+
+async def take_over(device, peers):
+    """Stop whatever the other Echoes in this conversation are still doing.
+
+    Called for the Echo that won a wake. A peer still thinking has its turn
+    ended and the server told to stop (the same `stop` a closed session
+    sends); a peer still playing a reply has it cut. Neither answers after
+    this, so one wake never gets two replies.
+    """
+    for peer in peers:
+        bridge = peer.workflow
+        if bridge.awake:
+            log.info("[%s] Pipecat: %s took over this conversation; ending this turn",
+                     peer.device_id, device.device_id)
+            await bridge.end_session(reason="taken_over")
+        elif bridge.draining:
+            log.info("[%s] Pipecat: %s took over this conversation; cutting the reply",
+                     peer.device_id, device.device_id)
+            await bridge.cancel_output(force=True)
+
+
+SHARED_EXCHANGES_MAX = 3
+
+
+def note_exchange(turn, event):
+    """Keep each exchange of a session (what was heard, what was answered).
+
+    One wake can hold several exchanges (follow-ups), so a user transcript
+    after a reply opens a new one. Both sides' texts are cumulative per
+    exchange, interim words included: a turn cut short may never get a final.
+    """
+    text = _b64_text(event)
+    if not text:
+        return
+    exchanges = turn.setdefault("exchanges", [])
+    if event.get("role") == "assistant":
+        if exchanges:
+            exchanges[-1][1] = text
+        return
+    if not exchanges or exchanges[-1][1]:
+        exchanges.append([text, ""])
+        del exchanges[:-SHARED_EXCHANGES_MAX]
+    else:
+        exchanges[-1][0] = text
+
+
+async def share_exchanges(device, exchanges):
+    """Tell the other Echoes in this conversation what was just said here.
+
+    Sent only to a server that announced `peer_context` in its hello: it
+    gives the exchange to the model while that Echo is idle and drops the
+    model's answer to it (the add-on's echomuse.flush_peer_context), so no
+    wake waits on it. Never logged: it is what someone said. Returns how many
+    messages went out.
+    """
+    messages = []
+    for user_text, reply_text in exchanges[-SHARED_EXCHANGES_MAX:]:
+        user_text = (user_text or "").strip()[:SHARED_USER_MAX]
+        reply_text = (reply_text or "").strip()[:SHARED_REPLY_MAX]
+        if user_text:
+            messages.append(json.dumps({
+                "type": "peer_context",
+                "user_b64": base64.b64encode(user_text.encode("utf-8")).decode("ascii"),
+                "reply_b64": base64.b64encode(reply_text.encode("utf-8")).decode("ascii"),
+            }))
+    sent = 0
+    if not messages:
+        return sent
+    for peer in conversation_peers(device):
+        bridge = peer.workflow
+        ws = bridge.ws
+        if ws is None or bridge.status != "connected" or not getattr(ws, "echomuse_peer_context", False):
+            continue
+        try:
+            for message in messages:
+                await ws.send(message)
+                sent += 1
+        except Exception:
+            pass  # that Echo's reconnect loop owns its connection
+    return sent
+
+
+def wake_owner(device):
+    """The Echo a device wake must give way to before arbitration, or None.
+
+    Echoes sharing a conversation: one already taking in the talker's words
+    heard this same wake first, so this copy gives way. Otherwise a shared
+    wake is arbitrated like any other, the owner's own barge included, and
+    the winner takes the conversation over (Bridge.wake). Without a shared
+    conversation, the room's active session owns it, as before.
+    """
+    peers = conversation_peers(device)
+    listening = next((p for p in peers if p.workflow.capturing), None)
+    if listening is not None:
+        log.info("[%s] Wake ceded to %s: it is already listening in this conversation",
+                 device.device_id, listening.device_id)
+        return listening.device_id
+    return None if peers else active_room_session(device)
+
 def active_room_session(device):
     """An existing Pipecat turn owns its configured room until it finishes."""
     import em_state
@@ -197,9 +338,13 @@ def public(config):
 def validate(body, previous):
     if not isinstance(body, dict):
         raise ValueError("Expected a configuration object")
-    if set(body) - {"mode", "endpoint", "api_key", "google_api_key", "area", "target_device", "transport", "local_schedules", "barge_in_sensitivity", "interrupt_by"}:
+    if set(body) - {"mode", "endpoint", "api_key", "google_api_key", "area", "target_device", "transport", "local_schedules", "barge_in_sensitivity", "interrupt_by", "conversation"}:
         raise ValueError("Unknown voice workflow setting")
     result = {**previous, **body}
+    conversation = result.get("conversation", "")
+    if (not isinstance(conversation, str) or len(conversation) > CONVERSATION_MAX
+            or any(ord(c) < 32 or ord(c) == 127 for c in conversation)):
+        raise ValueError("Invalid conversation name")
     if type(result.get("local_schedules", False)) is not bool:
         raise ValueError("Invalid local schedules setting")
     if result.get("interrupt_by", INTERRUPT_WAKE) not in (INTERRUPT_WAKE, INTERRUPT_VOICE):
@@ -315,6 +460,7 @@ async def handshake(config, device_id):
             ws.echomuse_audio_format = (audio["output_sample_rate"], audio["channels"])
             ws.echomuse_device_endpoint = hello.get("echomuse", {}).get("device_endpoint") is True
             ws.echomuse_turn_events = hello.get("echomuse", {}).get("turn_events") is True
+            ws.echomuse_peer_context = hello.get("echomuse", {}).get("peer_context") is True
     except BaseException:
         await ws.close()
         raise
@@ -411,7 +557,18 @@ class Bridge:
         if self.playback_tasks and not self.awake:
             await self.cancel_output(force=True)
         async with self.session_lock:
-            owner = active_room_session(self.device) if not button else None
+            # Nothing awaits from here to `self.opening = True`, so of two
+            # Echoes in one conversation waking together the second always
+            # sees the first opening and gives way (no two take-overs).
+            peers = conversation_peers(self.device)
+            listening = None if button else next((p for p in peers if p.workflow.capturing), None)
+            if listening is not None:
+                log.info("[%s] Pipecat wake ceded to %s: it is already listening in this "
+                         "conversation", self.device.device_id, listening.device_id)
+                if session is not None:
+                    await self.device.listen_close(session, "ceded")
+                return False
+            owner = active_room_session(self.device) if not button and not peers else None
             if owner and owner != self.device.device_id:
                 log.info("[%s] Pipecat wake ceded to active room session on %s", self.device.device_id, owner)
                 if session is not None:
@@ -421,6 +578,8 @@ class Bridge:
             # speaker ownership. Two nearly simultaneous winners cannot open.
             self.opening = True
             try:
+                if peers:
+                    await take_over(self.device, peers)
                 return await self._wake(session, age_ms=age_ms, button=button, wake_info=wake_info)
             finally:
                 self.opening = False
@@ -619,6 +778,19 @@ class Bridge:
         """The server has finished a reply and the speaker is still playing it."""
         return self.output_queue is None and bool(self.playback_tasks)
 
+    @property
+    def capturing(self):
+        """Opening, or taking in the talker's words: not yet thinking or answering.
+
+        For Echoes sharing a conversation, a wake on another one now is the
+        same wake heard twice (the late copy reached the controller 1.2s
+        after the first on 2026-11-14 16:07:49), so it gives way.
+        """
+        if self.opening:
+            return True
+        return (self.awake and self.accept_audio and not self.endpointed
+                and not self.speaking and not self.uplink_closed)
+
     def arm(self, seconds, reason):
         """Set the idle deadline poll() enforces, and the name it is logged under."""
         self.session_deadline = asyncio.get_running_loop().time() + seconds
@@ -661,12 +833,14 @@ class Bridge:
         the reply is the whole of what was heard.
         """
         turn = self.turn
-        if (turn is None or event.get("role") != "user" or not event.get("final")
-                or turn["first_audio"] >= 0):
+        if turn is None or event.get("role") not in ("user", "assistant"):
             return
-        try:
-            text = base64.b64decode(event.get("text_b64", "")).decode("utf-8")
-        except (ValueError, UnicodeDecodeError):
+        if conversation_key(self.config):
+            note_exchange(turn, event)
+        if event.get("role") == "assistant" or turn["first_audio"] >= 0:
+            return
+        text = _b64_text(event)
+        if text is None or not event.get("final"):
             return
         turn["stt_text"] = text
         turn["stt"] = int((asyncio.get_running_loop().time() - turn["t0"]) * 1000)
@@ -732,6 +906,9 @@ class Bridge:
             return
         self.awake = False  # close the uplink synchronously before any await
         turn, self.turn = self.turn, None
+        if turn is not None and conversation_key(self.config):
+            # Now, not after the reply drains: the other Echo may be asked next.
+            em_tasks.spawn(share_exchanges(self.device, turn.get("exchanges", [])))
         log.info("[%s] Pipecat session %s ended: %s after %.1fs%s",
                  self.device.device_id, session if session is not None else self.session,
                  reason, asyncio.get_running_loop().time() - self.session_started,

@@ -44,6 +44,31 @@ from loguru import logger
 READ_ONLY = re.compile(
     r"(GetLiveContext|GetDateTime|EchoMuseList|search_media|RequestContinuation|get_weather|web_search)$")
 
+# GetDateTime is read-only, but on 2026-11-12..15 it was the model's answer to
+# a false wake: 7 of its 9 calls followed a wake heard by one Echo only, at a
+# score of 0.89-0.93, with nothing or unrelated speech heard ("Myślę, że
+# wiem.", "O, wow."), and the Echo read out the time unasked. It runs only
+# when the words ask about time, a date, or something scheduled. Matched as
+# word STARTS (folded), so inflection does not matter.
+TIME_STEMS = (
+    "time", "clock", "oclock", "date", "day", "today", "tonight", "tomorrow", "yesterday",
+    "week", "month", "year", "hour", "minute", "second", "late", "early", "noon", "midnight",
+    "morning", "evening", "afternoon", "night", "when", "until", "till", "long",
+    "alarm", "timer", "remind", "schedul", "calendar", "wake",
+    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+    # Polish (de-accented): która godzina, czas, data, dzień/dnia/dziś, jutro,
+    # wczoraj, tydzień, miesiąc, rok, minuta, budzik, przypomnij, zegar, późno.
+    "godzin", "ktora", "czas", "dat", "dzien", "dnia", "dzis", "jutr", "wczoraj",
+    "tydz", "tygodn", "miesi", "rok", "roku", "minut", "sekund", "budzik", "przypom",
+    "zegar", "pozno", "wczesn", "rano", "wieczor", "poludni", "polnoc", "kiedy", "ile",
+    "poniedzial", "wtor", "srod", "czwart", "piat", "sobot", "niedziel",
+)
+
+
+def time_asked(transcript: str) -> bool:
+    return any(w.startswith(TIME_STEMS) for w in words(transcript))
+
+
 # Words that carry no target. Kept small: a word here can never be evidence.
 GENERIC = {
     "the", "a", "an", "to", "of", "on", "off", "in", "at", "up", "down", "my", "your",
@@ -611,10 +636,20 @@ def gated(service, handler):
         tool = params.function_name or ""
         if tool == "EchoMuseRequestContinuation":
             state_of(service).question_asked()
-        if READ_ONLY.search(tool):
+        if READ_ONLY.search(tool) and not tool.endswith("GetDateTime"):
             return await handler(params)
         state = state_of(service)
+        # Waits only while this turn has no words at all (EVIDENCE_WAIT_SECONDS),
+        # which for a real question has already passed by the time the model
+        # calls a tool: the words arrive before the call.
         transcript = await state.evidence()
+        if tool.endswith("GetDateTime"):
+            if time_asked(transcript):
+                return await handler(params)
+            why = "nothing was transcribed" if not transcript.strip() else "no time or date was asked for"
+            logger.info("Heard check refused {}: {} (heard {!r})", tool, why, transcript)
+            await params.result_callback({"error": "not_heard", "message": REFUSAL.format(why=why)})
+            return
         if getattr(service, "_em_turn_expired", False):
             await params.result_callback({"error": "response_timeout"})
             return

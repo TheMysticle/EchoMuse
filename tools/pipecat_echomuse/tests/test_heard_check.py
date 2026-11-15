@@ -525,3 +525,55 @@ def test_a_reply_to_a_question_still_carries_the_question():
         s.user_text("Ten a.m.")
         return await s.evidence()
     assert asyncio.run(run()) == "Set an alarm. Ten a.m."
+
+
+# GetDateTime is a read, but Gemini Live called it on false wakes and spoke the
+# time to an empty room (2026-11-12..15): it alone is judged by what was heard.
+@pytest.mark.parametrize('said', [
+    'What time is it?', "What's the date today?", 'Która godzina?', 'Jaki dziś dzień?',
+    'Set an alarm for seven', 'Jaka jest data?', 'Ile minut do północy?', 'When is Monday?'])
+def test_the_time_is_told_when_it_was_asked_for(said):
+    assert hc.time_asked(said)
+
+
+@pytest.mark.parametrize('said', [
+    '', 'Myślę, że wiem.', 'O, wow.', "I'm going to go to the store.", 'Turn on the lamp'])
+def test_the_time_is_not_told_on_words_that_never_asked(said):
+    assert not hc.time_asked(said)
+
+
+def test_the_gate_judges_get_date_time_by_the_transcript():
+    ran, results = [], []
+
+    async def handler(params):
+        ran.append(params.function_name)
+
+    service = SimpleNamespace()
+    gate = hc.gated(service, handler)
+
+    async def run():
+        hc.state_of(service).user_text('O, wow.')
+        await gate(_params(MCP + 'homeassistant__GetDateTime', {}, results))
+        await gate(_params(MCP + 'homeassistant__GetLiveContext', {}, results))
+        hc.state_of(service).bot_text_out("Sorry, I didn't catch that.")
+        hc.state_of(service).user_text('Która godzina?')
+        await gate(_params(MCP + 'homeassistant__GetDateTime', {}, results))
+    asyncio.run(run())
+    assert ran == [MCP + 'homeassistant__GetLiveContext', MCP + 'homeassistant__GetDateTime']
+    assert len(results) == 1 and results[0]['error'] == 'not_heard'
+
+
+def test_get_date_time_with_words_already_heard_does_not_wait():
+    async def handler(params):
+        pass
+
+    service = SimpleNamespace()
+    gate = hc.gated(service, handler)
+
+    async def run():
+        hc.state_of(service).user_text('What time is it?')
+        loop = asyncio.get_running_loop()
+        start = loop.time()
+        await gate(_params(MCP + 'homeassistant__GetDateTime', {}, []))
+        return loop.time() - start
+    assert asyncio.run(run()) < 0.05

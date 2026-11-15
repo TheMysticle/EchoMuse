@@ -1416,7 +1416,7 @@ class Device:
 
     async def workflow_wake(self, ev):
         # The native arbitration uses capture time/level, not network arrival.
-        owner = em_workflow.active_room_session(self)
+        owner = em_workflow.wake_owner(self)  # room, or a shared conversation
         if owner and owner != self.device_id:
             await self.listen_close(ev["session"], "ceded",
                                     keep_duck=em_player.ducks_with(owner, self.device_id))
